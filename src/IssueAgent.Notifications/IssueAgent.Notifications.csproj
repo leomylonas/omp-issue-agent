@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../IssueAgent.Workflow/IssueAgent.Workflow.csproj" />
+  </ItemGroup>
+</Project>

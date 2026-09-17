@@ -5,6 +5,7 @@
     <Project Path="src/IssueAgent.Domain/IssueAgent.Domain.csproj" />
     <Project Path="src/IssueAgent.Git/IssueAgent.Git.csproj" />
     <Project Path="src/IssueAgent.Host/IssueAgent.Host.csproj" />
+    <Project Path="src/IssueAgent.Notifications/IssueAgent.Notifications.csproj" />
     <Project Path="src/IssueAgent.Omp/IssueAgent.Omp.csproj" />
     <Project Path="src/IssueAgent.Providers.GitHub/IssueAgent.Providers.GitHub.csproj" />
     <Project Path="src/IssueAgent.Providers.GitLab/IssueAgent.Providers.GitLab.csproj" />
@@ -16,6 +17,7 @@
     <Project Path="tests/IssueAgent.Context.Tests/IssueAgent.Context.Tests.csproj" />
     <Project Path="tests/IssueAgent.Domain.Tests/IssueAgent.Domain.Tests.csproj" />
     <Project Path="tests/IssueAgent.Git.Tests/IssueAgent.Git.Tests.csproj" />
+    <Project Path="tests/IssueAgent.Notifications.Tests/IssueAgent.Notifications.Tests.csproj" />
     <Project Path="tests/IssueAgent.Omp.Tests/IssueAgent.Omp.Tests.csproj" />
     <Project Path="tests/IssueAgent.Providers.GitHub.Tests/IssueAgent.Providers.GitHub.Tests.csproj" />
     <Project Path="tests/IssueAgent.Providers.GitLab.Tests/IssueAgent.Providers.GitLab.Tests.csproj" />
