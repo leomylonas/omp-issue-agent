@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../IssueAgent.Domain/IssueAgent.Domain.csproj" />
+    <ProjectReference Include="../IssueAgent.Providers/IssueAgent.Providers.csproj" />
+    <ProjectReference Include="../IssueAgent.Git/IssueAgent.Git.csproj" />
+    <ProjectReference Include="../IssueAgent.Omp/IssueAgent.Omp.csproj" />
+    <ProjectReference Include="../IssueAgent.Context/IssueAgent.Context.csproj" />
+  </ItemGroup>
+</Project>

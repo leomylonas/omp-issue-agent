@@ -9,6 +9,7 @@
     <Project Path="src/IssueAgent.Providers.GitHub/IssueAgent.Providers.GitHub.csproj" />
     <Project Path="src/IssueAgent.Providers.GitLab/IssueAgent.Providers.GitLab.csproj" />
     <Project Path="src/IssueAgent.Providers/IssueAgent.Providers.csproj" />
+    <Project Path="src/IssueAgent.Workflow/IssueAgent.Workflow.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/IssueAgent.Configuration.Tests/IssueAgent.Configuration.Tests.csproj" />
@@ -19,5 +20,6 @@
     <Project Path="tests/IssueAgent.Providers.GitHub.Tests/IssueAgent.Providers.GitHub.Tests.csproj" />
     <Project Path="tests/IssueAgent.Providers.GitLab.Tests/IssueAgent.Providers.GitLab.Tests.csproj" />
     <Project Path="tests/IssueAgent.Providers.Tests/IssueAgent.Providers.Tests.csproj" />
+    <Project Path="tests/IssueAgent.Workflow.Tests/IssueAgent.Workflow.Tests.csproj" />
   </Folder>
 </Solution>

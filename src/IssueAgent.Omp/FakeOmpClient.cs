@@ -10,7 +10,7 @@ namespace IssueAgent.Omp;
 public sealed class FakeOmpClient : IOmpClient
 {
     private readonly Queue<string> sessionIdsToCreate = new();
-    private readonly Queue<IReadOnlyList<OmpEvent>> scriptedRuns = new();
+    private readonly Queue<(Action? OnStart, IReadOnlyList<OmpEvent> Events)> scriptedRuns = new();
 
     public List<string> CreatedRoles { get; } = [];
 
@@ -33,14 +33,20 @@ public sealed class FakeOmpClient : IOmpClient
     /// <summary>Queues the event sequence returned by the next <see cref="RunAsync"/> call. Must end
     /// with an <see cref="OmpCompletedEvent"/> or <see cref="OmpErrorEvent"/>, matching the real
     /// contract.</summary>
-    public FakeOmpClient EnqueueRun(params OmpEvent[] events)
+    public FakeOmpClient EnqueueRun(params OmpEvent[] events) => EnqueueRun(onStart: null, events);
+
+    /// <summary>Same as <see cref="EnqueueRun(OmpEvent[])"/>, but invokes <paramref name="onStart"/>
+    /// synchronously when this scripted run begins, before any event is yielded. Use this to inject
+    /// state changes (for example, a new human comment arriving) that must happen strictly between
+    /// the previous run and this one.</summary>
+    public FakeOmpClient EnqueueRun(Action? onStart, params OmpEvent[] events)
     {
         if (events.Length == 0 || events[^1] is not (OmpCompletedEvent or OmpErrorEvent))
         {
             throw new ArgumentException("A scripted run must end with a completed or error event.", nameof(events));
         }
 
-        scriptedRuns.Enqueue(events);
+        scriptedRuns.Enqueue((onStart, events));
         return this;
     }
 
@@ -65,7 +71,8 @@ public sealed class FakeOmpClient : IOmpClient
             throw new InvalidOperationException("FakeOmpClient.RunAsync was called with no scripted run queued.");
         }
 
-        var events = scriptedRuns.Dequeue();
+        var (onStart, events) = scriptedRuns.Dequeue();
+        onStart?.Invoke();
         foreach (var domainEvent in events)
         {
             cancellationToken.ThrowIfCancellationRequested();
