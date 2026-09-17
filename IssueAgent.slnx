@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/IssueAgent.Configuration/IssueAgent.Configuration.csproj" />
     <Project Path="src/IssueAgent.Domain/IssueAgent.Domain.csproj" />
+    <Project Path="src/IssueAgent.Git/IssueAgent.Git.csproj" />
     <Project Path="src/IssueAgent.Host/IssueAgent.Host.csproj" />
     <Project Path="src/IssueAgent.Providers.GitHub/IssueAgent.Providers.GitHub.csproj" />
     <Project Path="src/IssueAgent.Providers.GitLab/IssueAgent.Providers.GitLab.csproj" />
@@ -10,6 +11,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/IssueAgent.Configuration.Tests/IssueAgent.Configuration.Tests.csproj" />
     <Project Path="tests/IssueAgent.Domain.Tests/IssueAgent.Domain.Tests.csproj" />
+    <Project Path="tests/IssueAgent.Git.Tests/IssueAgent.Git.Tests.csproj" />
     <Project Path="tests/IssueAgent.Providers.GitHub.Tests/IssueAgent.Providers.GitHub.Tests.csproj" />
     <Project Path="tests/IssueAgent.Providers.GitLab.Tests/IssueAgent.Providers.GitLab.Tests.csproj" />
     <Project Path="tests/IssueAgent.Providers.Tests/IssueAgent.Providers.Tests.csproj" />
