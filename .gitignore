@@ -1,0 +1,15 @@
+## .NET build artifacts
+bin/
+obj/
+*.user
+
+## IDE
+.vs/
+.vscode/
+.idea/
+
+## Test/coverage output
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
