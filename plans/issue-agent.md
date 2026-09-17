@@ -535,68 +535,68 @@ updatedAt: ...
 <!-- issue-agent:state -->
 ```
 
-    Replanning **edits the plan section in this same comment**. `planRevision` increments.
+Replanning **edits the plan section in this same comment**. `planRevision` increments.
 
-    Human comments remain chronological and provide the discussion/history explaining why the current plan changed.
+Human comments remain chronological and provide the discussion/history explaining why the current plan changed.
 
-    Implementation does not erase the plan; implementation notes are added/updated in the same canonical comment.
+Implementation does not erase the plan; implementation notes are added/updated in the same canonical comment.
 
-    Human edits to this managed comment/YAML are not authoritative control input. If externally corrupted, reconstruct conservatively or require human intervention.
+Human edits to this managed comment/YAML are not authoritative control input. If externally corrupted, reconstruct conservatively or require human intervention.
 
-    ## 18. Iterative planning
+## 18. Iterative planning
 
-    Planning is explicitly conversational and may loop indefinitely:
+Planning is explicitly conversational and may loop indefinitely:
 
-    1. IssueAgent publishes/updates plan.
-    2. Human comments with requested changes.
-    3. Human adds replan command label.
-    4. IssueAgent resumes the same OMP session with the current plan plus relevant conversation/history.
-    5. OMP revises the plan.
-    6. IssueAgent updates the canonical comment in place.
-    7. Human may repeat this process any number of times.
+1. IssueAgent publishes/updates plan.
+2. Human comments with requested changes.
+3. Human adds replan command label.
+4. IssueAgent resumes the same OMP session with the current plan plus relevant conversation/history.
+5. OMP revises the plan.
+6. IssueAgent updates the canonical comment in place.
+7. Human may repeat this process any number of times.
 
-    Do not impose an arbitrary replan limit.
+Do not impose an arbitrary replan limit.
 
-    When replanning, OMP must understand prior feedback and preserve/revise decisions intentionally rather than blindly generating an unrelated new plan.
+When replanning, OMP must understand prior feedback and preserve/revise decisions intentionally rather than blindly generating an unrelated new plan.
 
+## 19. Three-dimensional label protocol
 
-    ## 19. Three-dimensional label protocol
+Do **not** require exactly one `agent:*` label overall.
 
-    Do **not** require exactly one `agent:*` label overall.
+Split labels into three dimensions.
 
-    Split labels into three dimensions.
+### Phase labels
 
-    ### Phase labels
+Exactly one phase label for a managed workflow:
 
-    Exactly one phase label for a managed workflow:
+- `agent:phase:planning`
+- `agent:phase:planned`
+- `agent:phase:implementing`
+- `agent:phase:review`
+- `agent:phase:revising`
+- `agent:phase:done`
+- `agent:phase:failed`
+- `agent:phase:cancelled`
 
-    - `agent:phase:planning`
-    - `agent:phase:planned`
-    - `agent:phase:implementing`
-    - `agent:phase:review`
-    - `agent:phase:revising`
-    - `agent:phase:done`
-    - `agent:phase:failed`
-    - `agent:phase:cancelled`
+Phase describes the durable workflow milestone/artifact.
 
-    Phase describes the durable workflow milestone/artifact.
+### State labels
 
-    ### State labels
+Exactly one operational state while actively managed:
 
-    Exactly one operational state while actively managed:
+- `agent:state:working`
+- `agent:state:waiting`
 
-    - `agent:state:working`
-    - `agent:state:waiting`
+`waiting` is orthogonal to phase. Examples:
 
-    `waiting` is orthogonal to phase. Examples:
-
-    ```text
-    agent:phase:planned
-    agent:state:waiting
+```text
+agent:phase:planned
+agent:state:waiting
+```
 
 means a plan exists and human input/approval is required.
 
-``` text
+```text
 agent:phase:review
 agent:state:waiting
 ```
