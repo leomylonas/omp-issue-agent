@@ -41,6 +41,7 @@ public enum WaitingReason
     MissingCredentials,
     RemoteHistoryRewrite,
     ProtectedBranch,
+    ReviewRequested,
     ManualIntervention,
 }
 

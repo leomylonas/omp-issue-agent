@@ -17,12 +17,19 @@ public sealed class FakeGitProvider : IGitProvider
 
     public List<(long IssueNumber, long CommentId, string Body)> UpdatedComments { get; } = [];
 
+    public Dictionary<int, ProviderMergeRequest> MergeRequests { get; } = [];
+
+    public Dictionary<(string RepositoryId, long Number), List<ProviderComment>> MergeRequestComments { get; } = [];
+
+    public Dictionary<(string RepositoryId, long Number), List<ProviderReviewThread>> ReviewThreads { get; } = [];
+
     public string Name => "fake";
 
-    public void AddIssue(RepositoryRef repository, long number, string title, string description, IReadOnlySet<string>? labels = null)
+    public void AddIssue(RepositoryRef repository, long number, string title, string description, IReadOnlySet<string>? labels = null, DateTimeOffset? updatedAt = null)
     {
+        var timestamp = updatedAt ?? DateTimeOffset.UnixEpoch;
         Issues[(repository.Id, number)] = new ProviderIssue(
-            repository, number, title, description, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            repository, number, title, description, timestamp, timestamp,
             labels ?? new HashSet<string>(), new HashSet<string>(),
             new AttachmentSource("issue-description", number.ToString(System.Globalization.CultureInfo.InvariantCulture)));
         Labels[(repository.Id, ProviderWorkItemKind.Issue, number)] = labels is null ? [] : [.. labels];
@@ -118,15 +125,45 @@ public sealed class FakeGitProvider : IGitProvider
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask<ProviderMergeRequest?> FindMergeRequestAsync(RepositoryRef repository, string sourceBranch, string targetBranch, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public ValueTask<ProviderMergeRequest?> FindMergeRequestAsync(RepositoryRef repository, string sourceBranch, string targetBranch, CancellationToken cancellationToken) =>
+        ValueTask.FromResult(MergeRequests.Values.FirstOrDefault(mr => mr.SourceBranch == sourceBranch && mr.TargetBranch == targetBranch));
 
-    public ValueTask<ProviderMergeRequest> CreateDraftMergeRequestAsync(CreateMergeRequestRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public ValueTask<ProviderMergeRequest> CreateDraftMergeRequestAsync(CreateMergeRequestRequest request, CancellationToken cancellationToken)
+    {
+        var number = MergeRequests.Count + 1;
+        var mergeRequest = new ProviderMergeRequest(
+            request.Repository, number, request.SourceBranch, request.TargetBranch, request.Title, request.Body,
+            request.IsDraft, IsMerged: false, IsClosed: false, new AttachmentSource("merge-request-description", number.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        MergeRequests[number] = mergeRequest;
+        return ValueTask.FromResult(mergeRequest);
+    }
 
-    public ValueTask<ProviderMergeRequest> GetMergeRequestAsync(RepositoryRef repository, long number, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public ValueTask<ProviderMergeRequest> GetMergeRequestAsync(RepositoryRef repository, long number, CancellationToken cancellationToken) =>
+        ValueTask.FromResult(MergeRequests[(int)number]);
 
-    public IAsyncEnumerable<ProviderComment> GetMergeRequestCommentsAsync(RepositoryRef repository, long number, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public async IAsyncEnumerable<ProviderComment> GetMergeRequestCommentsAsync(RepositoryRef repository, long number, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await Task.Yield();
+        if (MergeRequestComments.TryGetValue((repository.Id, number), out var comments))
+        {
+            foreach (var comment in comments)
+            {
+                yield return comment;
+            }
+        }
+    }
 
-    public IAsyncEnumerable<ProviderReviewThread> GetReviewThreadsAsync(RepositoryRef repository, long number, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public async IAsyncEnumerable<ProviderReviewThread> GetReviewThreadsAsync(RepositoryRef repository, long number, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await Task.Yield();
+        if (ReviewThreads.TryGetValue((repository.Id, number), out var threads))
+        {
+            foreach (var thread in threads)
+            {
+                yield return thread;
+            }
+        }
+    }
 
     public async IAsyncEnumerable<IssueRelationship> GetIssueRelationshipsAsync(RepositoryRef repository, long issueNumber, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
