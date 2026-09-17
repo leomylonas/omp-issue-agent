@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>IssueAgent.Configuration</name>
+    </assembly>
+    <members>
+        <member name="T:IssueAgent.Configuration.IssueAgentOptions">
+            <summary>Root immutable configuration for the IssueAgent process.</summary>
+        </member>
+        <member name="T:IssueAgent.Configuration.SecretSource">
+            <summary>A secret configured from exactly one source and resolved once at startup.</summary>
+        </member>
+        <member name="T:IssueAgent.Configuration.IssueAgentOptionsValidator">
+            <summary>Fail-fast semantic validation for root options that do not require network access.</summary>
+        </member>
+    </members>
+</doc>

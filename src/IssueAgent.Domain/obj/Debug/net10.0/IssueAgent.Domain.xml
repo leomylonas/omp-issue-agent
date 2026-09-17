@@ -1,0 +1,77 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>IssueAgent.Domain</name>
+    </assembly>
+    <members>
+        <member name="T:IssueAgent.Domain.AgentContext">
+            <summary>Provider-neutral context passed to OMP for one workflow operation.</summary>
+        </member>
+        <member name="M:IssueAgent.Domain.AgentContext.#ctor(IssueAgent.Domain.IssueContext,System.Collections.Generic.IReadOnlyList{IssueAgent.Domain.RelatedIssueContext},IssueAgent.Domain.PlanContext,IssueAgent.Domain.MergeRequestContext,IssueAgent.Domain.WorkflowState)">
+            <summary>Provider-neutral context passed to OMP for one workflow operation.</summary>
+        </member>
+        <member name="T:IssueAgent.Domain.IssueContext">
+            <summary>Issue content normalized from a provider without provider SDK types.</summary>
+        </member>
+        <member name="M:IssueAgent.Domain.IssueContext.#ctor(System.String,System.Int64,System.String,System.String,System.Collections.Generic.IReadOnlyList{System.String},System.Collections.Generic.IReadOnlyList{IssueAgent.Domain.HumanComment},System.Collections.Generic.IReadOnlyList{IssueAgent.Domain.AttachmentReference})">
+            <summary>Issue content normalized from a provider without provider SDK types.</summary>
+        </member>
+        <member name="T:IssueAgent.Domain.RelatedIssueContext">
+            <summary>Relationship and read-only context for an issue related to the primary issue.</summary>
+        </member>
+        <member name="M:IssueAgent.Domain.RelatedIssueContext.#ctor(System.String,IssueAgent.Domain.IssueContext)">
+            <summary>Relationship and read-only context for an issue related to the primary issue.</summary>
+        </member>
+        <member name="T:IssueAgent.Domain.HumanComment">
+            <summary>A human-authored issue, merge-request, or review comment.</summary>
+        </member>
+        <member name="M:IssueAgent.Domain.HumanComment.#ctor(System.String,System.DateTimeOffset,System.String,System.String)">
+            <summary>A human-authored issue, merge-request, or review comment.</summary>
+        </member>
+        <member name="T:IssueAgent.Domain.AttachmentReference">
+            <summary>Downloaded attachment metadata and its safe local location outside the worktree.</summary>
+        </member>
+        <member name="M:IssueAgent.Domain.AttachmentReference.#ctor(System.String,System.String,System.String,System.String,System.Int64,System.Boolean,System.String)">
+            <summary>Downloaded attachment metadata and its safe local location outside the worktree.</summary>
+        </member>
+        <member name="T:IssueAgent.Domain.PlanContext">
+            <summary>Current authoritative implementation plan and its decision record.</summary>
+        </member>
+        <member name="M:IssueAgent.Domain.PlanContext.#ctor(System.Int32,System.String,System.Collections.Generic.IReadOnlyList{System.String})">
+            <summary>Current authoritative implementation plan and its decision record.</summary>
+        </member>
+        <member name="T:IssueAgent.Domain.MergeRequestContext">
+            <summary>Provider-neutral pull or merge request context.</summary>
+        </member>
+        <member name="M:IssueAgent.Domain.MergeRequestContext.#ctor(System.Int64,System.String,System.Collections.Generic.IReadOnlyList{IssueAgent.Domain.HumanComment},System.Collections.Generic.IReadOnlyList{IssueAgent.Domain.HumanComment},System.Collections.Generic.IReadOnlyList{IssueAgent.Domain.AttachmentReference})">
+            <summary>Provider-neutral pull or merge request context.</summary>
+        </member>
+        <member name="T:IssueAgent.Domain.WorkflowCommand">
+            <summary>Transient human workflow commands represented by labels.</summary>
+        </member>
+        <member name="T:IssueAgent.Domain.WorkflowId">
+            <summary>Stable identifier for an issue workflow across its full lifecycle.</summary>
+        </member>
+        <member name="M:IssueAgent.Domain.WorkflowId.#ctor(System.Guid)">
+            <summary>Stable identifier for an issue workflow across its full lifecycle.</summary>
+        </member>
+        <member name="T:IssueAgent.Domain.WorkflowPhase">
+            <summary>Durable milestone represented by the canonical IssueAgent comment and labels.</summary>
+        </member>
+        <member name="T:IssueAgent.Domain.WorkflowOperationalState">
+            <summary>Operational status of an actively managed workflow.</summary>
+        </member>
+        <member name="T:IssueAgent.Domain.WaitingReason">
+            <summary>Human action or safety condition that requires an explicit decision.</summary>
+        </member>
+        <member name="T:IssueAgent.Domain.WorkflowLabels">
+            <summary>Canonical labels owned by IssueAgent.</summary>
+        </member>
+        <member name="T:IssueAgent.Domain.WorkflowState">
+            <summary>Minimal durable workflow state, independent of any provider transport type.</summary>
+        </member>
+        <member name="M:IssueAgent.Domain.WorkflowState.#ctor(IssueAgent.Domain.WorkflowId,IssueAgent.Domain.WorkflowPhase,IssueAgent.Domain.WorkflowOperationalState,System.Nullable{IssueAgent.Domain.WaitingReason},System.Int32,System.Nullable{System.Int32},System.String,System.String,System.String,System.String,System.DateTimeOffset)">
+            <summary>Minimal durable workflow state, independent of any provider transport type.</summary>
+        </member>
+    </members>
+</doc>

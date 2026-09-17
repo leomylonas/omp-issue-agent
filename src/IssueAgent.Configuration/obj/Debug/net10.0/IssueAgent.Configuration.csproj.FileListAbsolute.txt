@@ -1,0 +1,15 @@
+/home/leo/repos/omp-issue-agent/src/IssueAgent.Configuration/obj/Debug/net10.0/IssueAgent.Configuration.GeneratedMSBuildEditorConfig.editorconfig
+/home/leo/repos/omp-issue-agent/src/IssueAgent.Configuration/obj/Debug/net10.0/IssueAgent.Configuration.AssemblyInfoInputs.cache
+/home/leo/repos/omp-issue-agent/src/IssueAgent.Configuration/obj/Debug/net10.0/IssueAgent.Configuration.AssemblyInfo.cs
+/home/leo/repos/omp-issue-agent/src/IssueAgent.Configuration/obj/Debug/net10.0/IssueAgent.Configuration.csproj.CoreCompileInputs.cache
+/home/leo/repos/omp-issue-agent/src/IssueAgent.Configuration/obj/Debug/net10.0/IssueAgent.Configuration.sourcelink.json
+/home/leo/repos/omp-issue-agent/src/IssueAgent.Configuration/bin/Debug/net10.0/IssueAgent.Configuration.deps.json
+/home/leo/repos/omp-issue-agent/src/IssueAgent.Configuration/bin/Debug/net10.0/IssueAgent.Configuration.dll
+/home/leo/repos/omp-issue-agent/src/IssueAgent.Configuration/bin/Debug/net10.0/IssueAgent.Configuration.pdb
+/home/leo/repos/omp-issue-agent/src/IssueAgent.Configuration/bin/Debug/net10.0/IssueAgent.Configuration.xml
+/home/leo/repos/omp-issue-agent/src/IssueAgent.Configuration/obj/Debug/net10.0/IssueAgent.Configuration.csproj.AssemblyReference.cache
+/home/leo/repos/omp-issue-agent/src/IssueAgent.Configuration/obj/Debug/net10.0/IssueAgent.Configuration.dll
+/home/leo/repos/omp-issue-agent/src/IssueAgent.Configuration/obj/Debug/net10.0/refint/IssueAgent.Configuration.dll
+/home/leo/repos/omp-issue-agent/src/IssueAgent.Configuration/obj/Debug/net10.0/IssueAgent.Configuration.xml
+/home/leo/repos/omp-issue-agent/src/IssueAgent.Configuration/obj/Debug/net10.0/IssueAgent.Configuration.pdb
+/home/leo/repos/omp-issue-agent/src/IssueAgent.Configuration/obj/Debug/net10.0/ref/IssueAgent.Configuration.dll

@@ -1,0 +1,247 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>IssueAgent.Providers.GitHub</name>
+    </assembly>
+    <members>
+        <member name="T:IssueAgent.Providers.GitHub.GitHubGraphQlClient">
+            <summary>Minimal GraphQL client for the stable GitHub review-thread resolution field, which has
+            no REST equivalent. All other GitHub access in this provider uses the REST API via Octokit.</summary>
+        </member>
+        <member name="M:IssueAgent.Providers.GitHub.GitHubGraphQlClient.#ctor(System.Net.Http.HttpClient)">
+            <summary>Minimal GraphQL client for the stable GitHub review-thread resolution field, which has
+            no REST equivalent. All other GitHub access in this provider uses the REST API via Octokit.</summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.Boolean">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.GraphQlAuthor">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.GraphQlComment">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.GraphQlCommentConnection">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.GraphQlData">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.GraphQlError">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.GraphQlPageInfo">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.GraphQlPullRequest">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.GraphQlRepository">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.GraphQlRequest">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.GraphQlResponse">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.GraphQlReviewThread">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.GraphQlReviewThreadConnection">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.GraphQlVariables">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.IReadOnlyListGraphQlComment">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.IReadOnlyListGraphQlError">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.IReadOnlyListGraphQlReviewThread">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.DateTimeOffset">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.Int32">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.Int64">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.NullableInt64">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.String">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.Default">
+            <summary>
+            The default <see cref="T:System.Text.Json.Serialization.JsonSerializerContext"/> associated with a default <see cref="T:System.Text.Json.JsonSerializerOptions"/> instance.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.GeneratedSerializerOptions">
+            <summary>
+            The source-generated options associated with this context.
+            </summary>
+        </member>
+        <member name="M:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.#ctor">
+            <inheritdoc/>
+        </member>
+        <member name="M:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.#ctor(System.Text.Json.JsonSerializerOptions)">
+            <inheritdoc/>
+        </member>
+        <member name="M:IssueAgent.Providers.GitHub.GitHubGraphQlClient.GraphQlJsonContext.GetTypeInfo(System.Type)">
+            <inheritdoc/>
+        </member>
+        <member name="T:IssueAgent.Providers.GitHub.GitHubProvider">
+            <summary>
+            GitHub implementation of <see cref="T:IssueAgent.Providers.IGitProvider"/>. REST operations use Octokit.NET; review
+            thread resolution and cross-issue relationship discovery use the raw HTTP clients in this
+            assembly because Octokit does not expose GraphQL review-thread resolution or issue timeline
+            events with strongly typed models.
+            </summary>
+        </member>
+        <member name="M:IssueAgent.Providers.GitHub.GitHubProvider.#ctor(Octokit.IGitHubClient,IssueAgent.Providers.GitHub.GitHubGraphQlClient,IssueAgent.Providers.GitHub.GitHubTimelineClient,System.Net.Http.HttpClient,System.Net.Http.HttpClient,System.Collections.Generic.IReadOnlyList{System.String},System.String)">
+            <summary>
+            GitHub implementation of <see cref="T:IssueAgent.Providers.IGitProvider"/>. REST operations use Octokit.NET; review
+            thread resolution and cross-issue relationship discovery use the raw HTTP clients in this
+            assembly because Octokit does not expose GraphQL review-thread resolution or issue timeline
+            events with strongly typed models.
+            </summary>
+        </member>
+        <member name="T:IssueAgent.Providers.GitHub.GitHubProviderFactory">
+             <summary>
+             Builds a fully wired <see cref="T:IssueAgent.Providers.GitHub.GitHubProvider"/> for one configured provider entry.
+            
+             GitHub.com and GitHub Enterprise Server route REST and GraphQL differently. For github.com,
+             <c>ApiBaseUri</c> is used as-is for REST and GraphQL lives at <c>https://api.github.com/graphql</c>.
+             For an Enterprise Server host, Octokit automatically prefixes REST calls with <c>api/v3/</c>;
+             this factory mirrors that convention for the raw timeline client and routes GraphQL to
+             <c>api/graphql</c>, matching GitHub's documented Enterprise Server routing.
+             </summary>
+        </member>
+        <member name="T:IssueAgent.Providers.GitHub.GitHubTimelineClient">
+            <summary>
+            Reads the stable, generally-available Issue Timeline REST API to discover "cross-referenced"
+            events, the only issue-relationship signal GitHub exposes without GraphQL sub-issue/project
+            preview fields. Parent/child, blocks/blocked-by, and duplicate relationships require those
+            additional preview APIs and are out of scope for this slice; see AGENTS.md follow-up tracking.
+            </summary>
+        </member>
+        <member name="M:IssueAgent.Providers.GitHub.GitHubTimelineClient.#ctor(System.Net.Http.HttpClient)">
+            <summary>
+            Reads the stable, generally-available Issue Timeline REST API to discover "cross-referenced"
+            events, the only issue-relationship signal GitHub exposes without GraphQL sub-issue/project
+            preview fields. Parent/child, blocks/blocked-by, and duplicate relationships require those
+            additional preview APIs and are out of scope for this slice; see AGENTS.md follow-up tracking.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubTimelineClient.TimelineJsonContext.TimelineEvent">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubTimelineClient.TimelineJsonContext.TimelineEventArray">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubTimelineClient.TimelineJsonContext.TimelineIssue">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubTimelineClient.TimelineJsonContext.TimelineOwner">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubTimelineClient.TimelineJsonContext.TimelineRepository">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubTimelineClient.TimelineJsonContext.TimelineSource">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubTimelineClient.TimelineJsonContext.Int64">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubTimelineClient.TimelineJsonContext.String">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubTimelineClient.TimelineJsonContext.Default">
+            <summary>
+            The default <see cref="T:System.Text.Json.Serialization.JsonSerializerContext"/> associated with a default <see cref="T:System.Text.Json.JsonSerializerOptions"/> instance.
+            </summary>
+        </member>
+        <member name="P:IssueAgent.Providers.GitHub.GitHubTimelineClient.TimelineJsonContext.GeneratedSerializerOptions">
+            <summary>
+            The source-generated options associated with this context.
+            </summary>
+        </member>
+        <member name="M:IssueAgent.Providers.GitHub.GitHubTimelineClient.TimelineJsonContext.#ctor">
+            <inheritdoc/>
+        </member>
+        <member name="M:IssueAgent.Providers.GitHub.GitHubTimelineClient.TimelineJsonContext.#ctor(System.Text.Json.JsonSerializerOptions)">
+            <inheritdoc/>
+        </member>
+        <member name="M:IssueAgent.Providers.GitHub.GitHubTimelineClient.TimelineJsonContext.GetTypeInfo(System.Type)">
+            <inheritdoc/>
+        </member>
+    </members>
+</doc>

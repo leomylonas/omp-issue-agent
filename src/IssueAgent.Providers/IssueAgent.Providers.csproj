@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../IssueAgent.Domain/IssueAgent.Domain.csproj" />
+  </ItemGroup>
+</Project>

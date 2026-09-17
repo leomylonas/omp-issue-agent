@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "dgSpecHash": "BVD8WTLLjjE=",
+  "success": true,
+  "projectFilePath": "/home/leo/repos/omp-issue-agent/src/IssueAgent.Providers.GitHub/IssueAgent.Providers.GitHub.csproj",
+  "expectedPackageFiles": [
+    "/home/leo/.nuget/packages/octokit/14.0.0/octokit.14.0.0.nupkg.sha512"
+  ],
+  "logs": []
+}

@@ -1,0 +1,53 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "IssueAgent.Host/1.0.0": {
+        "dependencies": {
+          "IssueAgent.Configuration": "1.0.0",
+          "IssueAgent.Domain": "1.0.0"
+        },
+        "runtime": {
+          "IssueAgent.Host.dll": {}
+        }
+      },
+      "IssueAgent.Configuration/1.0.0": {
+        "runtime": {
+          "IssueAgent.Configuration.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "IssueAgent.Domain/1.0.0": {
+        "runtime": {
+          "IssueAgent.Domain.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "IssueAgent.Host/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "IssueAgent.Configuration/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "IssueAgent.Domain/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

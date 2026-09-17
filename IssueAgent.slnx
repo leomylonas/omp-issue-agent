@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/IssueAgent.Configuration/IssueAgent.Configuration.csproj" />
+    <Project Path="src/IssueAgent.Domain/IssueAgent.Domain.csproj" />
+    <Project Path="src/IssueAgent.Host/IssueAgent.Host.csproj" />
+    <Project Path="src/IssueAgent.Providers.GitHub/IssueAgent.Providers.GitHub.csproj" />
+    <Project Path="src/IssueAgent.Providers/IssueAgent.Providers.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/IssueAgent.Configuration.Tests/IssueAgent.Configuration.Tests.csproj" />
+    <Project Path="tests/IssueAgent.Domain.Tests/IssueAgent.Domain.Tests.csproj" />
+    <Project Path="tests/IssueAgent.Providers.GitHub.Tests/IssueAgent.Providers.GitHub.Tests.csproj" />
+    <Project Path="tests/IssueAgent.Providers.Tests/IssueAgent.Providers.Tests.csproj" />
+  </Folder>
+</Solution>

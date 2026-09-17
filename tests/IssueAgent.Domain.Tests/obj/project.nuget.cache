@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "dgSpecHash": "/Ipn/+C6L/w=",
+  "success": true,
+  "projectFilePath": "/home/leo/repos/omp-issue-agent/tests/IssueAgent.Domain.Tests/IssueAgent.Domain.Tests.csproj",
+  "expectedPackageFiles": [
+    "/home/leo/.nuget/packages/microsoft.applicationinsights/2.23.0/microsoft.applicationinsights.2.23.0.nupkg.sha512",
+    "/home/leo/.nuget/packages/microsoft.bcl.asyncinterfaces/6.0.0/microsoft.bcl.asyncinterfaces.6.0.0.nupkg.sha512",
+    "/home/leo/.nuget/packages/microsoft.codecoverage/18.0.1/microsoft.codecoverage.18.0.1.nupkg.sha512",
+    "/home/leo/.nuget/packages/microsoft.net.test.sdk/18.0.1/microsoft.net.test.sdk.18.0.1.nupkg.sha512",
+    "/home/leo/.nuget/packages/microsoft.testing.extensions.telemetry/1.9.1/microsoft.testing.extensions.telemetry.1.9.1.nupkg.sha512",
+    "/home/leo/.nuget/packages/microsoft.testing.extensions.trxreport.abstractions/1.9.1/microsoft.testing.extensions.trxreport.abstractions.1.9.1.nupkg.sha512",
+    "/home/leo/.nuget/packages/microsoft.testing.platform/1.9.1/microsoft.testing.platform.1.9.1.nupkg.sha512",
+    "/home/leo/.nuget/packages/microsoft.testing.platform.msbuild/1.9.1/microsoft.testing.platform.msbuild.1.9.1.nupkg.sha512",
+    "/home/leo/.nuget/packages/microsoft.testplatform.objectmodel/18.0.1/microsoft.testplatform.objectmodel.18.0.1.nupkg.sha512",
+    "/home/leo/.nuget/packages/microsoft.testplatform.testhost/18.0.1/microsoft.testplatform.testhost.18.0.1.nupkg.sha512",
+    "/home/leo/.nuget/packages/microsoft.win32.registry/5.0.0/microsoft.win32.registry.5.0.0.nupkg.sha512",
+    "/home/leo/.nuget/packages/newtonsoft.json/13.0.3/newtonsoft.json.13.0.3.nupkg.sha512",
+    "/home/leo/.nuget/packages/xunit.analyzers/1.27.0/xunit.analyzers.1.27.0.nupkg.sha512",
+    "/home/leo/.nuget/packages/xunit.runner.visualstudio/4.0.0/xunit.runner.visualstudio.4.0.0.nupkg.sha512",
+    "/home/leo/.nuget/packages/xunit.v3/3.2.2/xunit.v3.3.2.2.nupkg.sha512",
+    "/home/leo/.nuget/packages/xunit.v3.assert/3.2.2/xunit.v3.assert.3.2.2.nupkg.sha512",
+    "/home/leo/.nuget/packages/xunit.v3.common/3.2.2/xunit.v3.common.3.2.2.nupkg.sha512",
+    "/home/leo/.nuget/packages/xunit.v3.core.mtp-v1/3.2.2/xunit.v3.core.mtp-v1.3.2.2.nupkg.sha512",
+    "/home/leo/.nuget/packages/xunit.v3.extensibility.core/3.2.2/xunit.v3.extensibility.core.3.2.2.nupkg.sha512",
+    "/home/leo/.nuget/packages/xunit.v3.mtp-v1/3.2.2/xunit.v3.mtp-v1.3.2.2.nupkg.sha512",
+    "/home/leo/.nuget/packages/xunit.v3.runner.common/3.2.2/xunit.v3.runner.common.3.2.2.nupkg.sha512",
+    "/home/leo/.nuget/packages/xunit.v3.runner.inproc.console/3.2.2/xunit.v3.runner.inproc.console.3.2.2.nupkg.sha512"
+  ],
+  "logs": []
+}

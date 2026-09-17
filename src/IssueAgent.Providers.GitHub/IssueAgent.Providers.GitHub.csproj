@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Octokit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../IssueAgent.Domain/IssueAgent.Domain.csproj" />
+    <ProjectReference Include="../IssueAgent.Providers/IssueAgent.Providers.csproj" />
+  </ItemGroup>
+</Project>
