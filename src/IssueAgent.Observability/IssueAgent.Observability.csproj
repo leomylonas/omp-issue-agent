@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Serilog" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../IssueAgent.Workflow/IssueAgent.Workflow.csproj" />
+    <ProjectReference Include="../IssueAgent.Domain/IssueAgent.Domain.csproj" />
+    <ProjectReference Include="../IssueAgent.Git/IssueAgent.Git.csproj" />
+    <ProjectReference Include="../IssueAgent.Omp/IssueAgent.Omp.csproj" />
+    <ProjectReference Include="../IssueAgent.Providers/IssueAgent.Providers.csproj" />
+  </ItemGroup>
+</Project>
