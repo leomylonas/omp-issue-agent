@@ -12,12 +12,13 @@ public sealed class TelegramNotificationSinkTests : IDisposable
     [Fact]
     public async Task SendAsyncPostsFormattedMessageToBotEndpoint()
     {
+        const string token = "123456789:AAHdqTcvAKrOexampleTokenText";
         server
-            .Given(Request.Create().WithPath("/bottest-token/sendMessage").UsingPost())
+            .Given(Request.Create().WithPath($"/bot{token}/sendMessage").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/json").WithBody("""{"ok":true}"""));
 
         using var httpClient = new HttpClient { BaseAddress = new Uri(server.Url! + "/") };
-        var sink = new TelegramNotificationSink(httpClient, "test-token", "12345");
+        var sink = new TelegramNotificationSink(httpClient, token, "12345");
         var notification = new WorkflowNotification(WorkflowNotificationKind.PlanReady, "github/octo/widgets", 7, "workflow-1", "Plan is ready.");
 
         await sink.SendAsync(notification, CancellationToken.None);
@@ -31,16 +32,18 @@ public sealed class TelegramNotificationSinkTests : IDisposable
     [Fact]
     public async Task SendAsyncThrowsOnNonSuccessStatus()
     {
+        const string token = "123456789:AAHdqTcvAKrOexampleTokenText";
         server
-            .Given(Request.Create().WithPath("/bottest-token/sendMessage").UsingPost())
+            .Given(Request.Create().WithPath($"/bot{token}/sendMessage").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(400));
 
         using var httpClient = new HttpClient { BaseAddress = new Uri(server.Url! + "/") };
-        var sink = new TelegramNotificationSink(httpClient, "test-token", "12345");
+        var sink = new TelegramNotificationSink(httpClient, token, "12345");
         var notification = new WorkflowNotification(WorkflowNotificationKind.PlanReady, "github/octo/widgets", 7, "workflow-1", "Plan is ready.");
 
         await Assert.ThrowsAsync<HttpRequestException>(() => sink.SendAsync(notification, CancellationToken.None));
     }
+
 
     public void Dispose()
     {

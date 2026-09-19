@@ -16,7 +16,7 @@ public sealed partial class TelegramNotificationSink(HttpClient httpClient, stri
 
         var payload = new TelegramSendMessageRequest(chatId, FormatMessage(notification));
         using var response = await httpClient
-            .PostAsJsonAsync($"bot{botToken}/sendMessage", payload, TelegramJsonContext.Default.TelegramSendMessageRequest, cancellationToken)
+            .PostAsJsonAsync($"/bot{botToken}/sendMessage", payload, TelegramJsonContext.Default.TelegramSendMessageRequest, cancellationToken)
             .ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
     }
