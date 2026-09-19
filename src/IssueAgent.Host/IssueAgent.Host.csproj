@@ -1,7 +1,28 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <ItemGroup>
+    <PackageReference Include="Serilog.Extensions.Hosting" />
+    <PackageReference Include="Serilog.Settings.Configuration" />
+    <PackageReference Include="Serilog.Sinks.Console" />
+    <PackageReference Include="Serilog.Sinks.Async" />
+    <PackageReference Include="Serilog.Formatting.Compact" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+    <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../IssueAgent.Configuration/IssueAgent.Configuration.csproj" />
     <ProjectReference Include="../IssueAgent.Domain/IssueAgent.Domain.csproj" />
+    <ProjectReference Include="../IssueAgent.Observability/IssueAgent.Observability.csproj" />
+    <ProjectReference Include="../IssueAgent.Context/IssueAgent.Context.csproj" />
+    <ProjectReference Include="../IssueAgent.Git/IssueAgent.Git.csproj" />
+    <ProjectReference Include="../IssueAgent.Notifications/IssueAgent.Notifications.csproj" />
+    <ProjectReference Include="../IssueAgent.Omp/IssueAgent.Omp.csproj" />
+    <ProjectReference Include="../IssueAgent.Providers/IssueAgent.Providers.csproj" />
+    <ProjectReference Include="../IssueAgent.Providers.GitHub/IssueAgent.Providers.GitHub.csproj" />
+    <ProjectReference Include="../IssueAgent.Providers.GitLab/IssueAgent.Providers.GitLab.csproj" />
+    <ProjectReference Include="../IssueAgent.Workflow/IssueAgent.Workflow.csproj" />
   </ItemGroup>
 </Project>
