@@ -69,6 +69,43 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     }
 
     [Fact]
+    public async Task DiscoverManagedIssuesAsyncIncludesClosedLabeledIssuesWithoutAssigneeFilter()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/123/issues").UsingGet())
+            .RespondWith(JsonResponse("""
+                [
+                  {"iid":4,"title":"Ordinary closed issue","created_at":"2024-06-01T00:00:00Z","updated_at":"2024-06-01T00:00:00Z","labels":[],"assignees":[]},
+                  {"iid":5,"title":"Managed closed issue","created_at":"2024-06-02T00:00:00Z","updated_at":"2024-06-02T00:00:00Z","labels":["agent:phase:review"],"assignees":[]}
+                ]
+                """));
+
+        var issues = await CollectAsync(fixture.Provider.DiscoverManagedIssuesAsync(Repository, CancellationToken.None));
+
+        Assert.Equal(5, Assert.Single(issues).Number);
+    }
+
+    [Fact]
+    public async Task DiscoverManagedIssuesAsyncThrowsRatherThanPaginatingForeverAgainstAServerThatNeverStopsAdvertisingANextPage()
+    {
+        // Regression: a Link: rel="next" header that never stops (a misbehaving/hostile server, or
+        // an infinite-redirect-style loop) must not drive unbounded outbound requests for one
+        // workflow context (specification §27's bounded-resource intent).
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/123/issues").UsingGet())
+            .RespondWith(Response.Create()
+                .WithStatusCode(200)
+                .WithHeader("Content-Type", "application/json")
+                .WithHeader("Link", $"<{fixture.Server.Url}/api/v4/projects/123/issues?page=2>; rel=\"next\"")
+                .WithBody("""[{"iid":1,"title":"t","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","labels":[],"assignees":[]}]"""));
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            CollectAsync(fixture.Provider.DiscoverManagedIssuesAsync(Repository, CancellationToken.None)));
+
+        Assert.Contains("pagination limit", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task GetIssueAsyncMapsDescriptionLabelsAndAssignees()
     {
         fixture.Server
@@ -82,6 +119,18 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
         Assert.Equal("Bug report", issue.Title);
         Assert.Equal("Steps to reproduce", issue.Description);
         Assert.Contains("bug", issue.Labels);
+    }
+
+    [Fact]
+    public async Task GetDefaultBranchAsyncReturnsTheProjectsConfiguredDefaultBranch()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/123").UsingGet())
+            .RespondWith(JsonResponse("""{"id":123,"default_branch":"develop"}"""));
+
+        var defaultBranch = await fixture.Provider.GetDefaultBranchAsync(Repository, CancellationToken.None);
+
+        Assert.Equal("develop", defaultBranch);
     }
 
     [Fact]
@@ -244,6 +293,55 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     }
 
     [Fact]
+    public async Task GetIssueRelationshipsAsyncEmitsAGitLabApiConsumableIdForACrossProjectLink()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/123/issues/7/links").UsingGet())
+            .RespondWith(JsonResponse("""
+                [
+                  {"iid":42,"project_id":456,"link_type":"relates_to","web_url":"https://gitlab.example/other/project/-/issues/42"}
+                ]
+                """));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/456/issues/42").UsingGet())
+            .RespondWith(JsonResponse("""{"iid":42,"title":"Other issue","description":"d","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","labels":[],"assignees":[]}"""));
+
+        var relationships = await CollectAsync(fixture.Provider.GetIssueRelationshipsAsync(Repository, 7, CancellationToken.None));
+        var linked = Assert.Single(relationships);
+
+        Assert.Equal("456", linked.Repository.Id);
+        Assert.Equal("other", linked.Repository.OwnerOrNamespace);
+        Assert.Equal("project", linked.Repository.Name);
+
+        // The synthesized Id must be directly usable as a GitLab API project identifier: fetching
+        // the linked issue with it must succeed rather than 404 (the exact defect this regression
+        // test defends against).
+        var linkedIssue = await fixture.Provider.GetIssueAsync(linked.Repository, linked.IssueNumber, CancellationToken.None);
+        Assert.Equal("Other issue", linkedIssue.Title);
+    }
+
+    [Fact]
+    public async Task GetIssueRelationshipsAsyncTreatsASameProjectLinkAsTheRootRepositoryEvenUnderThePathIdConvention()
+    {
+        var namespacedRepository = new RepositoryRef("octo/widgets", "octo", "widgets");
+        fixture.Server
+            .Given(Request.Create().WithPath(p => p != null && p.Contains("issues/7/links", StringComparison.Ordinal) && p.Contains("widgets", StringComparison.Ordinal)).UsingGet())
+            .RespondWith(JsonResponse("""
+                [
+                  {"iid":9,"project_id":123,"link_type":"blocks","web_url":"https://gitlab.example/octo/widgets/-/issues/9"}
+                ]
+                """));
+
+        var relationships = await CollectAsync(fixture.Provider.GetIssueRelationshipsAsync(namespacedRepository, 7, CancellationToken.None));
+        var linked = Assert.Single(relationships);
+
+        // Same project as root (matched by owner/name parsed from web_url, since the numeric
+        // project_id never equals the root's path-form Id): must reuse the root ref exactly, not a
+        // different alias for the same project.
+        Assert.Same(namespacedRepository, linked.Repository);
+    }
+
+    [Fact]
     public async Task ProjectIdWithNamespaceSlashIsUrlEncoded()
     {
         var namespacedRepository = new RepositoryRef("octo/widgets", "octo", "widgets");
@@ -267,19 +365,28 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     [Fact]
     public async Task DownloadAttachmentAsyncSendsAuthorizationOnlyForTrustedHosts()
     {
+        var serverUri = new Uri(fixture.Server.Url!);
         var provider = GitLabProviderFactory.Create(new GitLabProviderConfiguration(
-            "gitlab", new Uri(fixture.Server.Url! + "/api/v4/"), "secret-token", [new Uri(fixture.Server.Url!).Host]));
+            "gitlab", new Uri(fixture.Server.Url! + "/api/v4/"), "secret-token", [serverUri.Host]));
         fixture.Server
             .Given(Request.Create().WithPath("/uploads/report.pdf").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/pdf").WithBody("pdf-bytes"));
 
-        var destination = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var attachment = new ProviderAttachment(new Uri(fixture.Server.Url! + "/uploads/report.pdf"), "report.pdf", null, new AttachmentSource("issue-description", "7"), true);
+        var trustedDestination = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var trustedAttachment = new ProviderAttachment(new Uri(fixture.Server.Url! + "/uploads/report.pdf"), "report.pdf", null, new AttachmentSource("issue-description", "7"), true);
+        await provider.DownloadAttachmentAsync(trustedAttachment, trustedDestination, 1024, CancellationToken.None);
+        var trustedRequest = fixture.Server.LogEntries.Single(e => e.RequestMessage!.Path == "/uploads/report.pdf");
+        Assert.True(trustedRequest.RequestMessage!.Headers!.ContainsKey("Authorization"));
 
-        await provider.DownloadAttachmentAsync(attachment, destination, 1024, CancellationToken.None);
-
-        var request = fixture.Server.LogEntries.Single(e => e.RequestMessage!.Path == "/uploads/report.pdf");
-        Assert.True(request.RequestMessage!.Headers!.ContainsKey("Authorization"));
+        // Same server, an untrusted hostname alias (127.0.0.1 vs "localhost"): the suffix list only
+        // trusts serverUri.Host, so a request to the loopback IP literal must never receive the token.
+        var untrustedHost = serverUri.Host == "127.0.0.1" ? "localhost" : "127.0.0.1";
+        var untrustedUri = new UriBuilder(serverUri) { Host = untrustedHost, Path = "/uploads/report.pdf" }.Uri;
+        var untrustedDestination = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var untrustedAttachment = new ProviderAttachment(untrustedUri, "report.pdf", null, new AttachmentSource("issue-description", "7"), false, System.Net.Dns.GetHostAddresses(untrustedHost).ToHashSet());
+        await provider.DownloadAttachmentAsync(untrustedAttachment, untrustedDestination, 1024, CancellationToken.None);
+        var untrustedRequest = fixture.Server.LogEntries.Last(e => e.RequestMessage!.Path == "/uploads/report.pdf");
+        Assert.False(untrustedRequest.RequestMessage!.Headers!.ContainsKey("Authorization"));
     }
 
     [Fact]
@@ -290,7 +397,7 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
             .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/zip").WithBody(new string('a', 2000)));
 
         var destination = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var attachment = new ProviderAttachment(new Uri(fixture.Server.Url! + "/uploads/huge.zip"), "huge.zip", null, new AttachmentSource("issue-description", "7"), false);
+        var attachment = new ProviderAttachment(new Uri(fixture.Server.Url! + "/uploads/huge.zip"), "huge.zip", null, new AttachmentSource("issue-description", "7"), false, System.Net.Dns.GetHostAddresses(new Uri(fixture.Server.Url!).Host).ToHashSet());
 
         await Assert.ThrowsAsync<AttachmentTooLargeException>(() =>
             fixture.Provider.DownloadAttachmentAsync(attachment, destination, 1024, CancellationToken.None).AsTask());

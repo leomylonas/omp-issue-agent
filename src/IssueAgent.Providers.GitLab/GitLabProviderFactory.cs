@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using IssueAgent.Git;
 
 namespace IssueAgent.Providers.GitLab;
 
@@ -10,12 +11,12 @@ public static class GitLabProviderFactory
     {
         ArgumentNullException.ThrowIfNull(configuration);
 
-        var restHttpClient = new HttpClient { BaseAddress = configuration.ApiBaseUri };
+        var restHttpClient = CreateHttpClient(configuration.TlsTrust, configuration.ApiBaseUri);
         ConfigureHeaders(restHttpClient, configuration.Token);
 
-        var authenticatedAttachmentClient = new HttpClient();
+        var authenticatedAttachmentClient = CreateHttpClient(configuration.TlsTrust);
         ConfigureHeaders(authenticatedAttachmentClient, configuration.Token);
-        var anonymousAttachmentClient = new HttpClient();
+        var anonymousAttachmentClient = new HttpClient(TlsHttpHandlerFactory.CreateForAnonymousAttachmentDownloads(configuration.TlsTrust));
 
         return new GitLabProvider(
             new GitLabApiClient(restHttpClient),
@@ -24,6 +25,9 @@ public static class GitLabProviderFactory
             configuration.TrustedAttachmentHostSuffixes,
             configuration.Name);
     }
+
+    private static HttpClient CreateHttpClient(TlsTrust tlsTrust, Uri? baseAddress = null) =>
+        new(TlsHttpHandlerFactory.Create(tlsTrust)) { BaseAddress = baseAddress };
 
     private static void ConfigureHeaders(HttpClient httpClient, string? token)
     {
@@ -40,4 +44,8 @@ public sealed record GitLabProviderConfiguration(
     string Name,
     Uri ApiBaseUri,
     string? Token,
-    IReadOnlyList<string> TrustedAttachmentHostSuffixes);
+    IReadOnlyList<string> TrustedAttachmentHostSuffixes,
+    TlsTrust? Trust = null)
+{
+    public TlsTrust TlsTrust { get; init; } = Trust ?? IssueAgent.Git.TlsTrust.System;
+}

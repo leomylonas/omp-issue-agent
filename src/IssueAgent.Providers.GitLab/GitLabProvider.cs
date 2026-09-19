@@ -30,6 +30,12 @@ public sealed class GitLabProvider(
         return new ProviderIdentity(user.Username, user.Name);
     }
 
+    public async ValueTask<string> GetDefaultBranchAsync(RepositoryRef repository, CancellationToken cancellationToken)
+    {
+        var project = await client.GetProjectAsync(repository.Id, cancellationToken).ConfigureAwait(false);
+        return project.DefaultBranch ?? throw new InvalidOperationException($"GitLab project '{repository.Id}' did not report a default branch.");
+    }
+
     public async IAsyncEnumerable<IssueSummary> DiscoverAssignedOpenIssuesAsync(
         RepositoryRef repository,
         string identity,
@@ -40,7 +46,8 @@ public sealed class GitLabProvider(
         foreach (var issue in issues)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (issue.CreatedAt < startDate)
+            if (issue.CreatedAt < startDate ||
+                !issue.Assignees.Any(assignee => string.Equals(assignee.Username, identity, StringComparison.Ordinal)))
             {
                 continue;
             }
@@ -50,6 +57,23 @@ public sealed class GitLabProvider(
                 issue.Title,
                 issue.CreatedAt,
                 issue.Assignees.Select(a => a.Username).ToHashSet(StringComparer.Ordinal));
+        }
+    }
+
+    public async IAsyncEnumerable<IssueSummary> DiscoverManagedIssuesAsync(
+        RepositoryRef repository,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var issues = await client.GetIssuesAsync(repository.Id, assigneeUsername: null, "all", cancellationToken).ConfigureAwait(false);
+        foreach (var issue in issues)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!issue.Labels.Any(label => label.StartsWith("agent:phase:", StringComparison.Ordinal))) continue;
+            yield return new IssueSummary(
+                issue.Iid,
+                issue.Title,
+                issue.CreatedAt,
+                issue.Assignees.Select(assignee => assignee.Username).ToHashSet(StringComparer.Ordinal));
         }
     }
 
@@ -214,9 +238,7 @@ public sealed class GitLabProvider(
                 _ => link.LinkType,
             };
 
-            var linkedRepository = link.ProjectId.ToString(CultureInfo.InvariantCulture) == repository.Id
-                ? repository
-                : new RepositoryRef($"gitlab/{link.ProjectId}", repository.OwnerOrNamespace, repository.Name);
+            var linkedRepository = ToLinkedRepository(link, repository);
 
             yield return new IssueRelationship(relationship, linkedRepository, link.Iid);
         }
@@ -239,6 +261,10 @@ public sealed class GitLabProvider(
         var httpClient = IsTrustedAttachmentHost(attachment.Url) ? authenticatedAttachmentClient : anonymousAttachmentClient;
 
         using var request = new HttpRequestMessage(HttpMethod.Get, attachment.Url);
+        if (httpClient == anonymousAttachmentClient)
+        {
+            request.Options.Set(IssueAgent.Git.TlsHttpHandlerFactory.ValidatedAddressesOptionKey, attachment.ValidatedAddresses!);
+        }
         using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
@@ -249,28 +275,12 @@ public sealed class GitLabProvider(
         }
 
         var destinationPath = AttachmentFileNames.ResolveSafeDestination(destinationDirectory, attachment.SuggestedFileName);
-        Directory.CreateDirectory(destinationDirectory);
-
-        await using var sourceStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        await using var destinationStream = new FileStream(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None);
-
-        var buffer = new byte[81920];
-        long totalRead = 0;
-        int read;
-        while ((read = await sourceStream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
-        {
-            totalRead += read;
-            if (totalRead > maxSizeBytes)
-            {
-                destinationStream.Close();
-                File.Delete(destinationPath);
-                throw new AttachmentTooLargeException(
-                    $"Attachment '{attachment.SuggestedFileName}' exceeded the {maxSizeBytes}-byte limit while streaming.");
-            }
-
-            await destinationStream.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-        }
-
+        var totalRead = await AttachmentDownloadWriter.WriteAsync(
+            response.Content,
+            destinationPath,
+            maxSizeBytes,
+            attachment.SuggestedFileName,
+            cancellationToken).ConfigureAwait(false);
         return new DownloadedAttachment(destinationPath, Path.GetFileName(destinationPath), totalRead);
     }
 
@@ -292,7 +302,47 @@ public sealed class GitLabProvider(
         note.CreatedAt,
         note.UpdatedAt,
         new AttachmentSource(surface, parentNumber.ToString(CultureInfo.InvariantCulture), threadId ?? note.Id.ToString(CultureInfo.InvariantCulture)),
-        note.Author.Username.Contains("bot", StringComparison.OrdinalIgnoreCase));
+        note.Author.Bot || string.Equals(note.Author.UserType, "bot", StringComparison.OrdinalIgnoreCase) ||
+        note.Author.Username.EndsWith("-bot", StringComparison.OrdinalIgnoreCase) ||
+        note.Author.Username.EndsWith("[bot]", StringComparison.Ordinal));
+
+    /// <summary>Resolves the repository a linked GitLab issue belongs to. Returns
+    /// <paramref name="rootRepository"/> unchanged for a same-project link — matched first by
+    /// <see cref="GitLabIssueLink.ProjectId"/> against the numeric convention, then by owner/name
+    /// parsed from <see cref="GitLabIssueLink.WebUrl"/> against the path convention — so the root's
+    /// originally configured <c>Id</c> (and its workspace/bare-repo directory) is preserved rather
+    /// than aliased under a different identifier for the same project. A genuinely different project
+    /// gets <see cref="GitLabIssueLink.ProjectId"/> (GitLab's numeric project id, always a directly
+    /// usable API identifier regardless of which convention <paramref name="rootRepository"/>'s own
+    /// <c>Id</c> uses) rather than a synthesized string the GitLab API cannot resolve.</summary>
+    private static RepositoryRef ToLinkedRepository(GitLabIssueLink link, RepositoryRef rootRepository)
+    {
+        var linkProjectId = link.ProjectId.ToString(CultureInfo.InvariantCulture);
+        if (linkProjectId == rootRepository.Id)
+        {
+            return rootRepository;
+        }
+
+        if (Uri.TryCreate(link.WebUrl, UriKind.Absolute, out var issueUri))
+        {
+            var projectPath = issueUri.AbsolutePath.Split("/-/", 2, StringSplitOptions.None)[0].Trim('/');
+            var separator = projectPath.LastIndexOf('/');
+            if (separator > 0)
+            {
+                var owner = projectPath[..separator];
+                var name = projectPath[(separator + 1)..];
+                if (string.Equals(owner, rootRepository.OwnerOrNamespace, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(name, rootRepository.Name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return rootRepository;
+                }
+
+                return new RepositoryRef(linkProjectId, owner, name);
+            }
+        }
+
+        throw new InvalidOperationException($"GitLab linked issue {link.Iid} did not include a project URL.");
+    }
 
     private static ProviderMergeRequest ToProviderMergeRequest(RepositoryRef repository, GitLabMergeRequest mergeRequest) => new(
         repository,

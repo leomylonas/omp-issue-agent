@@ -9,17 +9,28 @@ namespace IssueAgent.Providers.GitLab;
 /// and the JSON contract explicit.</summary>
 public sealed partial class GitLabApiClient(HttpClient httpClient)
 {
+    /// <summary>Hard ceiling on pages walked per paginated request (specification §27's bounded-
+    /// resource intent); exceeding it throws rather than silently truncating.</summary>
+    private const int MaxPages = 200;
+
+    public async Task<GitLabProject> GetProjectAsync(string projectId, CancellationToken cancellationToken) =>
+        await GetAsync($"projects/{Encode(projectId)}", GitLabJsonContext.Default.GitLabProject, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"GitLab project '{projectId}' was not found.");
+
     public async Task<GitLabUser> GetCurrentUserAsync(CancellationToken cancellationToken) =>
         await GetAsync("user", GitLabJsonContext.Default.GitLabUser, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("GitLab did not return the current user.");
 
     public async Task<IReadOnlyList<GitLabIssue>> GetIssuesAsync(
         string projectId,
-        string assigneeUsername,
+        string? assigneeUsername,
         string state,
         CancellationToken cancellationToken)
     {
-        var query = $"assignee_username={Uri.EscapeDataString(assigneeUsername)}&state={state}&order_by=created_at&sort=asc&per_page=100";
+        var assignee = string.IsNullOrWhiteSpace(assigneeUsername)
+            ? string.Empty
+            : $"assignee_username={Uri.EscapeDataString(assigneeUsername)}&";
+        var query = $"{assignee}state={state}&order_by=created_at&sort=asc&per_page=100";
         return await GetAllPagesAsync($"projects/{Encode(projectId)}/issues?{query}", GitLabJsonContext.Default.GitLabIssueArray, cancellationToken)
             .ConfigureAwait(false);
     }
@@ -101,7 +112,9 @@ public sealed partial class GitLabApiClient(HttpClient httpClient)
 
     private async Task<T?> GetAsync<T>(string relativeUrl, JsonTypeInfo<T> typeInfo, CancellationToken cancellationToken)
     {
-        using var response = await httpClient.GetAsync(relativeUrl, cancellationToken).ConfigureAwait(false);
+        using var response = await ProviderRetryPolicy.SendAsync(
+            token => httpClient.GetAsync(relativeUrl, token),
+            cancellationToken).ConfigureAwait(false);
         if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
             return default;
@@ -115,21 +128,29 @@ public sealed partial class GitLabApiClient(HttpClient httpClient)
     {
         var results = new List<T>();
         string? nextUrl = relativeUrl;
+        var pageCount = 0;
         while (nextUrl is not null)
         {
-            using var response = await httpClient.GetAsync(nextUrl, cancellationToken).ConfigureAwait(false);
+            if (++pageCount > MaxPages)
+            {
+                throw new InvalidOperationException($"GitLab request '{relativeUrl}' exceeded the {MaxPages}-page pagination limit.");
+            }
+
+            using var response = await ProviderRetryPolicy.SendAsync(
+                token => httpClient.GetAsync(nextUrl, token),
+                cancellationToken).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
             var page = await response.Content.ReadFromJsonAsync(typeInfo, cancellationToken).ConfigureAwait(false) ?? [];
             results.AddRange(page);
-            nextUrl = GetNextPageUrl(response);
+            nextUrl = GetNextPageUrl(response, httpClient.BaseAddress);
         }
 
         return results;
     }
 
-    private static string? GetNextPageUrl(HttpResponseMessage response)
+    private static string? GetNextPageUrl(HttpResponseMessage response, Uri? baseAddress)
     {
-        if (!response.Headers.TryGetValues("Link", out var linkValues))
+        if (baseAddress is null || !response.Headers.TryGetValues("Link", out var linkValues))
         {
             return null;
         }
@@ -139,7 +160,11 @@ public sealed partial class GitLabApiClient(HttpClient httpClient)
             var parts = link.Split(';', StringSplitOptions.TrimEntries);
             if (parts.Length == 2 && parts[1] == "rel=\"next\"")
             {
-                return parts[0].Trim('<', '>');
+                var next = parts[0].Trim('<', '>');
+                if (Uri.TryCreate(baseAddress, next, out var nextUri) && Uri.Compare(nextUri, baseAddress, UriComponents.SchemeAndServer, UriFormat.Unescaped, StringComparison.OrdinalIgnoreCase) == 0)
+                {
+                    return nextUri.PathAndQuery;
+                }
             }
         }
 
@@ -149,7 +174,9 @@ public sealed partial class GitLabApiClient(HttpClient httpClient)
     private async Task<TResponse> PostAsync<TRequest, TResponse>(
         string relativeUrl, TRequest body, JsonTypeInfo<TRequest> requestType, JsonTypeInfo<TResponse> responseType, CancellationToken cancellationToken)
     {
-        using var response = await httpClient.PostAsJsonAsync(relativeUrl, body, requestType, cancellationToken).ConfigureAwait(false);
+        using var response = await ProviderRetryPolicy.SendAsync(
+            token => httpClient.PostAsJsonAsync(relativeUrl, body, requestType, token),
+            cancellationToken, isIdempotent: false).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync(responseType, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"GitLab POST {relativeUrl} returned an empty body.");
@@ -158,7 +185,9 @@ public sealed partial class GitLabApiClient(HttpClient httpClient)
     private async Task<TResponse> PutAsync<TRequest, TResponse>(
         string relativeUrl, TRequest body, JsonTypeInfo<TRequest> requestType, JsonTypeInfo<TResponse> responseType, CancellationToken cancellationToken)
     {
-        using var response = await httpClient.PutAsJsonAsync(relativeUrl, body, requestType, cancellationToken).ConfigureAwait(false);
+        using var response = await ProviderRetryPolicy.SendAsync(
+            token => httpClient.PutAsJsonAsync(relativeUrl, body, requestType, token),
+            cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync(responseType, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"GitLab PUT {relativeUrl} returned an empty body.");
@@ -171,7 +200,9 @@ public sealed record GitLabUser(
     [property: JsonPropertyName("name")] string Name);
 
 public sealed record GitLabAuthor(
-    [property: JsonPropertyName("username")] string Username);
+    [property: JsonPropertyName("username")] string Username,
+    [property: JsonPropertyName("bot")] bool Bot = false,
+    [property: JsonPropertyName("user_type")] string? UserType = null);
 
 public sealed record GitLabIssue(
     [property: JsonPropertyName("iid")] long Iid,
@@ -232,7 +263,12 @@ public sealed record GitLabCreateMergeRequestRequest(
 public sealed record GitLabIssueLink(
     [property: JsonPropertyName("iid")] long Iid,
     [property: JsonPropertyName("project_id")] long ProjectId,
-    [property: JsonPropertyName("link_type")] string LinkType);
+    [property: JsonPropertyName("link_type")] string LinkType,
+    [property: JsonPropertyName("web_url")] string? WebUrl = null);
+
+public sealed record GitLabProject(
+    [property: JsonPropertyName("id")] long Id,
+    [property: JsonPropertyName("default_branch")] string? DefaultBranch);
 
 [JsonSourceGenerationOptions(PropertyNameCaseInsensitive = true)]
 [JsonSerializable(typeof(GitLabUser))]
@@ -252,4 +288,5 @@ public sealed record GitLabIssueLink(
 [JsonSerializable(typeof(GitLabCreateMergeRequestRequest))]
 [JsonSerializable(typeof(GitLabIssueLink))]
 [JsonSerializable(typeof(GitLabIssueLink[]))]
+[JsonSerializable(typeof(GitLabProject))]
 internal sealed partial class GitLabJsonContext : JsonSerializerContext;
