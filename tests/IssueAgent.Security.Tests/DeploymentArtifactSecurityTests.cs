@@ -118,33 +118,41 @@ public sealed class DeploymentArtifactSecurityTests
         Assert.DoesNotContain("interactive setup endpoint", readme, StringComparison.Ordinal);
     }
     [Fact]
-    public void ProductionImageRedirectsNativeOmpStateToPersistentData()
+    public void ProductionImageUsesPersistentStateWhileEntrypointDropsTheLongLivedHostToNonRoot()
     {
         var dockerfile = ReadRepositoryFile("Dockerfile");
+        var entrypoint = ReadRepositoryFile("docker/issue-agent-entrypoint.sh");
 
-        Assert.Contains("USER root", dockerfile, StringComparison.Ordinal);
         Assert.Contains("ENV HOME=/data", dockerfile, StringComparison.Ordinal);
         Assert.Contains("PI_CODING_AGENT_DIR=/data/omp/agent", dockerfile, StringComparison.Ordinal);
         Assert.Contains("PI_CODING_AGENT_SESSION_DIR=/data/omp", dockerfile, StringComparison.Ordinal);
         Assert.Contains("mkdir --parents /data", dockerfile, StringComparison.Ordinal);
+        Assert.Contains("umask 0002", entrypoint, StringComparison.Ordinal);
+        Assert.Contains("--reuid=10001 --regid=10001", entrypoint, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void OmpRunsAsAnUnprivilegedUidWithoutAccessToProviderSecretFiles()
+    public void ProviderSecretSourceIsCopiedBeforeTheNonRootHostStartsAndOmpCannotReadIt()
     {
         var dockerfile = ReadRepositoryFile("Dockerfile");
         var ompWrapper = ReadRepositoryFile("docker/omp-unprivileged.sh");
         var entrypoint = ReadRepositoryFile("docker/issue-agent-entrypoint.sh");
         var compose = ReadRepositoryFile("deploy/docker-compose.yml");
+        var brokerOverlay = ReadRepositoryFile("deploy/docker-compose.auth-broker.yml");
         var deployment = ReadRepositoryFile("deploy/helm/issue-agent/templates/deployment.yaml");
 
         Assert.Contains("useradd --create-home --uid 10002 omp", dockerfile, StringComparison.Ordinal);
-        Assert.Contains("omp-unprivileged", dockerfile, StringComparison.Ordinal);
-        Assert.Contains("--reuid=10002", ompWrapper, StringComparison.Ordinal);
+        Assert.Contains("--reuid=10002 --regid=10001", ompWrapper, StringComparison.Ordinal);
+        Assert.Contains("umask 0002", ompWrapper, StringComparison.Ordinal);
+        Assert.Contains("install --owner=10001 --group=10001 --mode=0400", entrypoint, StringComparison.Ordinal);
         Assert.Contains("/run/secrets-source", compose, StringComparison.Ordinal);
-        Assert.Contains("/run/issue-agent-secrets", compose, StringComparison.Ordinal);
-        Assert.Contains("/run/issue-agent-secrets", entrypoint, StringComparison.Ordinal);
+        Assert.Contains("user: \"10001:10001\"", brokerOverlay, StringComparison.Ordinal);
+        var mainContainer = deployment[deployment.IndexOf("      containers:", StringComparison.Ordinal)..deployment.IndexOf("      volumes:", StringComparison.Ordinal)];
+        Assert.Contains("copy-issue-agent-secrets", deployment, StringComparison.Ordinal);
+        Assert.Contains("runAsNonRoot: true", deployment, StringComparison.Ordinal);
+        Assert.Contains("runAsUser: 10001", deployment, StringComparison.Ordinal);
         Assert.Contains("runAsUser: 0", deployment, StringComparison.Ordinal);
+        Assert.DoesNotContain("issue-agent-secret-source", mainContainer, StringComparison.Ordinal);
         Assert.Contains("defaultMode: 0400", deployment, StringComparison.Ordinal);
     }
 
@@ -165,6 +173,18 @@ public sealed class DeploymentArtifactSecurityTests
         Assert.Contains("include \"issue-agent.authBrokerFullname\"", broker, StringComparison.Ordinal);
         Assert.Contains("app.kubernetes.io/component: issue-agent", resources, StringComparison.Ordinal);
         Assert.Contains("include \"issue-agent.authBrokerFullname\"", deployment, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MainDeploymentRetainsItsStableSelectorWhilePodsAndServicesCarryComponentLabels()
+    {
+        var deployment = ReadRepositoryFile("deploy/helm/issue-agent/templates/deployment.yaml");
+        var service = ReadRepositoryFile("deploy/helm/issue-agent/templates/service.yaml");
+        var selector = deployment[..deployment.IndexOf("  template:", StringComparison.Ordinal)];
+
+        Assert.DoesNotContain("app.kubernetes.io/component", selector, StringComparison.Ordinal);
+        Assert.Contains("app.kubernetes.io/component: issue-agent", deployment, StringComparison.Ordinal);
+        Assert.Contains("app.kubernetes.io/component: issue-agent", service, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -191,6 +211,14 @@ public sealed class DeploymentArtifactSecurityTests
         Assert.Contains("slack_webhook_url", notifications, StringComparison.Ordinal);
         Assert.DoesNotContain("telegram_bot_token", broker, StringComparison.Ordinal);
         Assert.DoesNotContain("slack_webhook_url", broker, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BrokerPortForwardIsScopedToTheHelmRelease()
+    {
+        var readme = ReadRepositoryFile("deploy/README.md");
+
+        Assert.Contains("app.kubernetes.io/instance=\"$RELEASE\"", readme, StringComparison.Ordinal);
     }
 
     private static string ReadRepositoryFile(string relativePath)

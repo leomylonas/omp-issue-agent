@@ -46,7 +46,6 @@ spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/component: issue-agent
       {{- include "issue-agent.selectorLabels" . | nindent 6 }}
   template:
     metadata:
@@ -60,13 +59,39 @@ spec:
     spec:
       automountServiceAccountToken: false
       securityContext:
-        runAsNonRoot: false
-        runAsUser: 0
+        runAsNonRoot: true
+        runAsUser: 10001
         runAsGroup: 10001
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      initContainers:
+        - name: copy-issue-agent-secrets
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              for source in /run/secrets-source/*; do
+                [ -f "$source" ] || continue
+                install -o 10001 -g 10001 -m 0400 "$source" "/run/issue-agent-secrets/$(basename "$source")"
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: issue-agent-secrets
+              mountPath: /run/issue-agent-secrets
+            {{- if or .Values.secret.existingSecret .Values.secret.stringData }}
+            - name: issue-agent-secret-source
+              mountPath: /run/secrets-source
+              readOnly: true
+            {{- end }}
       containers:
         - name: issue-agent
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
@@ -132,11 +157,6 @@ spec:
               readOnly: true
             - name: issue-agent-secrets
               mountPath: /run/issue-agent-secrets
-            {{- if or .Values.secret.existingSecret .Values.secret.stringData }}
-            - name: issue-agent-secret-source
-              mountPath: /run/secrets-source
-              readOnly: true
-            {{- end }}
             {{- if .Values.omp.authBroker.enabled }}
             - name: omp-auth-broker-token
               mountPath: /run/secrets/omp-auth-broker

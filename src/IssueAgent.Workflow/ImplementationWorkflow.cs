@@ -125,7 +125,15 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             return await FailAsync(config, issueNumber, workingState, implementOutcome.Error!.Message, cancellationToken).ConfigureAwait(false);
         }
 
-        var result = ImplementationResult.Parse(implementOutcome.Completed!.ResultJson);
+        ImplementationResult result;
+        try
+        {
+            result = ImplementationResult.Parse(implementOutcome.Completed!.ResultJson);
+        }
+        catch (WorkflowContractException exception)
+        {
+            return await FailAsync(config, issueNumber, workingState, exception.Message, cancellationToken).ConfigureAwait(false);
+        }
         if (result.IsMaterialDeviation)
         {
             return await PauseForMaterialDeviationAsync(config, issueNumber, workingState, workingContent, result, cancellationToken).ConfigureAwait(false);
@@ -183,7 +191,15 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             return await FailAsync(config, issueNumber, workingState, continuationOutcome.Error!.Message, cancellationToken).ConfigureAwait(false);
         }
 
-        var result = ImplementationResult.Parse(continuationOutcome.Completed!.ResultJson);
+        ImplementationResult result;
+        try
+        {
+            result = ImplementationResult.Parse(continuationOutcome.Completed!.ResultJson);
+        }
+        catch (WorkflowContractException exception)
+        {
+            return await FailAsync(config, issueNumber, workingState, exception.Message, cancellationToken).ConfigureAwait(false);
+        }
         if (result.IsMaterialDeviation)
         {
             return await PauseForMaterialDeviationAsync(config, issueNumber, workingState, workingContent, result, cancellationToken).ConfigureAwait(false);
@@ -216,7 +232,14 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                 .ConfigureAwait(false);
             if (correctiveOutcome.Succeeded)
             {
-                resultMarkdown = ImplementationResult.Parse(correctiveOutcome.Completed!.ResultJson).RenderMarkdown();
+                try
+                {
+                    resultMarkdown = ImplementationResult.Parse(correctiveOutcome.Completed!.ResultJson).RenderMarkdown();
+                }
+                catch (WorkflowContractException exception)
+                {
+                    return await FailAsync(config, issueNumber, workingState, exception.Message, cancellationToken).ConfigureAwait(false);
+                }
             }
         }
 
@@ -235,7 +258,14 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                     return await FailAsync(config, issueNumber, workingState, "Failed to resolve rebase conflicts before first publication.", cancellationToken).ConfigureAwait(false);
                 }
 
-                _ = ImplementationResult.Parse(conflictOutcome.Completed!.ResultJson);
+                try
+                {
+                    _ = ImplementationResult.Parse(conflictOutcome.Completed!.ResultJson);
+                }
+                catch (WorkflowContractException exception)
+                {
+                    return await FailAsync(config, issueNumber, workingState, exception.Message, cancellationToken).ConfigureAwait(false);
+                }
             }
         }
 

@@ -29,6 +29,18 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
         Assert.Equal("IssueAgent Bot", identity.DisplayName);
         Assert.Equal("bot@example.com", identity.Email);
     }
+
+    [Fact]
+    public async Task GetCurrentIdentityAsyncUsesStableNoreplyEmailWhenEmailIsHidden()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/user").UsingGet())
+            .RespondWith(JsonResponse("""{"login":"issue-agent-bot","id":1,"name":"IssueAgent Bot","email":null}"""));
+
+        var identity = await fixture.Provider.GetCurrentIdentityAsync(CancellationToken.None);
+
+        Assert.Equal("issue-agent-bot@users.noreply.github.com", identity.Email);
+    }
     [Fact]
     public async Task DiscoverAssignedOpenIssuesAsyncExcludesPullRequestsAndIssuesBeforeStartDate()
     {
@@ -173,6 +185,26 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
         var issue = await fixture.Provider.GetIssueAsync(Repository, 7, CancellationToken.None);
 
         Assert.Equal("Recovered", issue.Title);
+    }
+
+    [Fact]
+    public async Task GetIssueAsyncRetriesOctokitRequestTimeout()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7").UsingGet())
+            .InScenario("github-408")
+            .WillSetStateTo("retried")
+            .RespondWith(Response.Create().WithStatusCode(408).WithBody("""{"message":"temporary"}"""));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7").UsingGet())
+            .InScenario("github-408")
+            .WhenStateIs("retried")
+            .RespondWith(JsonResponse("""{"number":7,"title":"Recovered","body":"ok","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","labels":[],"assignees":[]}"""));
+
+        var issue = await fixture.Provider.GetIssueAsync(Repository, 7, CancellationToken.None);
+
+        Assert.Equal("Recovered", issue.Title);
+        Assert.Equal(2, fixture.Server.LogEntries.Count(entry => entry.RequestMessage!.Path == "/api/v3/repos/octo/widgets/issues/7"));
     }
 
     [Theory]
@@ -474,6 +506,34 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
+    public async Task GetReviewThreadsAsyncRejectsMissingCursorForAdditionalThreadPage()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/graphql").UsingPost())
+            .RespondWith(JsonResponse("""{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":null},"nodes":[]}}}}}"""));
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            CollectAsync(fixture.Provider.GetReviewThreadsAsync(Repository, 9, CancellationToken.None)));
+
+        Assert.Contains("without an end cursor", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetReviewThreadsAsyncRejectsMissingCursorForAdditionalCommentPage()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/graphql").UsingPost())
+            .RespondWith(JsonResponse("""
+                {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"thread-1","isResolved":false,"comments":{"pageInfo":{"hasNextPage":true,"endCursor":null},"nodes":[]}}]}}}}}
+                """));
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            CollectAsync(fixture.Provider.GetReviewThreadsAsync(Repository, 9, CancellationToken.None)));
+
+        Assert.Contains("without an end cursor", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task GetReviewThreadsAsyncRequestsInitialThreadCommentPaginationInfo()
     {
         fixture.Server
@@ -533,6 +593,7 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
 
         Assert.True(provider.IsTrustedAttachmentHost(new Uri("https://raw.githubusercontent.com/foo.png")));
         Assert.False(provider.IsTrustedAttachmentHost(new Uri("http://raw.githubusercontent.com/foo.png")));
+        Assert.False(provider.IsTrustedAttachmentHost(new Uri("https://raw.githubusercontent.com:8443/foo.png")));
     }
 
     [Fact]
@@ -557,6 +618,36 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
 
         var request = fixture.Server.LogEntries.Single(e => e.RequestMessage!.Path == "/files/report.pdf");
         Assert.False(request.RequestMessage!.Headers!.ContainsKey("Authorization"));
+    }
+
+    [Fact]
+    public async Task DownloadAttachmentAsyncRetriesTransientServerErrors()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/files/retry.pdf").UsingGet())
+            .InScenario("github-attachment-retry")
+            .WillSetStateTo("retried")
+            .RespondWith(Response.Create().WithStatusCode(503));
+        fixture.Server
+            .Given(Request.Create().WithPath("/files/retry.pdf").UsingGet())
+            .InScenario("github-attachment-retry")
+            .WhenStateIs("retried")
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("pdf-bytes"));
+
+        var serverUri = new Uri(fixture.Server.Url!);
+        var attachment = new ProviderAttachment(
+            new Uri(fixture.Server.Url! + "/files/retry.pdf"),
+            "retry.pdf",
+            null,
+            new AttachmentSource("issue-description", "7"),
+            false,
+            System.Net.Dns.GetHostAddresses(serverUri.Host).ToHashSet());
+
+        var downloaded = await fixture.Provider.DownloadAttachmentAsync(
+            attachment, Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")), 1024, CancellationToken.None);
+
+        Assert.Equal(9, downloaded.SizeBytes);
+        Assert.Equal(2, fixture.Server.LogEntries.Count(entry => entry.RequestMessage!.Path == "/files/retry.pdf"));
     }
 
     [Fact]

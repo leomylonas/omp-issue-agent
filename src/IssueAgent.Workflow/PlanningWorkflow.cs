@@ -77,29 +77,27 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
                 .ConfigureAwait(false);
         }
 
-        var planningResult = PlanningResult.Parse(outcome.Completed!.ResultJson);
-        ReconciledPlanningResult reconciledResult;
         try
         {
-            reconciledResult = await ReconcileNewInputDuringPlanningAsync(
+            var planningResult = PlanningResult.Parse(outcome.Completed!.ResultJson);
+            var reconciledResult = await ReconcileNewInputDuringPlanningAsync(
                 config, issueNumber, omp, session.SessionId, worktreePath, context, planningResult, planningInput, currentPlan: null, cancellationToken)
                 .ConfigureAwait(false);
+            return await PublishPlanAsync(
+                config,
+                issueNumber,
+                initialState,
+                reconciledResult.Result,
+                planRevision: 1,
+                reconciledResult.Input.Title,
+                reconciledResult.Input.Description,
+                cancellationToken).ConfigureAwait(false);
         }
         catch (WorkflowContractException exception)
         {
             return await FailAsync(config, issueNumber, initialState, WaitingReason.ManualIntervention, exception.Message, cancellationToken)
                 .ConfigureAwait(false);
         }
-
-        return await PublishPlanAsync(
-            config,
-            issueNumber,
-            initialState,
-            reconciledResult.Result,
-            planRevision: 1,
-            reconciledResult.Input.Title,
-            reconciledResult.Input.Description,
-            cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Resumes the same OMP session with the complete relevant planning conversation and
@@ -171,29 +169,27 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
                 cancellationToken).ConfigureAwait(false);
         }
 
-        var planningResult = PlanningResult.Parse(outcome.Completed!.ResultJson);
-        ReconciledPlanningResult reconciled;
         try
         {
-            reconciled = await ReconcileNewInputDuringPlanningAsync(
+            var planningResult = PlanningResult.Parse(outcome.Completed!.ResultJson);
+            var reconciled = await ReconcileNewInputDuringPlanningAsync(
                 config, issueNumber, omp, currentState.OmpSessionId, worktreePath, context, planningResult, planningInput, currentPlan, cancellationToken)
                 .ConfigureAwait(false);
+            return await PublishPlanAsync(
+                config,
+                issueNumber,
+                workingState,
+                reconciled.Result,
+                existingContent.State.PlanRevision + 1,
+                reconciled.Input.Title,
+                reconciled.Input.Description,
+                cancellationToken).ConfigureAwait(false);
         }
         catch (WorkflowContractException exception)
         {
             return await FailAsync(config, issueNumber, workingState, WaitingReason.ManualIntervention, exception.Message, cancellationToken)
                 .ConfigureAwait(false);
         }
-
-        return await PublishPlanAsync(
-            config,
-            issueNumber,
-            workingState,
-            reconciled.Result,
-            existingContent.State.PlanRevision + 1,
-            reconciled.Input.Title,
-            reconciled.Input.Description,
-            cancellationToken).ConfigureAwait(false);
     }
 
     private sealed record InputSnapshot(string Title, string Description, string CommentsDigest);

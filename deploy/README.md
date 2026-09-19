@@ -99,7 +99,7 @@ with the local OMP CLI before exposing the broker on loopback:
 omp auth-broker login
 
 BROKER_SERVICE="$(kubectl -n "$NAMESPACE" get service \
-  -l app.kubernetes.io/component=auth-broker \
+  -l app.kubernetes.io/component=auth-broker,app.kubernetes.io/instance="$RELEASE" \
   -o jsonpath='{.items[0].metadata.name}')"
 kubectl -n "$NAMESPACE" port-forward "svc/${BROKER_SERVICE}" 8081:8081
 

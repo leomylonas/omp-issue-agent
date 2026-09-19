@@ -54,6 +54,20 @@ public sealed class ImplementationWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsyncPersistsFailureWhenOmpResultViolatesContract()
+    {
+        var state = await SeedApprovedPlanAsync();
+        var omp = new FakeOmpClient().EnqueueRun(
+            new OmpCompletedEvent("session-1", clock.UtcNow, """{"summary":"Missing required fields."}"""));
+
+        var outcome = await CreateWorkflow().RunAsync(CreateConfig(), WorkflowMode.Full, 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Failed, outcome.Status);
+        Assert.Equal("failed", CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body).State.Phase);
+        Assert.Equal(WorkflowNotificationKind.ImplementationFailed, Assert.Single(notifier.Notifications).Kind);
+    }
+
+    [Fact]
     public async Task RunAsyncOmitsIssueClosingReferenceWhenDisabled()
     {
         var state = await SeedApprovedPlanAsync();

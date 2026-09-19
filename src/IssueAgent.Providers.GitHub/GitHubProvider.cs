@@ -33,7 +33,7 @@ public sealed class GitHubProvider(
         var user = await ExecuteReadWithCancellationAsync(
             token => client.Connection.Get<User>(new Uri("user", UriKind.Relative), null, null, token),
             cancellationToken).ConfigureAwait(false);
-        return new ProviderIdentity(user.Login, user.Name ?? user.Login, user.Email);
+        return new ProviderIdentity(user.Login, user.Name ?? user.Login, user.Email ?? $"{user.Login}@users.noreply.github.com");
     }
 
     public async ValueTask<string> GetDefaultBranchAsync(RepositoryRef repository, CancellationToken cancellationToken)
@@ -339,6 +339,7 @@ public sealed class GitHubProvider(
         return url.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
             (trustedAttachmentAuthorities.Contains(url.Authority, StringComparer.OrdinalIgnoreCase) ||
              (trustsGitHubDotComAttachmentHosts &&
+              url.IsDefaultPort &&
               (url.Host.Equals("githubusercontent.com", StringComparison.OrdinalIgnoreCase) ||
                url.Host.EndsWith(".githubusercontent.com", StringComparison.OrdinalIgnoreCase))));
     }
@@ -351,14 +352,18 @@ public sealed class GitHubProvider(
     {
         var httpClient = IsTrustedAttachmentHost(attachment.Url) ? authenticatedAttachmentClient : anonymousAttachmentClient;
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, attachment.Url);
-        if (httpClient == anonymousAttachmentClient)
-        {
-            request.Options.Set(IssueAgent.Git.TlsHttpHandlerFactory.ValidatedAddressesOptionKey, attachment.ValidatedAddresses!);
-        }
-        using var response = await httpClient
-            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-            .ConfigureAwait(false);
+        using var response = await ProviderRetryPolicy.SendAsync(
+            async token =>
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, attachment.Url);
+                if (httpClient == anonymousAttachmentClient)
+                {
+                    request.Options.Set(IssueAgent.Git.TlsHttpHandlerFactory.ValidatedAddressesOptionKey, attachment.ValidatedAddresses!);
+                }
+
+                return await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+            },
+            cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
         if (response.Content.Headers.ContentLength is { } declaredLength && declaredLength > maxSizeBytes)
@@ -482,7 +487,7 @@ public sealed class GitHubProvider(
             {
                 await Task.Delay(ClampRetryDelay(GetSecondaryRetryAfter(exception) ?? GetSecondaryFallbackDelay(attempt)), cancellationToken).ConfigureAwait(false);
             }
-            catch (ApiException exception) when (isIdempotent && (int)exception.StatusCode >= 500 && attempt < 3)
+            catch (ApiException exception) when (isIdempotent && ((int)exception.StatusCode == (int)HttpStatusCode.RequestTimeout || (int)exception.StatusCode >= 500) && attempt < 3)
             {
                 await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
             }

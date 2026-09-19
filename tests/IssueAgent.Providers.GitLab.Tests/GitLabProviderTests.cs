@@ -216,6 +216,26 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     }
 
     [Fact]
+    public async Task EnsureLabelAsyncFindsExistingLabelOnLaterPage()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/123/labels").WithParam("per_page", "100").UsingGet())
+            .RespondWith(Response.Create()
+                .WithStatusCode(200)
+                .WithHeader("Content-Type", "application/json")
+                .WithHeader("Link", $"<{fixture.Server.Url}/api/v4/projects/123/labels?search=agent%3Aphase%3Aplanning&page=2>; rel=\"next\"")
+                .WithBody("[]"));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/123/labels").WithParam("page", "2").UsingGet())
+            .RespondWith(JsonResponse("""[{"name":"agent:phase:planning","color":"#custom","description":"user edited"}]"""));
+
+        await fixture.Provider.EnsureLabelAsync(Repository, new ProviderLabel("agent:phase:planning", "ededed", "Planning"), CancellationToken.None);
+
+        Assert.DoesNotContain(fixture.Server.LogEntries, entry => entry.RequestMessage!.Method == "POST");
+        Assert.Equal(2, fixture.Server.LogEntries.Count(entry => entry.RequestMessage!.Path == "/api/v4/projects/123/labels"));
+    }
+
+    [Fact]
     public async Task AddLabelsAsyncUpdatesIssueEndpointForIssueWorkItems()
     {
         fixture.Server
@@ -405,6 +425,36 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
 
         var request = fixture.Server.LogEntries.Single(e => e.RequestMessage!.Path == "/uploads/report.pdf");
         Assert.False(request.RequestMessage!.Headers!.ContainsKey("Authorization"));
+    }
+
+    [Fact]
+    public async Task DownloadAttachmentAsyncRetriesTransientServerErrors()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/uploads/retry.pdf").UsingGet())
+            .InScenario("gitlab-attachment-retry")
+            .WillSetStateTo("retried")
+            .RespondWith(Response.Create().WithStatusCode(503));
+        fixture.Server
+            .Given(Request.Create().WithPath("/uploads/retry.pdf").UsingGet())
+            .InScenario("gitlab-attachment-retry")
+            .WhenStateIs("retried")
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("pdf-bytes"));
+
+        var serverUri = new Uri(fixture.Server.Url!);
+        var attachment = new ProviderAttachment(
+            new Uri(fixture.Server.Url! + "/uploads/retry.pdf"),
+            "retry.pdf",
+            null,
+            new AttachmentSource("issue-description", "7"),
+            false,
+            System.Net.Dns.GetHostAddresses(serverUri.Host).ToHashSet());
+
+        var downloaded = await fixture.Provider.DownloadAttachmentAsync(
+            attachment, Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")), 1024, CancellationToken.None);
+
+        Assert.Equal(9, downloaded.SizeBytes);
+        Assert.Equal(2, fixture.Server.LogEntries.Count(entry => entry.RequestMessage!.Path == "/uploads/retry.pdf"));
     }
 
     [Fact]

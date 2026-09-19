@@ -118,6 +118,29 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task CreateWorktreeAsyncMakesOnlyCheckoutGroupWritableForOmp()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out var baseCommit));
+        await manager.EnsureBareRepositoryAsync("repo-group-permissions", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var bareHeadPath = Path.Combine(reposRoot, "repo-group-permissions", "HEAD");
+        var bareHeadMode = File.GetUnixFileMode(bareHeadPath);
+        var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
+
+        await manager.CreateWorktreeAsync("repo-group-permissions", "wt-permissions", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
+
+        var checkoutMode = File.GetUnixFileMode(Path.Combine(worktreePath, "README.md"));
+        var checkoutDirectoryMode = File.GetUnixFileMode(worktreePath);
+        Assert.True((checkoutMode & (UnixFileMode.GroupRead | UnixFileMode.GroupWrite)) == (UnixFileMode.GroupRead | UnixFileMode.GroupWrite));
+        Assert.True((checkoutDirectoryMode & (UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute)) == (UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute));
+        Assert.Equal(bareHeadMode, File.GetUnixFileMode(bareHeadPath));
+    }
+
+    [Fact]
     public async Task CreateWorktreeAsyncRepairsStaleRegistrationAfterDirectoryRemoval()
     {
         var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out var baseCommit));

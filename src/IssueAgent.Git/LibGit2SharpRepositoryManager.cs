@@ -1,5 +1,6 @@
 using LibGit2Sharp;
 using LibGit2Sharp.Handlers;
+using System.Runtime.Versioning;
 
 namespace IssueAgent.Git;
 
@@ -172,6 +173,10 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
             {
                 DisableHooks(worktreePath);
                 ConfigureLfsFilters(worktreePath);
+                if (OperatingSystem.IsLinux())
+                {
+                    MakeWorktreeWritableByOmp(worktreePath);
+                }
                 return ValueTask.CompletedTask;
             }
 
@@ -188,6 +193,10 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         repo.Worktrees.Add(branch.CanonicalName, worktreeId, worktreePath, isLocked: false);
         DisableHooks(worktreePath);
         ConfigureLfsFilters(worktreePath);
+        if (OperatingSystem.IsLinux())
+        {
+            MakeWorktreeWritableByOmp(worktreePath);
+        }
         return ValueTask.CompletedTask;
     }
 
@@ -371,6 +380,41 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         repo.Config.Set("filter.lfs.required", true, ConfigurationLevel.Local);
     }
 
+
+    /// <summary>Makes only the checkout writable by OMP's shared group; bare repositories retain
+    /// their owner-only permissions.</summary>
+    [SupportedOSPlatform("linux")]
+    private static void MakeWorktreeWritableByOmp(string worktreePath)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        SetGroupWritableMode(worktreePath, isDirectory: true);
+        foreach (var directory in Directory.EnumerateDirectories(worktreePath, "*", SearchOption.AllDirectories))
+        {
+            SetGroupWritableMode(directory, isDirectory: true);
+        }
+
+        foreach (var file in Directory.EnumerateFiles(worktreePath, "*", SearchOption.AllDirectories))
+        {
+            SetGroupWritableMode(file, isDirectory: false);
+        }
+    }
+
+    [SupportedOSPlatform("linux")]
+    private static void SetGroupWritableMode(string path, bool isDirectory)
+    {
+        var mode = File.GetUnixFileMode(path);
+        mode |= UnixFileMode.GroupRead | UnixFileMode.GroupWrite;
+        if (isDirectory || (mode & (UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute)) != 0)
+        {
+            mode |= UnixFileMode.GroupExecute;
+        }
+
+        File.SetUnixFileMode(path, mode);
+    }
 
     private static string? TryGetHost(string url) => GitUrlHost.TryGetHost(url);
 

@@ -101,6 +101,21 @@ public sealed class PlanningWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunInitialPlanningAsyncPersistsFailureWhenOmpResultViolatesContract()
+    {
+        provider.AddIssue(Repository, 1, "Bug", "Description");
+        var omp = new FakeOmpClient()
+            .EnqueueSessionId("session-1")
+            .EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """{"planText":"Missing decisions."}"""));
+
+        var outcome = await CreateWorkflow().RunInitialPlanningAsync(CreateConfig(), 1, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Failed, outcome.Status);
+        Assert.Equal("failed", CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body).State.Phase);
+        Assert.Equal(WorkflowNotificationKind.PlanFailed, Assert.Single(notifier.Notifications).Kind);
+    }
+
+    [Fact]
     public async Task RunInitialPlanningAsyncReconcilesNewCommentsArrivedDuringPlanning()
     {
         provider.AddIssue(Repository, 1, "Bug", "Original description");
@@ -154,9 +169,8 @@ public sealed class PlanningWorkflowTests : IDisposable
         Assert.NotNull(git.CapturedSubmoduleAuthenticationResolver);
         Assert.Contains(Path.Combine(workspaceRoot, initialState.WorkflowId.ToString(), "worktree"), git.LfsMaterializedWorktrees);
     }
-
     [Fact]
-    public async Task RunReplanAsyncPersistsFailureWhenOmpErrors()
+    public async Task RunReplanAsyncPersistsFailureWhenOmpResultViolatesContract()
     {
         provider.AddIssue(Repository, 1, "Bug", "Description");
         var state = new WorkflowState(
@@ -173,14 +187,15 @@ public sealed class PlanningWorkflowTests : IDisposable
         Directory.CreateDirectory(Path.Combine(workspaceRoot, state.WorkflowId.ToString(), "worktree"));
 
         var omp = new FakeOmpClient()
-            .EnqueueRun(new OmpErrorEvent("session-1", clock.UtcNow, "replan crashed", WasCancelled: false));
+            .EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """{"planText":"Missing decisions."}"""));
 
         var outcome = await CreateWorkflow().RunReplanAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
 
         Assert.Equal(WorkflowOutcomeStatus.Failed, outcome.Status);
         Assert.Equal(WorkflowPhase.Failed, outcome.State.Phase);
         var persisted = CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body);
-        Assert.Contains("replan crashed", Assert.Single(notifier.Notifications).Message, StringComparison.Ordinal);
+        Assert.Equal("failed", persisted.State.Phase);
+        Assert.Equal(WorkflowNotificationKind.PlanFailed, Assert.Single(notifier.Notifications).Kind);
     }
 
     [Fact]

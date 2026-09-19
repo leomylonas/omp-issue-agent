@@ -109,10 +109,16 @@ public sealed partial class GitHubGraphQlClient(HttpClient httpClient)
                         .ToList());
             }
 
-            cursor = connection.PageInfo.HasNextPage ? connection.PageInfo.EndCursor : null;
+            cursor = GetNextCursor(connection.PageInfo, "review-thread");
         }
         while (cursor is not null);
     }
+
+    private static string? GetNextCursor(GraphQlPageInfo pageInfo, string connection) =>
+        !pageInfo.HasNextPage
+            ? null
+            : pageInfo.EndCursor ?? throw new InvalidOperationException(
+                $"GitHub GraphQL {connection} connection indicated a next page without an end cursor.");
 
     private static bool IsBotLogin(string? login) => login is not null && login.EndsWith("[bot]", StringComparison.Ordinal);
 
@@ -121,7 +127,7 @@ public sealed partial class GitHubGraphQlClient(HttpClient httpClient)
         CancellationToken cancellationToken)
     {
         var comments = new List<GraphQlComment>(thread.Comments.Nodes);
-        var cursor = thread.Comments.PageInfo.HasNextPage ? thread.Comments.PageInfo.EndCursor : null;
+        var cursor = GetNextCursor(thread.Comments.PageInfo, $"review-thread comment for '{thread.Id}'");
         var page = 0;
         while (cursor is not null)
         {
@@ -151,7 +157,7 @@ public sealed partial class GitHubGraphQlClient(HttpClient httpClient)
             var connection = result.Data?.Node?.Comments
                 ?? throw new InvalidOperationException("GitHub GraphQL response did not contain a review-thread comment connection.");
             comments.AddRange(connection.Nodes);
-            cursor = connection.PageInfo.HasNextPage ? connection.PageInfo.EndCursor : null;
+            cursor = GetNextCursor(connection.PageInfo, $"review-thread comment for '{thread.Id}'");
         }
 
         return comments;

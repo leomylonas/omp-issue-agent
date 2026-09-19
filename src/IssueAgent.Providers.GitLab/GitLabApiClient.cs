@@ -65,8 +65,10 @@ public sealed partial class GitLabApiClient(HttpClient httpClient)
 
     public async Task<GitLabLabel?> FindLabelAsync(string projectId, string name, CancellationToken cancellationToken)
     {
-        var labels = await GetAsync($"projects/{Encode(projectId)}/labels?search={Uri.EscapeDataString(name)}", GitLabJsonContext.Default.GitLabLabelArray, cancellationToken).ConfigureAwait(false)
-            ?? [];
+        var labels = await GetAllPagesAsync(
+            $"projects/{Encode(projectId)}/labels?search={Uri.EscapeDataString(name)}&per_page=100",
+            GitLabJsonContext.Default.GitLabLabelArray,
+            cancellationToken).ConfigureAwait(false);
         return labels.FirstOrDefault(l => string.Equals(l.Name, name, StringComparison.Ordinal));
     }
 

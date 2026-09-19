@@ -59,6 +59,21 @@ public sealed class RevisionWorkflowTests : IDisposable
         Assert.DoesNotContain("agent:cmd:revise", provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
     }
 
+    [Fact]
+    public async Task RunAsyncPersistsFailureWhenOmpResultViolatesContract()
+    {
+        var state = await SeedReviewStateAsync();
+        var omp = new FakeOmpClient().EnqueueRun(
+            new OmpCompletedEvent("session-1", clock.UtcNow, """{"summary":"Missing required fields."}"""));
+
+        var outcome = await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Failed, outcome.Status);
+        Assert.Equal("failed", CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body).State.Phase);
+        Assert.Equal(WorkflowNotificationKind.RevisionFailed, Assert.Single(notifier.Notifications).Kind);
+    }
+
 
     [Fact]
     public async Task RunAsyncUsesSameOmpSessionToResolveTargetConflictBeforePush()

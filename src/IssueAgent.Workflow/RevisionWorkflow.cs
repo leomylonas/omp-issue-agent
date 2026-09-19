@@ -74,7 +74,15 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             return await FailAsync(config, issueNumber, workingState, revisionOutcome.Error!.Message, cancellationToken).ConfigureAwait(false);
         }
 
-        var result = ImplementationResult.Parse(revisionOutcome.Completed!.ResultJson);
+        ImplementationResult result;
+        try
+        {
+            result = ImplementationResult.Parse(revisionOutcome.Completed!.ResultJson);
+        }
+        catch (WorkflowContractException exception)
+        {
+            return await FailAsync(config, issueNumber, workingState, exception.Message, cancellationToken).ConfigureAwait(false);
+        }
         await deps.Git.FetchAsync(config.Repository.Id, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
         var latestTargetCommit = await deps.Git
             .ResolveBranchCommitAsync(config.Repository.Id, currentState.TargetBranch, cancellationToken)
@@ -105,7 +113,14 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                     cancellationToken).ConfigureAwait(false);
             }
 
-            _ = ImplementationResult.Parse(conflictOutcome.Completed!.ResultJson);
+            try
+            {
+                _ = ImplementationResult.Parse(conflictOutcome.Completed!.ResultJson);
+            }
+            catch (WorkflowContractException exception)
+            {
+                return await FailAsync(config, issueNumber, workingState, exception.Message, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         var feedbackAfterRevision = await CaptureFeedbackSnapshotAsync(config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);

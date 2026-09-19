@@ -162,17 +162,10 @@ public sealed class OmpProcessClient(
     public async ValueTask CancelAsync(string sessionId, CancellationToken cancellationToken)
     {
         Interlocked.Exchange(ref cancellationRequested, 1);
-        using var gateCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        gateCts.CancelAfter(abortGracePeriod);
-        await dispatchGate.WaitAsync(gateCts.Token).ConfigureAwait(false);
-        try
-        {
-            await RequestAbortAsync(suppressErrors: false).ConfigureAwait(false);
-        }
-        finally
-        {
-            dispatchGate.Release();
-        }
+        // Prompt acknowledgement can legitimately remain pending while OMP is working. Abort is a
+        // separately correlated RPC command, so it must bypass the prompt-dispatch gate or an
+        // explicit cancellation would wait for the very acknowledgement it needs to interrupt.
+        await RequestAbortAsync(suppressErrors: false).ConfigureAwait(false);
     }
 
     private async Task RequestAbortAsync(bool suppressErrors)

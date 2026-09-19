@@ -259,12 +259,18 @@ public sealed class GitLabProvider(
     {
         var httpClient = IsTrustedAttachmentHost(attachment.Url) ? authenticatedAttachmentClient : anonymousAttachmentClient;
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, attachment.Url);
-        if (httpClient == anonymousAttachmentClient)
-        {
-            request.Options.Set(IssueAgent.Git.TlsHttpHandlerFactory.ValidatedAddressesOptionKey, attachment.ValidatedAddresses!);
-        }
-        using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+        using var response = await ProviderRetryPolicy.SendAsync(
+            async token =>
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, attachment.Url);
+                if (httpClient == anonymousAttachmentClient)
+                {
+                    request.Options.Set(IssueAgent.Git.TlsHttpHandlerFactory.ValidatedAddressesOptionKey, attachment.ValidatedAddresses!);
+                }
+
+                return await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+            },
+            cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
         if (response.Content.Headers.ContentLength is { } declaredLength && declaredLength > maxSizeBytes)
