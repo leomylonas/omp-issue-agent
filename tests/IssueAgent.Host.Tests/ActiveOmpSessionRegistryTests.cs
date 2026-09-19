@@ -33,7 +33,7 @@ public sealed class ActiveOmpSessionRegistryTests
         await first.CreateSessionAsync("task", CancellationToken.None);
         var currentInner = new RecordingOmpClient("current");
         var current = registry.Track(Key, currentInner);
-        await current.ResumeSessionAsync("current", CancellationToken.None);
+        await current.ResumeSessionAsync("current", "/data/omp/current.jsonl", CancellationToken.None);
 
         await first.DisposeAsync();
         Assert.Equal(1, registry.Count);
@@ -69,8 +69,8 @@ public sealed class ActiveOmpSessionRegistryTests
         public ValueTask<OmpSession> CreateSessionAsync(string role, CancellationToken cancellationToken) =>
             ValueTask.FromResult(new OmpSession(sessionId, role));
 
-        public ValueTask<OmpSession> ResumeSessionAsync(string requestedSessionId, CancellationToken cancellationToken) =>
-            ValueTask.FromResult(new OmpSession(requestedSessionId, "task"));
+        public ValueTask<OmpSession> ResumeSessionAsync(string requestedSessionId, string sessionFile, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(new OmpSession(requestedSessionId, "task", sessionFile));
 
         public async IAsyncEnumerable<OmpEvent> RunAsync(OmpRunRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
         {

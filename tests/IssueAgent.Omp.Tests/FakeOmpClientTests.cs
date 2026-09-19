@@ -12,6 +12,7 @@ public sealed class FakeOmpClientTests
         var session = await client.CreateSessionAsync("plan", CancellationToken.None);
 
         Assert.Equal("session-42", session.SessionId);
+        Assert.Equal("/data/omp/session-42.jsonl", session.SessionFile);
         Assert.Equal(["plan"], client.CreatedRoles);
     }
 

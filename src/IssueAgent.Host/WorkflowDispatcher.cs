@@ -152,12 +152,28 @@ public sealed partial class WorkflowDispatcher(
             return;
         }
 
-        await using var omp = StartOmp(runtime, issueNumber);
+        var workflowId = WorkflowId.New();
+        var issue = await runtime.Provider.GetIssueAsync(runtime.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var baseCommit = await runtime.Dependencies.Git
+            .ResolveBranchCommitAsync(runtime.Repository.Id, runtime.Config.TargetBranchOverride, cancellationToken)
+            .ConfigureAwait(false);
+        var worktreePath = Path.Combine(runtime.Config.WorkflowsStoragePath, workflowId.ToString(), "worktree");
+        await runtime.Dependencies.Git.CreateWorktreeAsync(
+            runtime.Repository.Id,
+            workflowId.ToString(),
+            worktreePath,
+            BranchNaming.DeriveBranchName(issueNumber, issue.Title),
+            baseCommit,
+            cancellationToken).ConfigureAwait(false);
+
+        await using var omp = StartOmp(runtime, issueNumber, worktreePath);
         var stopwatch = Stopwatch.StartNew();
         metrics.PlanCount.Add(1, runtime.Tags);
         try
         {
-            await new PlanningWorkflow(runtime.Dependencies).RunInitialPlanningAsync(runtime.Config, issueNumber, omp, cancellationToken).ConfigureAwait(false);
+            await new PlanningWorkflow(runtime.Dependencies)
+                .RunInitialPlanningAsync(runtime.Config, issueNumber, omp, cancellationToken, workflowId)
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -214,9 +230,7 @@ public sealed partial class WorkflowDispatcher(
         var labels = await runtime.Provider.GetLabelsAsync(
             new ProviderWorkItemReference(runtime.Repository, ProviderWorkItemKind.Issue, issueNumber),
             cancellationToken).ConfigureAwait(false);
-        var snapshot = LabelProtocol.Analyze(labels);
-        var command = snapshot.SingleCommand;
-        var recoveryCommand = command is WorkflowCommand.Cancel or WorkflowCommand.Continue;
+        var issueCommandSnapshot = LabelProtocol.Analyze(labels);
         var reconciliation = new WorkflowReconciliationService(runtime.Dependencies);
         using var reconciliationActivity = IssueAgentActivitySource.StartReconciliation(workflowId: null);
         var reconciled = await reconciliation
@@ -236,8 +250,16 @@ public sealed partial class WorkflowDispatcher(
                 providerName,
                 runtime.Repository.Id,
                 issueNumber);
-            if (command == WorkflowCommand.Continue)
+            if (issueCommandSnapshot.SingleCommand == WorkflowCommand.Continue)
             {
+                await ConsumeCommandAsync(
+                    runtime.Provider,
+                    runtime.Repository,
+                    issueNumber,
+                    mergeRequestNumber: null,
+                    WorkflowCommandSource.Issue,
+                    WorkflowCommand.Continue,
+                    cancellationToken).ConfigureAwait(false);
                 await DispatchInitialPlanningAsync(
                     providerName,
                     repositoryOptions,
@@ -247,54 +269,27 @@ public sealed partial class WorkflowDispatcher(
             }
             return;
         }
-        var canInspectReviewCommand = command is null && reconciled.State is not null;
-        if (reconciled.Disposition != ReconciliationDisposition.ResumeAllowed &&
-            !(recoveryCommand || canInspectReviewCommand))
+        if (reconciled.Disposition == ReconciliationDisposition.Completed)
         {
             return;
         }
 
         var state = reconciled.State!;
-        var mergeRequestCommandsAmbiguous = false;
-        if (command is null)
+        ProviderMergeRequest? mergeRequest = null;
+        LabelSnapshot? mergeRequestCommandSnapshot = null;
+        mergeRequest = await runtime.Provider
+            .FindMergeRequestAsync(runtime.Repository, state.Branch, state.TargetBranch, cancellationToken)
+            .ConfigureAwait(false);
+        if (mergeRequest is not null)
         {
-            var mergeRequest = await runtime.Provider
-                .FindMergeRequestAsync(runtime.Repository, state.Branch, state.TargetBranch, cancellationToken)
-                .ConfigureAwait(false);
-            if (mergeRequest is not null)
-            {
-                var mergeRequestLabels = await runtime.Provider.GetLabelsAsync(
-                    new ProviderWorkItemReference(runtime.Repository, ProviderWorkItemKind.MergeRequest, mergeRequest.Number),
-                    cancellationToken).ConfigureAwait(false);
-                var mergeRequestSnapshot = LabelProtocol.Analyze(mergeRequestLabels);
-                mergeRequestCommandsAmbiguous = mergeRequestSnapshot.HasConflictingCommands;
-                command = mergeRequestSnapshot.SingleCommand;
-            }
+            var mergeRequestLabels = await runtime.Provider.GetLabelsAsync(
+                new ProviderWorkItemReference(runtime.Repository, ProviderWorkItemKind.MergeRequest, mergeRequest.Number),
+                cancellationToken).ConfigureAwait(false);
+            mergeRequestCommandSnapshot = LabelProtocol.Analyze(mergeRequestLabels);
         }
 
-        // A review command discovered on the PR/MR may be inspected while reconciliation is
-        // waiting, but it may not bypass dirty/divergent/history blockers. Only cancellation and
-        // explicit recovery are allowed through those blockers.
-        if (reconciled.Disposition != ReconciliationDisposition.ResumeAllowed &&
-            command is not (WorkflowCommand.Cancel or WorkflowCommand.Continue))
-        {
-            if (mergeRequestCommandsAmbiguous)
-            {
-                await reconciliation.PauseForHumanAsync(
-                    runtime.Config,
-                    issueNumber,
-                    canonical,
-                    reconciled.Content!,
-                    state,
-                    WaitingReason.AmbiguousCommand,
-                    "Multiple conflicting workflow command labels are present on the merge request.",
-                    cancellationToken).ConfigureAwait(false);
-            }
-
-            return;
-        }
-
-        if (mergeRequestCommandsAmbiguous)
+        var commandResolution = WorkflowCommandRouting.Resolve(issueCommandSnapshot, mergeRequestCommandSnapshot);
+        if (commandResolution.IsAmbiguous)
         {
             await reconciliation.PauseForHumanAsync(
                 runtime.Config,
@@ -303,8 +298,15 @@ public sealed partial class WorkflowDispatcher(
                 reconciled.Content!,
                 state,
                 WaitingReason.AmbiguousCommand,
-                "Multiple conflicting workflow command labels are present on the merge request.",
+                "Multiple conflicting workflow command labels are present on the issue or merge request.",
                 cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        var command = commandResolution.Command;
+        var recoveryCommand = command is WorkflowCommand.Cancel or WorkflowCommand.Continue;
+        if (reconciled.Disposition != ReconciliationDisposition.ResumeAllowed && !recoveryCommand)
+        {
             return;
         }
 
@@ -321,10 +323,30 @@ public sealed partial class WorkflowDispatcher(
             return;
         }
 
-        await using var omp = StartOmp(runtime, issueNumber);
+        if (command == WorkflowCommand.Continue)
+        {
+            await ConsumeCommandAsync(
+                runtime.Provider,
+                runtime.Repository,
+                issueNumber,
+                mergeRequest?.Number,
+                commandResolution.Sources,
+                WorkflowCommand.Continue,
+                cancellationToken).ConfigureAwait(false);
+            var durableState = CanonicalStateSerializer.ToWorkflowState(reconciled.Content!.State);
+            command = await ContinueAsync(runtime, state, durableState, cancellationToken).ConfigureAwait(false);
+            if (command is null)
+            {
+                return;
+            }
+        }
+
+        await using var omp = StartOmp(runtime, issueNumber, Path.Combine(runtime.Config.WorkflowsStoragePath, state.WorkflowId.ToString(), "worktree"));
         try
         {
-            await omp.ResumeSessionAsync(state.OmpSessionId, cancellationToken).ConfigureAwait(false);
+            var sessionFile = state.OmpSessionFile
+                ?? throw new InvalidOperationException("The workflow has no persisted OMP session file and cannot be resumed safely.");
+            await omp.ResumeSessionAsync(state.OmpSessionId, sessionFile, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -362,9 +384,6 @@ public sealed partial class WorkflowDispatcher(
                 case WorkflowCommand.Revise:
                     await new RevisionWorkflow(runtime.Dependencies).RunAsync(runtime.Config, issueNumber, state, omp, cancellationToken).ConfigureAwait(false);
                     break;
-                case WorkflowCommand.Continue:
-                    await ContinueAsync(runtime, issueNumber, state, omp, cancellationToken).ConfigureAwait(false);
-                    break;
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -384,7 +403,11 @@ public sealed partial class WorkflowDispatcher(
         }
     }
 
-    private static async Task ContinueAsync(Runtime runtime, long issueNumber, WorkflowState state, IOmpClient omp, CancellationToken cancellationToken)
+    private static async Task<WorkflowCommand?> ContinueAsync(
+        Runtime runtime,
+        WorkflowState state,
+        WorkflowState durableState,
+        CancellationToken cancellationToken)
     {
         var worktreePath = Path.Combine(runtime.Config.WorkflowsStoragePath, state.WorkflowId.ToString(), "worktree");
         var remoteHead = await runtime.Dependencies.Git
@@ -404,20 +427,39 @@ public sealed partial class WorkflowDispatcher(
                 await runtime.Dependencies.Git.ResetWorktreeAsync(
                     runtime.Config.Repository.Id, worktreePath, remoteHead, cancellationToken).ConfigureAwait(false);
             }
-
-            state = state with { BaseCommit = remoteHead };
         }
 
-        // Continue is a recovery command. Published review phases must resume the review
-        // conversation on the adopted branch; they must never fall back into the initial
-        // implementation workflow and replay the approved plan.
-        if (state.Phase is WorkflowPhase.Review or WorkflowPhase.Revising)
+        return WorkflowCommandRouting.ContinueRoute(state, durableState);
+    }
+
+    private static async Task ConsumeCommandAsync(
+        IGitProvider provider,
+        RepositoryRef repository,
+        long issueNumber,
+        long? mergeRequestNumber,
+        WorkflowCommandSource sources,
+        WorkflowCommand command,
+        CancellationToken cancellationToken)
+    {
+        var commandLabel = command switch
         {
-            await new RevisionWorkflow(runtime.Dependencies).RunAsync(runtime.Config, issueNumber, state, omp, cancellationToken).ConfigureAwait(false);
-            return;
+            WorkflowCommand.Continue => WorkflowCommandLabels.Continue,
+            _ => throw new ArgumentOutOfRangeException(nameof(command)),
+        };
+        if (sources.HasFlag(WorkflowCommandSource.Issue))
+        {
+            await provider.RemoveLabelAsync(
+                new ProviderWorkItemReference(repository, ProviderWorkItemKind.Issue, issueNumber),
+                commandLabel,
+                cancellationToken).ConfigureAwait(false);
         }
-
-        await new ImplementationWorkflow(runtime.Dependencies).RunAsync(runtime.Config, runtime.WorkflowMode, issueNumber, state, omp, cancellationToken).ConfigureAwait(false);
+        if (sources.HasFlag(WorkflowCommandSource.MergeRequest) && mergeRequestNumber is not null)
+        {
+            await provider.RemoveLabelAsync(
+                new ProviderWorkItemReference(repository, ProviderWorkItemKind.MergeRequest, mergeRequestNumber.Value),
+                commandLabel,
+                cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private async Task<Runtime?> PrepareRuntimeAsync(string providerName, RepositoryOptions repositoryOptions, CancellationToken cancellationToken)
@@ -480,12 +522,12 @@ public sealed partial class WorkflowDispatcher(
         return new Runtime(provider, repository, dependencies, config, workflowMode, resolved.OmpTimeout, new TagList { { LogContextFields.Provider, providerName }, { LogContextFields.Repository, repository.Id } });
     }
 
-    private IOmpClient StartOmp(Runtime runtime, long issueNumber)
+    private IOmpClient StartOmp(Runtime runtime, long issueNumber, string workingDirectory)
     {
         var client = OmpProcessClientFactory.Start(
             runtime.Config.OmpExecutablePath,
             runtime.Config.OmpArguments,
-            options.Value.Workspace.RootPath,
+            workingDirectory,
             runtime.Config.OmpAllowedEnvironment,
             options.Value.ShutdownGracePeriod);
         var observableClient = new ObservableOmpClient(client, metrics, ompLogger);

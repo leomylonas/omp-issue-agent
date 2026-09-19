@@ -13,9 +13,18 @@ public sealed class OmpProcessClient(NdjsonRpcTransport transport, TimeSpan shut
         await RequireSuccessAsync(
             await transport.SendCommandAsync(
                 "new_session",
-                new JsonObject { ["role"] = role },
+                null,
                 cancellationToken).ConfigureAwait(false))
             .ConfigureAwait(false);
+        if (OmpModel.TryParse(role, out var model))
+        {
+            await RequireSuccessAsync(
+                await transport.SendCommandAsync(
+                    "set_model",
+                    new JsonObject { ["provider"] = model.Provider, ["modelId"] = model.ModelId },
+                    cancellationToken).ConfigureAwait(false))
+                .ConfigureAwait(false);
+        }
         var state = RequireData(
             await transport.SendCommandAsync("get_state", null, cancellationToken).ConfigureAwait(false));
         var sessionId = RequireString(state, "sessionId");
@@ -24,21 +33,20 @@ public sealed class OmpProcessClient(NdjsonRpcTransport transport, TimeSpan shut
 
     public async ValueTask<OmpSession> ResumeSessionAsync(
         string sessionId,
-        string? sessionFile,
+        string sessionFile,
         CancellationToken cancellationToken)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionFile);
         var response = await transport.SendCommandAsync(
             "switch_session",
-            new JsonObject { ["sessionPath"] = sessionFile ?? sessionId },
+            new JsonObject { ["sessionPath"] = sessionFile },
             cancellationToken).ConfigureAwait(false);
         await RequireSuccessAsync(response).ConfigureAwait(false);
         var state = RequireData(
             await transport.SendCommandAsync("get_state", null, cancellationToken).ConfigureAwait(false));
         var activeSessionId = state["sessionId"]?.GetValue<string>() ?? sessionId;
-        return new OmpSession(activeSessionId, string.Empty, ExtractSessionFile(state, sessionFile ?? sessionId));
+        return new OmpSession(activeSessionId, string.Empty, ExtractSessionFile(state, sessionFile));
     }
-    public ValueTask<OmpSession> ResumeSessionAsync(string sessionId, CancellationToken cancellationToken) =>
-        ResumeSessionAsync(sessionId, sessionFile: null, cancellationToken);
 
 
     public async IAsyncEnumerable<OmpEvent> RunAsync(
@@ -116,9 +124,9 @@ public sealed class OmpProcessClient(NdjsonRpcTransport transport, TimeSpan shut
             timeoutCts?.IsCancellationRequested == true && !cancellationToken.IsCancellationRequested)
         {
             Interlocked.Exchange(ref cancellationRequested, 1);
-            await RequestAbortAsync(suppressErrors: true, cancellationToken: cancellationToken).ConfigureAwait(false);
+            await RequestAbortAsync(suppressErrors: true).ConfigureAwait(false);
             Interlocked.Exchange(ref cancellationRequested, 0);
-            events.Add(new OmpErrorEvent(request.SessionId, DateTimeOffset.UtcNow, "OMP run timed out.", true));
+            events.Add(new OmpErrorEvent(request.SessionId, DateTimeOffset.UtcNow, "OMP run timed out.", false));
         }
 
         return events;
@@ -127,24 +135,27 @@ public sealed class OmpProcessClient(NdjsonRpcTransport transport, TimeSpan shut
     public async ValueTask CancelAsync(string sessionId, CancellationToken cancellationToken)
     {
         Interlocked.Exchange(ref cancellationRequested, 1);
-        await RequestAbortAsync(suppressErrors: false, cancellationToken: cancellationToken).ConfigureAwait(false);
+        await RequestAbortAsync(suppressErrors: false).ConfigureAwait(false);
     }
 
-    private async Task RequestAbortAsync(bool suppressErrors = false, CancellationToken cancellationToken = default)
+    private async Task RequestAbortAsync(bool suppressErrors)
     {
-        using var abortCts = cancellationToken.CanBeCanceled
-            ? null
-            : new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        var token = abortCts?.Token ?? cancellationToken;
+        // An already-cancelled caller token must not prevent the abort command from reaching OMP.
+        // Its independent deadline also prevents shutdown/cancel paths from hanging on a dead child.
+        using var abortCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         try
         {
             await RequireSuccessAsync(
-                await transport.SendCommandAsync("abort", null, token).ConfigureAwait(false))
+                await transport.SendCommandAsync("abort", null, abortCts.Token).ConfigureAwait(false))
                 .ConfigureAwait(false);
         }
-        catch (Exception) when (suppressErrors || !token.IsCancellationRequested)
+        catch (OperationCanceledException) when (abortCts.IsCancellationRequested)
         {
-            // A timeout/cancel path must remain bounded even when OMP is already gone.
+            // OMP did not acknowledge before the fixed abort deadline.
+        }
+        catch (Exception) when (suppressErrors)
+        {
+            // The timeout path must report the original timeout even when OMP is already gone.
         }
     }
 
@@ -259,6 +270,24 @@ public sealed class OmpProcessClient(NdjsonRpcTransport transport, TimeSpan shut
     private static string RequireString(JsonObject obj, string property) =>
         obj[property]?.GetValue<string>()
         ?? throw new InvalidOperationException($"OMP payload was missing required property '{property}'.");
+}
+
+/// <summary>OMP's supported model-selection command requires an explicit provider and model id.</summary>
+public sealed record OmpModel(string Provider, string ModelId)
+{
+    public static bool TryParse(string value, out OmpModel model)
+    {
+        var separator = value.IndexOf('/');
+        if (separator <= 0 || separator == value.Length - 1 || value.IndexOf('/', separator + 1) >= 0)
+        {
+            model = default!;
+            return false;
+        }
+
+        model = new OmpModel(value[..separator], value[(separator + 1)..]);
+        return true;
+    }
+
 }
 
 public sealed class OmpRpcException(string message) : Exception(message);

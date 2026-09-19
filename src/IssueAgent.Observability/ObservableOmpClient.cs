@@ -43,7 +43,7 @@ public sealed class ObservableOmpClient(IOmpClient inner, IssueAgentMetrics metr
 
     public async ValueTask<OmpSession> ResumeSessionAsync(
         string sessionId,
-        string? sessionFile,
+        string sessionFile,
         CancellationToken cancellationToken)
     {
         using var activity = IssueAgentActivitySource.StartOmpOperation("session.resume", sessionId);
@@ -70,8 +70,6 @@ public sealed class ObservableOmpClient(IOmpClient inner, IssueAgentMetrics metr
             metrics.OmpDuration.Record(stopwatch.Elapsed.TotalSeconds, tags);
         }
     }
-    public ValueTask<OmpSession> ResumeSessionAsync(string sessionId, CancellationToken cancellationToken) =>
-        ResumeSessionAsync(sessionId, sessionFile: null, cancellationToken);
 
     public async IAsyncEnumerable<OmpEvent> RunAsync(OmpRunRequest request, [EnumeratorCancellation] CancellationToken cancellationToken)
     {

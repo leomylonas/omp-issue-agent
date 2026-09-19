@@ -90,7 +90,7 @@ public sealed class WorkflowWorkerPoolTests
         async Task Active(CancellationToken cancellationToken)
         {
             await using var tracked = fixture.Registry.Track(key, omp);
-            await tracked.ResumeSessionAsync("session-1", cancellationToken);
+            await tracked.ResumeSessionAsync("session-1", "/data/omp/session-1.jsonl", cancellationToken);
             activeStarted.SetResult();
             await omp.Cancelled.Task.WaitAsync(cancellationToken);
         }
@@ -143,7 +143,7 @@ public sealed class WorkflowWorkerPoolTests
             [new WorkflowCandidate(key, WorkflowCandidateKind.ExistingWorkflow, WorkflowWorkPriority.HumanCommand, WorkflowCommand.Implement, 1, async cancellationToken =>
             {
                 await using var tracked = fixture.Registry.Track(key, omp);
-                await tracked.ResumeSessionAsync("session-1", cancellationToken);
+                await tracked.ResumeSessionAsync("session-1", "/data/omp/session-1.jsonl", cancellationToken);
                 started.SetResult();
                 await release.Task;
             })],
@@ -178,7 +178,7 @@ public sealed class WorkflowWorkerPoolTests
             [new WorkflowCandidate(key, WorkflowCandidateKind.ExistingWorkflow, WorkflowWorkPriority.HumanCommand, WorkflowCommand.Implement, 1, async cancellationToken =>
             {
                 await using var tracked = fixture.Registry.Track(key, omp);
-                await tracked.ResumeSessionAsync("session-1", cancellationToken);
+                await tracked.ResumeSessionAsync("session-1", "/data/omp/session-1.jsonl", cancellationToken);
                 started.SetResult();
                 await omp.Cancelled.Task.WaitAsync(cancellationToken);
             })],
@@ -331,8 +331,8 @@ public sealed class WorkflowWorkerPoolTests
         public ValueTask<OmpSession> CreateSessionAsync(string role, CancellationToken cancellationToken) =>
             ValueTask.FromResult(new OmpSession("session-1", role));
 
-        public ValueTask<OmpSession> ResumeSessionAsync(string sessionId, CancellationToken cancellationToken) =>
-            ValueTask.FromResult(new OmpSession(sessionId, "task"));
+        public ValueTask<OmpSession> ResumeSessionAsync(string sessionId, string sessionFile, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(new OmpSession(sessionId, "task", sessionFile));
 
         public async IAsyncEnumerable<OmpEvent> RunAsync(OmpRunRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
         {

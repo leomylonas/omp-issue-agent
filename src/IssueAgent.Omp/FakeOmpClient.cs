@@ -54,19 +54,18 @@ public sealed class FakeOmpClient : IOmpClient
     {
         CreatedRoles.Add(role);
         var sessionId = sessionIdsToCreate.Count > 0 ? sessionIdsToCreate.Dequeue() : Guid.NewGuid().ToString("N");
-        return ValueTask.FromResult(new OmpSession(sessionId, role));
+        return ValueTask.FromResult(new OmpSession(sessionId, role, $"/data/omp/{sessionId}.jsonl"));
     }
 
     public ValueTask<OmpSession> ResumeSessionAsync(
         string sessionId,
-        string? sessionFile,
+        string sessionFile,
         CancellationToken cancellationToken)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionFile);
         ResumedSessionIds.Add(sessionId);
         return ValueTask.FromResult(new OmpSession(sessionId, "resumed", sessionFile));
     }
-    public ValueTask<OmpSession> ResumeSessionAsync(string sessionId, CancellationToken cancellationToken) =>
-        ResumeSessionAsync(sessionId, sessionFile: null, cancellationToken);
 
     public async IAsyncEnumerable<OmpEvent> RunAsync(OmpRunRequest request, [EnumeratorCancellation] CancellationToken cancellationToken)
     {

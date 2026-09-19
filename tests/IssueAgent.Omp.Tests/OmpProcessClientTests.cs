@@ -11,11 +11,11 @@ public sealed class OmpProcessClientTests
     {
         await using var client = StartClient();
 
-        var session = await client.CreateSessionAsync("plan", CancellationToken.None);
+        var session = await client.CreateSessionAsync("anthropic/claude-sonnet-5", CancellationToken.None);
 
         Assert.Equal("fake-session-1", session.SessionId);
         Assert.Equal("/tmp/fake-session-1.jsonl", session.SessionFile);
-        Assert.Equal("plan", session.Role);
+        Assert.Equal("anthropic/claude-sonnet-5", session.Role);
     }
 
     [Fact]
@@ -33,7 +33,7 @@ public sealed class OmpProcessClientTests
     public async Task RunAsyncStreamsEventsInOrderAndEndsWithCompleted()
     {
         await using var client = StartClient();
-        var session = await client.CreateSessionAsync("plan", CancellationToken.None);
+        var session = await client.CreateSessionAsync("anthropic/claude-sonnet-5", CancellationToken.None);
 
         var events = await CollectAsync(client.RunAsync(
             new OmpRunRequest(session.SessionId, "/tmp", "plan this issue", new Dictionary<string, string>()),
@@ -54,7 +54,7 @@ public sealed class OmpProcessClientTests
     public async Task RunAsyncToolCallAndResultShareCorrelationId()
     {
         await using var client = StartClient();
-        var session = await client.CreateSessionAsync("plan", CancellationToken.None);
+        var session = await client.CreateSessionAsync("anthropic/claude-sonnet-5", CancellationToken.None);
 
         var events = await CollectAsync(client.RunAsync(
             new OmpRunRequest(session.SessionId, "/tmp", "plan this issue", new Dictionary<string, string>()),
@@ -67,24 +67,24 @@ public sealed class OmpProcessClientTests
     }
 
     [Fact]
-    public async Task RunAsyncTimeoutRequestsAbortAndReturnsCancellationError()
+    public async Task RunAsyncTimeoutRequestsAbortAndReturnsFailure()
     {
         await using var client = StartClient();
-        var session = await client.CreateSessionAsync("plan", CancellationToken.None);
+        var session = await client.CreateSessionAsync("anthropic/claude-sonnet-5", CancellationToken.None);
 
         var events = await CollectAsync(client.RunAsync(
             new OmpRunRequest(session.SessionId, "/tmp", "hang", new Dictionary<string, string>(), TimeSpan.FromMilliseconds(50)),
             CancellationToken.None));
 
         var error = Assert.IsType<OmpErrorEvent>(Assert.Single(events));
-        Assert.True(error.WasCancelled);
+        Assert.False(error.WasCancelled);
         Assert.Contains("timed out", error.Message, StringComparison.OrdinalIgnoreCase);
     }
     [Fact]
     public async Task CancellationBeforePromptDispatchPreventsPrompt()
     {
         await using var client = StartClient();
-        var session = await client.CreateSessionAsync("plan", CancellationToken.None);
+        var session = await client.CreateSessionAsync("anthropic/claude-sonnet-5", CancellationToken.None);
         await client.CancelAsync(session.SessionId, CancellationToken.None);
 
         var events = await CollectAsync(client.RunAsync(
@@ -100,7 +100,7 @@ public sealed class OmpProcessClientTests
     public async Task CancelAsyncSendsRequestAndReceivesAcknowledgement()
     {
         await using var client = StartClient();
-        var session = await client.CreateSessionAsync("plan", CancellationToken.None);
+        var session = await client.CreateSessionAsync("anthropic/claude-sonnet-5", CancellationToken.None);
 
         await client.CancelAsync(session.SessionId, CancellationToken.None);
     }

@@ -71,15 +71,13 @@ public sealed partial class ActiveOmpSessionRegistry(ILogger<ActiveOmpSessionReg
 
         public async ValueTask<OmpSession> ResumeSessionAsync(
             string sessionId,
-            string? sessionFile,
+            string sessionFile,
             CancellationToken cancellationToken)
         {
             var session = await inner.ResumeSessionAsync(sessionId, sessionFile, cancellationToken).ConfigureAwait(false);
             registry.Register(key, owner, inner, session.SessionId);
             return session;
         }
-        public ValueTask<OmpSession> ResumeSessionAsync(string sessionId, CancellationToken cancellationToken) =>
-            ResumeSessionAsync(sessionId, sessionFile: null, cancellationToken);
 
         public IAsyncEnumerable<OmpEvent> RunAsync(OmpRunRequest request, CancellationToken cancellationToken) =>
             inner.RunAsync(request, cancellationToken);

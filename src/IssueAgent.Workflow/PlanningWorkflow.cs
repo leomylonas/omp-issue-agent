@@ -22,11 +22,12 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         WorkflowRepositoryConfig config,
         long issueNumber,
         IOmpClient omp,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        WorkflowId? suppliedWorkflowId = null)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(omp);
-        var workflowId = WorkflowId.New();
+        var workflowId = suppliedWorkflowId ?? WorkflowId.New();
         Activity.Current?.SetTag("WorkflowId", workflowId.ToString());
         var issue = await deps.Provider.GetIssueAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
         var targetBranch = config.TargetBranchOverride;

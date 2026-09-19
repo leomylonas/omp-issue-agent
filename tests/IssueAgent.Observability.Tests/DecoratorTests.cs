@@ -238,7 +238,7 @@ public sealed class ObservableOmpClientTests
             throw new InvalidOperationException("Unreachable: token must already be canceled in this test.");
         }
 
-        public ValueTask<OmpSession> ResumeSessionAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask<OmpSession> ResumeSessionAsync(string sessionId, string sessionFile, CancellationToken cancellationToken) => throw new NotSupportedException();
         public IAsyncEnumerable<OmpEvent> RunAsync(OmpRunRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
         public ValueTask CancelAsync(string sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;

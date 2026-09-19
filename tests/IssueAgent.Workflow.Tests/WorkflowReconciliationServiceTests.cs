@@ -37,6 +37,9 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
 
         Assert.Equal(ReconciliationDisposition.Waiting, result.Disposition);
         Assert.Equal(WaitingReason.ManualIntervention, result.State!.WaitingReason);
+        Assert.Equal(
+            WorkflowOperationalState.Working,
+            CanonicalStateSerializer.ToWorkflowState(result.Content!.State).OperationalState);
         Assert.True(Directory.Exists(worktreePath));
         Assert.Contains("agent:state:waiting", provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
         Assert.Single(provider.UpdatedComments);

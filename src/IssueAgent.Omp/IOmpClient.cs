@@ -15,15 +15,11 @@ public interface IOmpClient : IAsyncDisposable
     /// <c>task</c>, as configured under <c>omp.roles</c>).</summary>
     ValueTask<OmpSession> CreateSessionAsync(string role, CancellationToken cancellationToken);
 
-    /// <summary>Resumes a previously created session after a restart using only its id. Durable
-    /// callers should use the overload carrying the persisted session file.</summary>
-    ValueTask<OmpSession> ResumeSessionAsync(string sessionId, CancellationToken cancellationToken);
-
-    /// <summary>Resumes a previously created session after a restart, keeping its accumulated
-    /// context and role. <paramref name="sessionFile"/> is the persisted OMP session path; it is
-    /// intentionally distinct from the server-assigned session id.</summary>
-    ValueTask<OmpSession> ResumeSessionAsync(string sessionId, string? sessionFile, CancellationToken cancellationToken) =>
-        ResumeSessionAsync(sessionId, cancellationToken);
+    /// <summary>Resumes a previously created session after a restart using its durable session
+    /// identifier and persisted OMP session file. Both values are required: session identifiers
+    /// are server metadata, while <paramref name="sessionFile"/> is the recovery handle accepted
+    /// by OMP's <c>switch_session</c> command.</summary>
+    ValueTask<OmpSession> ResumeSessionAsync(string sessionId, string sessionFile, CancellationToken cancellationToken);
 
     /// <summary>Runs one turn of the session against <paramref name="request"/> and streams
     /// structured events as they occur, ending in exactly one <see cref="OmpCompletedEvent"/> or
