@@ -37,4 +37,43 @@ public sealed class AttachmentFileNamesTests
 
         Assert.StartsWith(Path.GetFullPath(root), resolved, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void ResolveSafeDestinationKeepsSameNamedAttachmentsDistinct()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        try
+        {
+            var first = AttachmentFileNames.ResolveSafeDestination(root, "report.pdf");
+            File.WriteAllText(first, "first");
+
+            var second = AttachmentFileNames.ResolveSafeDestination(root, "report.pdf");
+
+            Assert.Equal(Path.Combine(root, "report-1.pdf"), second);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ResolveSafeDestinationRejectsSymbolicLinkDestination()
+    {
+        var parent = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var target = Path.Combine(parent, "target");
+        var link = Path.Combine(parent, "link");
+        Directory.CreateDirectory(target);
+        Directory.CreateSymbolicLink(link, target);
+        try
+        {
+            Assert.Throws<InvalidOperationException>(() =>
+                AttachmentFileNames.ResolveSafeDestination(link, "report.pdf"));
+        }
+        finally
+        {
+            Directory.Delete(link);
+            Directory.Delete(parent, recursive: true);
+        }
+    }
 }

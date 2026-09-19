@@ -9,10 +9,20 @@ public interface IGitProvider
 
     ValueTask<ProviderIdentity> GetCurrentIdentityAsync(CancellationToken cancellationToken);
 
+    /// <summary>Returns the repository's default branch (spec §10: the effective target branch
+    /// falls back to this when no repository-level override is configured).</summary>
+    ValueTask<string> GetDefaultBranchAsync(RepositoryRef repository, CancellationToken cancellationToken);
+
     IAsyncEnumerable<IssueSummary> DiscoverAssignedOpenIssuesAsync(
         RepositoryRef repository,
         string identity,
         DateTimeOffset startDate,
+        CancellationToken cancellationToken);
+
+    /// <summary>Enumerates every issue already owned by IssueAgent, including closed issues, so
+    /// restart reconciliation and terminal cleanup do not depend on the new-assignment query.</summary>
+    IAsyncEnumerable<IssueSummary> DiscoverManagedIssuesAsync(
+        RepositoryRef repository,
         CancellationToken cancellationToken);
 
     ValueTask<ProviderIssue> GetIssueAsync(
@@ -175,7 +185,8 @@ public sealed record ProviderAttachment(
     string SuggestedFileName,
     long? SizeBytes,
     AttachmentSource Source,
-    bool IsProviderOwnedEndpoint);
+    bool IsProviderOwnedEndpoint,
+    IReadOnlySet<System.Net.IPAddress>? ValidatedAddresses = null);
 
 public sealed record DownloadedAttachment(
     string LocalPath,

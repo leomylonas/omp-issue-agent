@@ -35,14 +35,40 @@ public static class AttachmentFileNames
 
         var safeName = Sanitize(suggestedFileName);
         var destinationRoot = Path.GetFullPath(destinationDirectory);
+        Directory.CreateDirectory(destinationRoot);
+        EnsureNoSymbolicLink(destinationRoot);
         var resolvedPath = Path.GetFullPath(Path.Combine(destinationRoot, safeName));
-
         if (!resolvedPath.StartsWith(destinationRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal))
         {
             throw new InvalidOperationException($"Sanitized attachment path '{resolvedPath}' escapes destination directory '{destinationRoot}'.");
         }
+        if ((File.Exists(resolvedPath) || Directory.Exists(resolvedPath)) &&
+            File.GetAttributes(resolvedPath).HasFlag(FileAttributes.ReparsePoint))
+        {
+            throw new InvalidOperationException($"Attachment destination '{resolvedPath}' is a symbolic link.");
+        }
 
+        var extension = Path.GetExtension(safeName);
+        var stem = Path.GetFileNameWithoutExtension(safeName);
+        for (var suffix = 1; File.Exists(resolvedPath); suffix++)
+        {
+            resolvedPath = Path.Combine(destinationRoot, $"{stem}-{suffix}{extension}");
+        }
         return resolvedPath;
+    }
+
+    private static void EnsureNoSymbolicLink(string path)
+    {
+        var current = Path.GetPathRoot(path)!;
+        foreach (var segment in path[Path.GetPathRoot(path)!.Length..]
+            .Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, segment);
+            if (File.GetAttributes(current).HasFlag(FileAttributes.ReparsePoint))
+            {
+                throw new InvalidOperationException($"Attachment destination directory '{path}' contains a symbolic link.");
+            }
+        }
     }
 
     private static bool IsSafeCharacter(char c) =>
