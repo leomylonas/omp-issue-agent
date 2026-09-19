@@ -105,7 +105,7 @@ jobs:
         env:
           GITHUB_TOKEN: ""
         run: |
-          chmod 600 deploy/secrets/github-token
+          install --mode=0600 .github/fixtures/github-token deploy/secrets/github-token
           cp .github/fixtures/omp-auth-broker-token deploy/secrets/omp-auth-broker-token
           trap 'rm -f deploy/secrets/omp-auth-broker-token' EXIT
           docker compose -f deploy/docker-compose.yml config
@@ -114,7 +114,7 @@ jobs:
         env:
           GITHUB_TOKEN: ""
         run: |
-          chmod 600 deploy/secrets/github-token
+          install --mode=0600 .github/fixtures/github-token deploy/secrets/github-token
           docker compose -f deploy/docker-compose.yml up --detach --build
           trap 'docker compose -f deploy/docker-compose.yml down --volumes' EXIT
           for attempt in $(seq 1 30); do

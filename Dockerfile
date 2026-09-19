@@ -54,9 +54,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 RUN useradd --create-home --uid 10001 issueagent \
     && useradd --create-home --uid 10002 omp \
-    && mkdir --parents /data \
-    && chown issueagent:issueagent /data \
-    && chmod 2770 /data
+    && mkdir --parents /data/omp/agent \
+    && chown --recursive issueagent:issueagent /data \
+    && chmod 2770 /data /data/omp /data/omp/agent
 COPY docker/issue-agent-entrypoint.sh /usr/local/bin/issue-agent-entrypoint
 COPY docker/omp-unprivileged.sh /usr/local/bin/omp-unprivileged
 RUN chmod 0755 /usr/local/bin/issue-agent-entrypoint /usr/local/bin/omp-unprivileged

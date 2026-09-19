@@ -120,7 +120,10 @@ Build the image, create persistent storage, and provide configuration and secret
 docker build -t issue-agent:local ..
 docker volume create issue-agent-data
 docker run --rm --name issue-agent \
-  --read-only --cap-drop=ALL --cap-add=DAC_OVERRIDE --cap-add=SETGID --cap-add=SETUID --security-opt=no-new-privileges \
+  --read-only --cap-drop=ALL \
+  --cap-add=CHOWN --cap-add=FOWNER --cap-add=DAC_OVERRIDE \
+  --cap-add=SETGID --cap-add=SETPCAP --cap-add=SETUID \
+  --security-opt=no-new-privileges \
   --tmpfs /tmp --tmpfs /run/issue-agent-secrets \
   -p 127.0.0.1:8080:8080 \
   -v issue-agent-data:/data \
@@ -131,8 +134,10 @@ docker run --rm --name issue-agent \
   issue-agent:local
 ```
 
-The IssueAgent host starts as root only to read and copy mounted secrets, then runs OMP as a
-separate unprivileged UID. Point file-backed provider and notification settings at
+The listed capabilities are required only while the root entrypoint repairs a mounted data volume,
+copies root-owned secret sources, and switches the host and OMP to their unprivileged UIDs. The
+entrypoint then enables `no-new-privileges`; OMP drops the UID/GID ambient capabilities before it
+executes. Point file-backed provider and notification settings at
 `/run/issue-agent-secrets/<secret-name>`; only `/data` is persistent writable application storage.
 OMP configuration is read-only. `PI_CONFIG_FILES` is the pinned OMP runtime setting that points to
 the mounted `/etc/omp/config.yml` file; OMP sessions and native state remain under `/data/omp`.
