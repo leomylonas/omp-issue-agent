@@ -12,4 +12,6 @@ obj/
 TestResults/
 *.trx
 *.coverage
+deploy/secrets/*
+!deploy/secrets/.gitkeep
 *.coveragexml
