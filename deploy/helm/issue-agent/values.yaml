@@ -22,11 +22,15 @@ omp:
   authBroker:
     enabled: false
     # The IssueAgent image contains the pinned OMP binary and is also the
-    # bundled broker image. Override only when publishing a separately built
-    # image with the same `omp auth-broker serve` contract.
+    # bundled broker image. Leave repository empty to inherit image.repository;
+    # override only for a separately published compatible broker image.
     image:
-      repository: ghcr.io/leomylonas/omp-issue-agent
+      repository: ""
       tag: ""
+    # This key must be present in secret.existingSecret or secret.stringData
+    # when the broker is enabled. Supply its value with --set-file, never
+    # directly on the Helm command line.
+    tokenSecretKey: OMP_AUTH_BROKER_TOKEN
     existingClaim: ""
     storage:
       size: 1Gi

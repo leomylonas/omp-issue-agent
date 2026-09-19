@@ -231,6 +231,29 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
+    public async Task RemoveLabelAsyncTreatsNotFoundAfterRetriedServerFailureAsSuccess()
+    {
+        const string path = "/api/v3/repos/octo/widgets/issues/7/labels/agent:phase:working";
+        fixture.Server
+            .Given(Request.Create().WithPath(path).UsingDelete())
+            .InScenario("github-label-removal-retry")
+            .WillSetStateTo("label-removed")
+            .RespondWith(Response.Create().WithStatusCode(503).WithBody("""{"message":"temporary"}"""));
+        fixture.Server
+            .Given(Request.Create().WithPath(path).UsingDelete())
+            .InScenario("github-label-removal-retry")
+            .WhenStateIs("label-removed")
+            .RespondWith(Response.Create().WithStatusCode(404).WithBody("""{"message":"not found"}"""));
+
+        await fixture.Provider.RemoveLabelAsync(
+            new ProviderWorkItemReference(Repository, ProviderWorkItemKind.Issue, 7),
+            "agent:phase:working",
+            CancellationToken.None);
+
+        Assert.Equal(2, fixture.Server.LogEntries.Count(entry => entry.RequestMessage!.Method == "DELETE"));
+    }
+
+    [Fact]
     public async Task AddLabelsAsyncRetriesTransientServerErrors()
     {
         fixture.Server

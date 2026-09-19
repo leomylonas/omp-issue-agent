@@ -31,6 +31,11 @@
 {{- fail "secret.existingSecretChecksum is required when the existing Secret cannot be looked up" }}
 {{- end }}
 {{- end }}
+{{- $brokerTokenSecretName := default (printf "%s-secret" (include "issue-agent.fullname" .)) .Values.secret.existingSecret }}
+{{- $brokerTokenSecretKey := .Values.omp.authBroker.tokenSecretKey }}
+{{- if and .Values.omp.authBroker.enabled (not .Values.secret.existingSecret) (not (hasKey .Values.secret.stringData $brokerTokenSecretKey)) }}
+{{- fail "secret.stringData must contain omp.authBroker.tokenSecretKey when the Auth Broker is enabled" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -95,6 +100,10 @@ spec:
             - name: IssueAgent__Omp__AuthBrokerUrl
               value: {{ printf "http://%s-auth-broker:8081" (include "issue-agent.fullname" .) | quote }}
             {{- end }}
+            {{- if .Values.omp.authBroker.enabled }}
+            - name: IssueAgent__Omp__ExecutionSecrets__OMP_AUTH_BROKER_TOKEN__File
+              value: /run/secrets/omp-auth-broker/token
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /health/ready
@@ -118,6 +127,11 @@ spec:
             - name: omp-config
               mountPath: {{ .Values.omp.config.mountPath }}
               readOnly: true
+            {{- if .Values.omp.authBroker.enabled }}
+            - name: omp-auth-broker-token
+              mountPath: /run/secrets/omp-auth-broker
+              readOnly: true
+            {{- end }}
       volumes:
         - name: workspace
           persistentVolumeClaim:
@@ -127,3 +141,12 @@ spec:
         - name: omp-config
           configMap:
             name: {{ default (printf "%s-omp-config" (include "issue-agent.fullname" .)) .Values.omp.config.existingConfigMap }}
+        {{- if .Values.omp.authBroker.enabled }}
+        - name: omp-auth-broker-token
+          secret:
+            secretName: {{ $brokerTokenSecretName }}
+            defaultMode: 0440
+            items:
+              - key: {{ $brokerTokenSecretKey }}
+                path: token
+        {{- end }}

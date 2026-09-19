@@ -14,9 +14,11 @@ services:
       IssueAgent__Workspace__RootPath: /data
       IssueAgent__Omp__ExecutablePath: /usr/local/bin/omp
       IssueAgent__Omp__AuthBrokerUrl: ${ISSUE_AGENT_OMP_AUTH_BROKER_URL-http://omp-auth-broker:8081}
+      IssueAgent__Omp__ExecutionSecrets__OMP_AUTH_BROKER_TOKEN__File: /run/secrets/omp_auth_broker_token
       PI_CONFIG_FILES: /etc/omp/config.yml
     secrets:
       - github_token
+      - omp_auth_broker_token
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
@@ -32,12 +34,17 @@ services:
   omp-auth-broker:
     image: ${OMP_AUTH_BROKER_IMAGE:-issue-agent:local}
     profiles: ["auth-broker"]
-    entrypoint: ["/usr/local/bin/omp"]
-    command: ["auth-broker", "serve", "--bind=0.0.0.0:8081"]
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        install -Dm 600 /run/secrets/omp_auth_broker_token /data/.omp/auth-broker.token
+        exec /usr/local/bin/omp auth-broker serve --bind=0.0.0.0:8081
     environment:
       HOME: /data
       PI_CODING_AGENT_DIR: /data/omp/agent
       PI_CODING_AGENT_SESSION_DIR: /data/omp
+    secrets:
+      - omp_auth_broker_token
     ports:
       # Keep the interactive setup endpoint on the host loopback only.
       - "127.0.0.1:${OMP_AUTH_BROKER_PORT:-8081}:8081"
@@ -55,6 +62,8 @@ services:
 secrets:
   github_token:
     file: ./secrets/github-token
+  omp_auth_broker_token:
+    file: ./secrets/omp-auth-broker-token
 
 volumes:
   issue-agent-data:

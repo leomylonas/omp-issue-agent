@@ -1,3 +1,5 @@
+using System.Net;
+
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
@@ -225,7 +227,10 @@ public sealed class GitHubProvider(
                 return await mutationClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
             },
             cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+        if (response.StatusCode != HttpStatusCode.NotFound)
+        {
+            response.EnsureSuccessStatusCode();
+        }
     }
 
     public async ValueTask EnsureLabelAsync(

@@ -26,6 +26,13 @@ public sealed class DeploymentArtifactSecurityTests
         Assert.Contains("command: [\"/usr/local/bin/omp\"]", broker, StringComparison.Ordinal);
         Assert.Contains("auth-broker\", \"serve\", \"--bind=0.0.0.0:8081", broker, StringComparison.Ordinal);
         Assert.Contains("path: /v1/healthz", broker, StringComparison.Ordinal);
+
+        Assert.Contains("default .Values.image.repository .Values.omp.authBroker.image.repository", broker, StringComparison.Ordinal);
+        Assert.Contains("repository: \"\"", values, StringComparison.Ordinal);
+        Assert.Contains("provision-bearer-token", broker, StringComparison.Ordinal);
+        Assert.Contains("auth-broker.token", broker, StringComparison.Ordinal);
+        Assert.Contains("OMP_AUTH_BROKER_TOKEN", values, StringComparison.Ordinal);
+        Assert.Contains("IssueAgent__Omp__ExecutionSecrets__OMP_AUTH_BROKER_TOKEN__File", deployment, StringComparison.Ordinal);
         Assert.Contains("repository: ghcr.io/leomylonas/omp-issue-agent", values, StringComparison.Ordinal);
     }
 
@@ -61,17 +68,31 @@ public sealed class DeploymentArtifactSecurityTests
     }
 
     [Fact]
-    public void ComposeExposesBrokerSetupOnlyOnLoopbackAndKeepsOmpConfigReadOnly()
+    public void ComposeSharesBrokerTokenAsASecretAndKeepsOmpConfigReadOnly()
     {
         var compose = ReadRepositoryFile("deploy/docker-compose.yml");
 
         Assert.Contains("IssueAgent__Omp__AuthBrokerUrl: ${ISSUE_AGENT_OMP_AUTH_BROKER_URL-http://omp-auth-broker:8081}", compose, StringComparison.Ordinal);
+        Assert.Contains("IssueAgent__Omp__ExecutionSecrets__OMP_AUTH_BROKER_TOKEN__File: /run/secrets/omp_auth_broker_token", compose, StringComparison.Ordinal);
+        Assert.Contains("install -Dm 600 /run/secrets/omp_auth_broker_token /data/.omp/auth-broker.token", compose, StringComparison.Ordinal);
+        Assert.Contains("omp_auth_broker_token:", compose, StringComparison.Ordinal);
+        Assert.DoesNotContain("OMP_AUTH_BROKER_TOKEN:", compose, StringComparison.Ordinal);
         Assert.Contains("PI_CONFIG_FILES: /etc/omp/config.yml", compose, StringComparison.Ordinal);
-        Assert.Contains("entrypoint: [\"/usr/local/bin/omp\"]", compose, StringComparison.Ordinal);
-        Assert.Contains("command: [\"auth-broker\", \"serve\", \"--bind=0.0.0.0:8081\"]", compose, StringComparison.Ordinal);
+        Assert.Contains("entrypoint: [\"/bin/sh\", \"-ec\"]", compose, StringComparison.Ordinal);
         Assert.DoesNotContain("OMP_BROKER_LISTEN", compose, StringComparison.Ordinal);
         Assert.DoesNotContain("OMP_CONFIG_DIR", compose, StringComparison.Ordinal);
         Assert.Contains("./omp:/etc/omp:ro", compose, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BrokerInstructionsUseCliLoginAndProtectTheCallback()
+    {
+        var readme = ReadRepositoryFile("deploy/README.md");
+
+        Assert.Contains("omp auth-broker login", readme, StringComparison.Ordinal);
+        Assert.Contains("omp auth-broker token --regenerate", readme, StringComparison.Ordinal);
+        Assert.Contains("callback", readme, StringComparison.Ordinal);
+        Assert.DoesNotContain("interactive setup endpoint", readme, StringComparison.Ordinal);
     }
     [Fact]
     public void ProductionImageRedirectsNativeOmpStateToPersistentData()

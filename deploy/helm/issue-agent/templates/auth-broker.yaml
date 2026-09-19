@@ -1,6 +1,8 @@
 {{- if .Values.omp.authBroker.enabled }}
 {{- $brokerRepository := default .Values.image.repository .Values.omp.authBroker.image.repository }}
 {{- $brokerTag := default (default .Chart.AppVersion .Values.image.tag) .Values.omp.authBroker.image.tag }}
+{{- $brokerTokenSecretName := default (printf "%s-secret" (include "issue-agent.fullname" .)) .Values.secret.existingSecret }}
+{{- $brokerTokenSecretKey := .Values.omp.authBroker.tokenSecretKey }}
 {{- if or (empty $brokerRepository) (empty $brokerTag) }}
 {{- fail "a broker image repository and tag are required when the Auth Broker is enabled" }}
 {{- end }}
@@ -30,6 +32,23 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: provision-bearer-token
+          image: "{{ $brokerRepository }}:{{ $brokerTag }}"
+          command: ["/bin/sh", "-ec"]
+          args:
+            - install -Dm 600 /run/secrets/omp-auth-broker/token /data/.omp/auth-broker.token
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: broker-data
+              mountPath: /data
+            - name: omp-auth-broker-token
+              mountPath: /run/secrets/omp-auth-broker
+              readOnly: true
       containers:
         - name: auth-broker
           image: "{{ $brokerRepository }}:{{ $brokerTag }}"
@@ -67,6 +86,13 @@ spec:
             claimName: {{ default (printf "%s-auth-broker" (include "issue-agent.fullname" .)) .Values.omp.authBroker.existingClaim }}
         - name: tmp
           emptyDir: {}
+        - name: omp-auth-broker-token
+          secret:
+            secretName: {{ $brokerTokenSecretName }}
+            defaultMode: 0440
+            items:
+              - key: {{ $brokerTokenSecretKey }}
+                path: token
 ---
 apiVersion: v1
 kind: Service
