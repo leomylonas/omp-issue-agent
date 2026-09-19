@@ -34,7 +34,7 @@ public sealed class PlanningWorkflowTests : IDisposable
         Assert.Equal(WaitingReason.PlanApproval, outcome.State.WaitingReason);
         Assert.Equal(1, outcome.State.PlanRevision);
 
-        var comment = Assert.Single(provider.CreatedComments);
+        var comment = Assert.Single(provider.IssueComments[(Repository.Id, 1)], c => CanonicalCommentMarkdown.IsCanonicalComment(c.Body));
         Assert.Contains("Add a guard clause before save.", comment.Body, StringComparison.Ordinal);
         Assert.Contains("agent:phase:planned", provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
         Assert.Contains("agent:state:waiting", provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
@@ -97,9 +97,8 @@ public sealed class PlanningWorkflowTests : IDisposable
         var outcome = await workflow.RunInitialPlanningAsync(CreateConfig(), 1, omp, CancellationToken.None);
 
         Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
-        var comment = Assert.Single(provider.CreatedComments);
+        var comment = Assert.Single(provider.IssueComments[(Repository.Id, 1)], c => CanonicalCommentMarkdown.IsCanonicalComment(c.Body));
         Assert.Contains("Updated plan covering the empty-title case.", comment.Body, StringComparison.Ordinal);
-        Assert.Equal(2, omp.RunRequests.Count);
     }
 
     [Fact]

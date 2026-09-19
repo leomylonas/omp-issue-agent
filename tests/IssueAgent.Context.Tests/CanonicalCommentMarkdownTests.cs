@@ -104,6 +104,33 @@ public sealed class CanonicalCommentMarkdownTests
         Assert.Throws<CanonicalCommentCorruptException>(() => CanonicalCommentMarkdown.Parse(body));
     }
 
+    [Fact]
+    public void ParseUsesGeneratedStateDetailsInsteadOfYamlExampleInPlan()
+    {
+        var content = CreateContent(
+            "Use this example while evaluating the parser:\n\n```yaml\nphase: example\n```\n\nThen implement the change.",
+            [],
+            null);
+
+        var parsed = CanonicalCommentMarkdown.Parse(CanonicalCommentMarkdown.Render(content));
+
+        Assert.Equal(content.State, parsed.State);
+        Assert.Contains("phase: example", parsed.PlanText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ParsePreservesOrdinaryPlanHeadings()
+    {
+        var content = CreateContent(
+            "## Architecture\nKeep the adapter narrow.\n### Tradeoffs\nPrefer the simpler path.",
+            [],
+            null);
+
+        var parsed = CanonicalCommentMarkdown.Parse(CanonicalCommentMarkdown.Render(content));
+
+        Assert.Equal(content.PlanText, parsed.PlanText);
+    }
+
     private static CanonicalCommentContent CreateContent(string planText, IReadOnlyList<string> decisions, string? implementationResult)
     {
         var state = new WorkflowState(

@@ -97,6 +97,9 @@ public static class ImplementationPromptBuilder
     public static string BuildCorrectivePrompt() =>
         "The intended changes were not fully committed. Commit the remaining changes now, or explain why nothing further should be committed.";
 
+    public static string BuildContinuationPrompt() =>
+        "Continue the approved implementation after the human acknowledged the reported deviation. Inspect the current worktree, implement the accepted direction, run tests/checks, and commit. Report the resulting implementation summary and any remaining material deviation.";
+
     public static string BuildConflictResolutionPrompt() =>
         "The target branch advanced and conflicts were merged into your branch. Resolve the conflicts, ensure the code is correct, and commit the resolution.";
 

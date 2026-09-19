@@ -48,16 +48,26 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                 config, issueNumber, currentState, "Cannot implement: no canonical comment was found for this issue.", cancellationToken).ConfigureAwait(false);
         }
         var existingContent = CanonicalCommentMarkdown.Parse(canonicalComment.Body);
-
         var issue = await deps.Provider.GetIssueAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+
         if (IsPlanStale(issue, existingContent))
         {
-            var staleState = currentState with { Phase = WorkflowPhase.Planned, OperationalState = WorkflowOperationalState.Waiting, WaitingReason = WaitingReason.ReplanRequired, UpdatedAt = deps.Clock.UtcNow };
-            await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Planned, WorkflowOperationalState.Waiting, [], cancellationToken).ConfigureAwait(false);
-            await NotifyAsync(config, issueNumber, staleState, WorkflowNotificationKind.HumanActionRequired,
-                "The issue title or description changed since the approved plan. Replan before implementing.", cancellationToken)
-                .ConfigureAwait(false);
-            return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, staleState, "Plan is stale; replan required before implementation.");
+            var staleState = currentState with
+            {
+                Phase = WorkflowPhase.Planned,
+                OperationalState = WorkflowOperationalState.Waiting,
+                WaitingReason = WaitingReason.ReplanRequired,
+                UpdatedAt = deps.Clock.UtcNow,
+            };
+            return await PauseAsync(
+                config,
+                issueNumber,
+                staleState,
+                existingContent,
+                existingContent.ImplementationResult ?? string.Empty,
+                WaitingReason.ReplanRequired,
+                "The issue title or description changed since the approved plan, or the plan input hash is missing. Replan before implementing.",
+                cancellationToken).ConfigureAwait(false);
         }
 
         if (currentState.Phase == WorkflowPhase.Implementing)
@@ -141,7 +151,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         IOmpClient omp,
         CancellationToken cancellationToken)
     {
-        if (existingContent.ImplementationResult is not { Length: > 0 } resultMarkdown)
+        if (existingContent.ImplementationResult is not { Length: > 0 })
         {
             return await PauseAsync(
                 config, issueNumber, currentState, existingContent, existingContent.ImplementationResult ?? string.Empty,
@@ -160,10 +170,30 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
 
         var worktreePath = WorktreePath(config, currentState.WorkflowId);
         var inputSnapshot = await CaptureInputSnapshotAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var continuationOutcome = await OmpRunCollector
+            .RunToCompletionAsync(
+                omp,
+                new OmpRunRequest(
+                    workingState.OmpSessionId,
+                    worktreePath,
+                    config.ApplyInstructions(ImplementationPromptBuilder.BuildContinuationPrompt()),
+                    config.OmpAllowedEnvironment,
+                    config.OmpTimeout),
+                cancellationToken).ConfigureAwait(false);
+        if (!continuationOutcome.Succeeded)
+        {
+            return await FailAsync(config, issueNumber, workingState, continuationOutcome.Error!.Message, cancellationToken).ConfigureAwait(false);
+        }
+
+        var result = ImplementationResult.Parse(continuationOutcome.Completed!.ResultJson);
+        if (result.IsMaterialDeviation)
+        {
+            return await PauseForMaterialDeviationAsync(config, issueNumber, workingState, workingContent, result, cancellationToken).ConfigureAwait(false);
+        }
 
         return await PublishImplementationResultAsync(
             config, issueNumber, workingState, workingContent, worktreePath, issue, omp,
-            resultMarkdown, inputSnapshot, cancellationToken).ConfigureAwait(false);
+            result.RenderMarkdown(), inputSnapshot, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Shared publication tail: optional corrective pass, rebase/conflict resolution
@@ -241,7 +271,8 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
 
         await deps.Git.PushAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
 
-        var mergeRequest = await FindOrCreateMergeRequestAsync(config, issueNumber, issue, workingState, cancellationToken).ConfigureAwait(false);
+        var mergeRequest = await FindOrCreateMergeRequestAsync(
+            config, issueNumber, issue, workingState, resultMarkdown, cancellationToken).ConfigureAwait(false);
 
         return await PublishReviewAsync(
             config,
@@ -253,11 +284,9 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>Recovers an interrupted implementation attempt only when a real (non-placeholder)
-    /// implementation result was durably persisted before the crash, the branch was actually
-    /// pushed, and a matching PR/MR already exists (never creates one during recovery). Otherwise
-    /// returns <see langword="null"/> so the caller redoes implementation from the approved base
-    /// commit rather than publishing review for unverified work (specification §20, §23, §26).</summary>
+    /// <summary>Recovers an interrupted implementation attempt when the result was durably
+    /// recorded and the remote branch is present. The PR/MR may have been the operation interrupted
+    /// after push and before request creation, so recovery finds or creates it from that branch.</summary>
     private async Task<WorkflowOutcome?> TryRecoverPublishedImplementationAsync(
         WorkflowRepositoryConfig config,
         long issueNumber,
@@ -278,20 +307,15 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             return null;
         }
 
-        var existingMergeRequest = await deps.Provider
-            .FindMergeRequestAsync(config.Repository, currentState.Branch, currentState.TargetBranch, cancellationToken)
-            .ConfigureAwait(false);
-        if (existingMergeRequest is null)
-        {
-            return null;
-        }
-
+        var issue = await deps.Provider.GetIssueAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var mergeRequest = await FindOrCreateMergeRequestAsync(
+            config, issueNumber, issue, currentState, implementationResult, cancellationToken).ConfigureAwait(false);
         return await PublishReviewAsync(
             config,
             issueNumber,
             currentState,
             existingContent,
-            existingMergeRequest,
+            mergeRequest,
             implementationResult,
             cancellationToken).ConfigureAwait(false);
     }
@@ -330,9 +354,13 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             cancellationToken).ConfigureAwait(false);
         return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, publishedState, "Implementation published; awaiting review.");
     }
-
     private async Task<ProviderMergeRequest> FindOrCreateMergeRequestAsync(
-        WorkflowRepositoryConfig config, long issueNumber, ProviderIssue issue, WorkflowState state, CancellationToken cancellationToken)
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        ProviderIssue issue,
+        WorkflowState state,
+        string implementationResult,
+        CancellationToken cancellationToken)
     {
         var existing = await deps.Provider.FindMergeRequestAsync(config.Repository, state.Branch, state.TargetBranch, cancellationToken).ConfigureAwait(false);
         if (existing is not null)
@@ -340,19 +368,28 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             return existing;
         }
 
+        var closingReference = string.Equals(deps.Provider.Name, "gitlab", StringComparison.OrdinalIgnoreCase)
+            ? $"Closes #{issueNumber}"
+            : $"Fixes #{issueNumber}";
+        var body = $"""
+            <!-- issue-agent:workflow:{state.WorkflowId} -->
+            ## IssueAgent implementation
+
+            {implementationResult.Trim()}
+
+            {closingReference}
+            """.Trim();
         return await deps.Provider.CreateDraftMergeRequestAsync(
-            new CreateMergeRequestRequest(config.Repository, state.Branch, state.TargetBranch, issue.Title, string.Empty, IsDraft: true, issueNumber),
+            new CreateMergeRequestRequest(config.Repository, state.Branch, state.TargetBranch, issue.Title, body, IsDraft: true, issueNumber),
             cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>The plan is stale when the issue's title/description content no longer matches
-    /// what the currently published plan was written against (specification §22). Comparing a
-    /// content hash rather than a generic timestamp avoids false staleness from IssueAgent's own
-    /// label/comment writes, which bump the provider's issue <c>updated_at</c> without changing
-    /// title or description.</summary>
+    /// what the currently published plan was written against. A missing hash is also stale rather
+    /// than being treated as a fresh plan (specification §22).</summary>
     private static bool IsPlanStale(ProviderIssue issue, CanonicalCommentContent existingContent) =>
-        existingContent.State.PlanInputHash is { } hash &&
-        hash != PlanInputHasher.Compute(issue.Title, issue.Description);
+        existingContent.State.PlanInputHash is not { Length: > 0 } hash ||
+        !string.Equals(hash, PlanInputHasher.Compute(issue.Title, issue.Description), StringComparison.Ordinal);
 
     private Task<WorkflowOutcome> PauseForMaterialDeviationAsync(
         WorkflowRepositoryConfig config,
@@ -451,7 +488,30 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
 
     private async Task<WorkflowOutcome> FailAsync(WorkflowRepositoryConfig config, long issueNumber, WorkflowState workingState, string message, CancellationToken cancellationToken)
     {
-        var failedState = workingState with { Phase = WorkflowPhase.Failed, OperationalState = WorkflowOperationalState.Waiting, WaitingReason = WaitingReason.ManualIntervention, UpdatedAt = deps.Clock.UtcNow };
+        var failedState = workingState with
+        {
+            Phase = WorkflowPhase.Failed,
+            OperationalState = WorkflowOperationalState.Waiting,
+            WaitingReason = WaitingReason.ManualIntervention,
+            UpdatedAt = deps.Clock.UtcNow,
+        };
+        var canonical = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        if (canonical is not null)
+        {
+            try
+            {
+                var content = CanonicalCommentMarkdown.Parse(canonical.Body);
+                await UpsertCanonicalCommentAsync(
+                    config,
+                    issueNumber,
+                    content with { State = CanonicalStateSerializer.ToDocument(failedState, content.State.PullOrMergeRequest) },
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (CanonicalCommentCorruptException)
+            {
+                // Do not overwrite an already-corrupt canonical document with guessed content.
+            }
+        }
         await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Failed, WorkflowOperationalState.Waiting, [], cancellationToken).ConfigureAwait(false);
         await NotifyAsync(config, issueNumber, failedState, WorkflowNotificationKind.ImplementationFailed, message, cancellationToken).ConfigureAwait(false);
         return new WorkflowOutcome(WorkflowOutcomeStatus.Failed, failedState, message);

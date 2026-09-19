@@ -157,7 +157,8 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
             "agent/issue-1-bug",
             "main",
             "abc123",
-            clock.UtcNow.AddHours(-1));
+            clock.UtcNow.AddHours(-1),
+            PlanInputHash: PlanInputHasher.Compute("Bug", "Description"));
         Directory.CreateDirectory(WorktreePath(state));
         provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] =
             [WorkflowLabels.Phase(phase), WorkflowLabels.State(operationalState)];

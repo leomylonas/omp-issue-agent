@@ -38,6 +38,19 @@ public sealed class ReconciliationDeciderTests
     }
 
     [Fact]
+    public void DecideRequiresPlanInputHashBeforeResuming()
+    {
+        var labels = LabelProtocol.Analyze(["agent:phase:planned", "agent:state:waiting"]);
+        var comment = CreateComment(WorkflowPhase.Planned, WorkflowOperationalState.Waiting);
+
+        var decision = ReconciliationDecider.Decide(
+            new ReconciliationInput(labels, comment, true, "abc123", "abc123", PlanInputHashPresent: false));
+
+        Assert.Equal(ReconciliationAction.WaitForHuman, decision.Action);
+        Assert.Equal(WaitingReason.ReplanRequired, decision.Reason);
+    }
+
+    [Fact]
     public void DecideWaitsWhenPersistedStateIsWorking()
     {
         var labels = LabelProtocol.Analyze(["agent:phase:implementing", "agent:state:working"]);
@@ -48,6 +61,18 @@ public sealed class ReconciliationDeciderTests
         Assert.Equal(ReconciliationAction.WaitForHuman, decision.Action);
         Assert.Equal(WaitingReason.ManualIntervention, decision.Reason);
     }
+    [Fact]
+    public void DecideAllowsFastForwardRemoteHumanCommit()
+    {
+        var labels = LabelProtocol.Analyze(["agent:phase:implementing", "agent:state:waiting"]);
+        var comment = CreateComment(WorkflowPhase.Implementing, WorkflowOperationalState.Waiting);
+
+        var decision = ReconciliationDecider.Decide(
+            new ReconciliationInput(labels, comment, true, "local-sha", "remote-sha", LocalHeadIsAncestorOfRemote: true));
+
+        Assert.Equal(ReconciliationAction.ResumeAutomatically, decision.Action);
+    }
+
 
     [Fact]
     public void DecideWaitsWhenLocalWorktreeHistoryDivergesFromRemoteBranch()

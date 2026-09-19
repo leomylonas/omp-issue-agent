@@ -38,6 +38,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             return await EscalateAsync(
                 config, issueNumber, workingState, existingContent, "Cannot revise: no merge request was found for this workflow's branch.", cancellationToken).ConfigureAwait(false);
         }
+        await ConsumeMergeRequestCommandAsync(config, mergeRequest.Number, WorkflowCommand.Revise, cancellationToken).ConfigureAwait(false);
         var currentPlan = new PlanContext(existingContent.State.PlanRevision, existingContent.PlanText, existingContent.DecisionsAndRationale);
 
         var worktreePath = WorktreePath(config, currentState.WorkflowId);
@@ -49,7 +50,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         var feedback = context.PullOrMergeRequest is { } mrContext
             ? mrContext.Comments.Concat(mrContext.ReviewThreads).Where(c => c.CreatedAt > existingContent.State.UpdatedAt).ToList()
             : [];
-
+        var feedbackBeforeRevision = await CaptureFeedbackSnapshotAsync(config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
         var revisionOutcome = await OmpRunCollector
             .RunToCompletionAsync(omp, new OmpRunRequest(currentState.OmpSessionId, worktreePath, config.ApplyInstructions(ImplementationPromptBuilder.BuildRevisionPrompt(context, feedback)), config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
             .ConfigureAwait(false);
@@ -90,12 +91,23 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             }
         }
 
+        var feedbackAfterRevision = await CaptureFeedbackSnapshotAsync(config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
+        if (!feedbackAfterRevision.SetEquals(feedbackBeforeRevision))
+        {
+            return await PauseForNewFeedbackAsync(
+                config,
+                issueNumber,
+                workingState,
+                existingContent,
+                result.RenderMarkdown(),
+                "New review feedback arrived while OMP was revising. The retained worktree was preserved; review the feedback and request another revision.",
+                cancellationToken).ConfigureAwait(false);
+        }
 
         if (deps.Git.WorktreeRequiresLfs(worktreePath))
         {
             await deps.Git.UploadLfsObjectsAsync(config.Repository.Id, worktreePath, currentState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
         }
-
         await deps.Git.PushAsync(config.Repository.Id, worktreePath, currentState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
 
         var publishedState = workingState with
@@ -121,9 +133,109 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, publishedState, "Revision published; awaiting review.");
     }
 
+    private async Task ConsumeMergeRequestCommandAsync(
+        WorkflowRepositoryConfig config,
+        long mergeRequestNumber,
+        WorkflowCommand command,
+        CancellationToken cancellationToken)
+    {
+        var workItem = new ProviderWorkItemReference(config.Repository, ProviderWorkItemKind.MergeRequest, mergeRequestNumber);
+        var commandLabel = command switch
+        {
+            WorkflowCommand.Revise => WorkflowCommandLabels.Revise,
+            _ => throw new ArgumentOutOfRangeException(nameof(command)),
+        };
+        var labels = await deps.Provider.GetLabelsAsync(workItem, cancellationToken).ConfigureAwait(false);
+        if (labels.Contains(commandLabel))
+        {
+            await deps.Provider.RemoveLabelAsync(workItem, commandLabel, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<HashSet<string>> CaptureFeedbackSnapshotAsync(
+        RepositoryRef repository,
+        long mergeRequestNumber,
+        CancellationToken cancellationToken)
+    {
+        var snapshot = new HashSet<string>(StringComparer.Ordinal);
+        await foreach (var comment in deps.Provider.GetMergeRequestCommentsAsync(repository, mergeRequestNumber, cancellationToken).ConfigureAwait(false))
+        {
+            if (!comment.IsBot && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
+            {
+                snapshot.Add($"comment:{comment.Id}:{comment.UpdatedAt:O}:{comment.Body}");
+            }
+        }
+
+        await foreach (var thread in deps.Provider.GetReviewThreadsAsync(repository, mergeRequestNumber, cancellationToken).ConfigureAwait(false))
+        {
+            foreach (var comment in thread.Comments)
+            {
+                if (!comment.IsBot && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
+                {
+                    snapshot.Add($"thread:{thread.Id}:{comment.Id}:{comment.UpdatedAt:O}:{comment.Body}");
+                }
+            }
+        }
+
+        return snapshot;
+    }
+
+    private async Task<WorkflowOutcome> PauseForNewFeedbackAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState workingState,
+        CanonicalCommentContent existingContent,
+        string implementationResult,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        var pausedState = workingState with
+        {
+            OperationalState = WorkflowOperationalState.Waiting,
+            WaitingReason = WaitingReason.ManualIntervention,
+            UpdatedAt = deps.Clock.UtcNow,
+        };
+        await UpsertCanonicalCommentAsync(
+            config,
+            issueNumber,
+            existingContent with
+            {
+                ImplementationResult = implementationResult,
+                State = CanonicalStateSerializer.ToDocument(pausedState, existingContent.State.PullOrMergeRequest),
+            },
+            cancellationToken).ConfigureAwait(false);
+        await TransitionLabelsAsync(config, issueNumber, pausedState.Phase, WorkflowOperationalState.Waiting, [], cancellationToken).ConfigureAwait(false);
+        await deps.Notifier.NotifyAsync(
+            new WorkflowNotification(WorkflowNotificationKind.HumanActionRequired, config.Repository.Id, issueNumber, pausedState.WorkflowId.ToString(), message),
+            cancellationToken).ConfigureAwait(false);
+        return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, pausedState, message);
+    }
+
     private async Task<WorkflowOutcome> FailAsync(WorkflowRepositoryConfig config, long issueNumber, WorkflowState workingState, string message, CancellationToken cancellationToken)
     {
-        var failedState = workingState with { Phase = WorkflowPhase.Failed, OperationalState = WorkflowOperationalState.Waiting, WaitingReason = WaitingReason.ManualIntervention, UpdatedAt = deps.Clock.UtcNow };
+        var failedState = workingState with
+        {
+            Phase = WorkflowPhase.Failed,
+            OperationalState = WorkflowOperationalState.Waiting,
+            WaitingReason = WaitingReason.ManualIntervention,
+            UpdatedAt = deps.Clock.UtcNow,
+        };
+        var canonical = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        if (canonical is not null)
+        {
+            try
+            {
+                var content = CanonicalCommentMarkdown.Parse(canonical.Body);
+                await UpsertCanonicalCommentAsync(
+                    config,
+                    issueNumber,
+                    content with { State = CanonicalStateSerializer.ToDocument(failedState, content.State.PullOrMergeRequest) },
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (CanonicalCommentCorruptException)
+            {
+            }
+        }
         await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Failed, WorkflowOperationalState.Waiting, [], cancellationToken).ConfigureAwait(false);
         await deps.Notifier.NotifyAsync(
             new WorkflowNotification(WorkflowNotificationKind.RevisionFailed, config.Repository.Id, issueNumber, failedState.WorkflowId.ToString(), message),

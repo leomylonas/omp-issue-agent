@@ -96,6 +96,10 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
         var remoteHead = await dependencies.Git
             .TryResolveRemoteBranchCommitAsync(config.Repository.Id, state.Branch, cancellationToken)
             .ConfigureAwait(false);
+        var localHeadIsAncestorOfRemote = localHead is not null &&
+            remoteHead is not null &&
+            !string.Equals(localHead, remoteHead, StringComparison.Ordinal) &&
+            await dependencies.Git.IsAncestorAsync(config.Repository.Id, localHead, remoteHead, cancellationToken).ConfigureAwait(false);
         var labels = await dependencies.Provider
             .GetLabelsAsync(new ProviderWorkItemReference(config.Repository, ProviderWorkItemKind.Issue, issueNumber), cancellationToken)
             .ConfigureAwait(false);
@@ -106,7 +110,9 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
             worktreeExists,
             localHead,
             remoteHead,
-            worktreeDirty));
+            worktreeDirty,
+            PlanInputHashPresent: content.State.PlanInputHash is { Length: > 0 },
+            LocalHeadIsAncestorOfRemote: localHeadIsAncestorOfRemote));
 
         if (decision.Action == ReconciliationAction.WaitForHuman)
         {

@@ -19,7 +19,9 @@ public sealed record ReconciliationInput(
     bool LocalWorktreeExists,
     string? LocalWorktreeHeadCommit,
     string? RemoteBranchHeadCommit,
-    bool LocalWorktreeDirty = false);
+    bool LocalWorktreeDirty = false,
+    bool PlanInputHashPresent = true,
+    bool LocalHeadIsAncestorOfRemote = false);
 
 /// <summary>
 /// Decides whether restart reconciliation may resume a workflow automatically or must wait for a
@@ -55,6 +57,11 @@ public static class ReconciliationDecider
             return Wait(WaitingReason.CorruptState, "The state label and the canonical comment's recorded operational state disagree.");
         }
 
+        if (!input.PlanInputHashPresent)
+        {
+            return Wait(WaitingReason.ReplanRequired, "The canonical plan is missing its required input hash; replan is required before the workflow can resume.");
+        }
+
         if (string.Equals(document.State, "working", StringComparison.Ordinal))
         {
             return Wait(WaitingReason.ManualIntervention, "The workflow was actively working when the process stopped; its in-flight operation cannot be safely resumed automatically.");
@@ -76,9 +83,10 @@ public static class ReconciliationDecider
         }
 
         if (input.LocalWorktreeExists && input.RemoteBranchHeadCommit is not null &&
-            !string.Equals(input.LocalWorktreeHeadCommit, input.RemoteBranchHeadCommit, StringComparison.Ordinal))
+            !string.Equals(input.LocalWorktreeHeadCommit, input.RemoteBranchHeadCommit, StringComparison.Ordinal) &&
+            !input.LocalHeadIsAncestorOfRemote)
         {
-            return Wait(WaitingReason.RemoteHistoryRewrite, "The retained worktree's history no longer matches the remote branch; it may have been force-pushed or reset externally.");
+            return Wait(WaitingReason.RemoteHistoryRewrite, "The retained worktree's history no longer matches the remote branch and is not an ancestor of it; it may have been force-pushed or reset externally.");
         }
 
         return new ReconciliationDecision(ReconciliationAction.ResumeAutomatically, null, "Remote and local state are consistent and unambiguous.");

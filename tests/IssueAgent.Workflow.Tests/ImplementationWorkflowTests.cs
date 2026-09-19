@@ -45,6 +45,8 @@ public sealed class ImplementationWorkflowTests : IDisposable
         Assert.Equal(WaitingReason.ReviewRequested, outcome.State.WaitingReason);
         Assert.Single(provider.MergeRequests);
         Assert.True(provider.MergeRequests[1].IsDraft);
+        Assert.Contains("<!-- issue-agent:workflow:", provider.MergeRequests[1].Description, StringComparison.Ordinal);
+        Assert.Contains("Fixes #1", provider.MergeRequests[1].Description, StringComparison.Ordinal);
         var updated = provider.UpdatedComments[^1];
         Assert.Contains("Added a guard clause.", updated.Body, StringComparison.Ordinal);
         Assert.Contains(provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)], l => l == "agent:phase:review");
@@ -128,9 +130,6 @@ public sealed class ImplementationWorkflowTests : IDisposable
             CancellationToken.None);
         provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] =
             ["agent:phase:implementing", "agent:state:waiting", "agent:cmd:continue"];
-        provider.MergeRequests[1] = new ProviderMergeRequest(
-            Repository, 1, interruptedState.Branch, interruptedState.TargetBranch, "Bug", "body",
-            IsDraft: true, IsMerged: false, IsClosed: false, new AttachmentSource("merge-request-description", "1"));
         var omp = new FakeOmpClient();
 
         var outcome = await CreateWorkflow().RunAsync(
@@ -205,14 +204,17 @@ public sealed class ImplementationWorkflowTests : IDisposable
 
         provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] =
             ["agent:phase:implementing", "agent:state:waiting", "agent:cmd:continue"];
-        var resumingOmp = new FakeOmpClient();
+        var resumingOmp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"summary":"Continued after acknowledgement.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
 
         var resumedOutcome = await CreateWorkflow().RunAsync(CreateConfig(), WorkflowMode.Full, 1, pausedOutcome.State, resumingOmp, CancellationToken.None);
 
         Assert.Equal(WorkflowPhase.Review, resumedOutcome.State.Phase);
-        Assert.Empty(resumingOmp.RunRequests);
+        Assert.Single(resumingOmp.RunRequests);
         Assert.Equal(1, git.ResetWorktreeCallCount);
-        Assert.Contains("Paused mid-flight.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
+        Assert.Contains("Continued after acknowledgement.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
     }
 
 
@@ -302,6 +304,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
         public ValueTask FetchAsync(string repositoryId, GitAuthentication authentication, CancellationToken cancellationToken) => inner.FetchAsync(repositoryId, authentication, cancellationToken);
         public ValueTask<string> ResolveBranchCommitAsync(string repositoryId, string branchName, CancellationToken cancellationToken) => inner.ResolveBranchCommitAsync(repositoryId, branchName, cancellationToken);
         public ValueTask<string?> TryResolveRemoteBranchCommitAsync(string repositoryId, string branchName, CancellationToken cancellationToken) => inner.TryResolveRemoteBranchCommitAsync(repositoryId, branchName, cancellationToken);
+        public ValueTask<bool> IsAncestorAsync(string repositoryId, string ancestorCommit, string descendantCommit, CancellationToken cancellationToken) => inner.IsAncestorAsync(repositoryId, ancestorCommit, descendantCommit, cancellationToken);
         public ValueTask CreateWorktreeAsync(string repositoryId, string worktreeId, string worktreePath, string branchName, string baseCommit, CancellationToken cancellationToken) => inner.CreateWorktreeAsync(repositoryId, worktreeId, worktreePath, branchName, baseCommit, cancellationToken);
         public ValueTask ResetWorktreeAsync(string repositoryId, string worktreePath, string commit, CancellationToken cancellationToken) => inner.ResetWorktreeAsync(repositoryId, worktreePath, commit, cancellationToken);
 

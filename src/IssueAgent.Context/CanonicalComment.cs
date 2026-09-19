@@ -92,7 +92,7 @@ public static partial class CanonicalCommentMarkdown
         var stateMatch = StateFencePattern().Match(body);
         if (!stateMatch.Success)
         {
-            throw new CanonicalCommentCorruptException("Canonical comment is missing its fenced YAML state block.");
+            throw new CanonicalCommentCorruptException("Canonical comment is missing its generated fenced YAML state block.");
         }
 
         CanonicalStateDocument state;
@@ -133,13 +133,13 @@ public static partial class CanonicalCommentMarkdown
         return new CanonicalCommentContent(planText, decisions, implementationResult, state);
     }
 
-    [GeneratedRegex(@"```yaml\r?\n(?<yaml>.*?)```", RegexOptions.Singleline)]
+    [GeneratedRegex(@"<details>\s*<summary>Agent state</summary>.*?```yaml\r?\n(?<yaml>.*?)```\s*</details>", RegexOptions.Singleline | RegexOptions.IgnoreCase)]
     private static partial Regex StateFencePattern();
 
-    [GeneratedRegex(@"^## Implementation plan\r?\n(?<plan>.*?)(?=\r?\n##[ #]|\r?\n<details>|\z)", RegexOptions.Multiline | RegexOptions.Singleline)]
+    [GeneratedRegex(@"^## Implementation plan\r?\n(?<plan>.*?)(?=\r?\n### Key decisions and rationale|\r?\n## Implementation result|\r?\n<details>|\z)", RegexOptions.Multiline | RegexOptions.Singleline)]
     private static partial Regex PlanSectionPattern();
 
-    [GeneratedRegex(@"^### Key decisions and rationale\r?\n(?<decisions>.*?)(?=\r?\n##|\r?\n<details>|\z)", RegexOptions.Multiline | RegexOptions.Singleline)]
+    [GeneratedRegex(@"^### Key decisions and rationale\r?\n(?<decisions>.*?)(?=\r?\n## Implementation result|\r?\n<details>|\z)", RegexOptions.Multiline | RegexOptions.Singleline)]
     private static partial Regex DecisionsSectionPattern();
 
     [GeneratedRegex(@"^## Implementation result\r?\n(?<result>.*?)(?=\r?\n<details>|\z)", RegexOptions.Multiline | RegexOptions.Singleline)]

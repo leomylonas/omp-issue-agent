@@ -1,4 +1,7 @@
+using System.Security.Cryptography;
+using System.Text;
 using IssueAgent.Context;
+using System.Diagnostics;
 using IssueAgent.Domain;
 using IssueAgent.Omp;
 using IssueAgent.Providers;
@@ -23,14 +26,31 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(omp);
-
         var workflowId = WorkflowId.New();
+        Activity.Current?.SetTag("WorkflowId", workflowId.ToString());
         var issue = await deps.Provider.GetIssueAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
         var targetBranch = config.TargetBranchOverride;
         var baseCommit = await deps.Git.ResolveBranchCommitAsync(config.Repository.Id, targetBranch, cancellationToken).ConfigureAwait(false);
 
         var session = await omp.CreateSessionAsync(config.PlanningRole, cancellationToken).ConfigureAwait(false);
         var branchName = BranchNaming.DeriveBranchName(issueNumber, issue.Title);
+        var initialState = new WorkflowState(
+            workflowId, WorkflowPhase.Planning, WorkflowOperationalState.Working, null,
+            PlanRevision: 0, ApprovedPlanRevision: null, session.SessionId, branchName, targetBranch, baseCommit,
+            deps.Clock.UtcNow, PlanInputHasher.Compute(issue.Title, issue.Description));
+
+        // Publish the planning/working checkpoint before creating any retained local state or
+        // invoking OMP. A restart can therefore distinguish an interrupted first attempt from a
+        // never-started workflow and preserve the stable workflow/session identity.
+        await UpsertCanonicalCommentAsync(
+            config,
+            issueNumber,
+            new CanonicalCommentContent(
+                "Planning is in progress.",
+                [],
+                null,
+                CanonicalStateSerializer.ToDocument(initialState, pullOrMergeRequest: null)),
+            cancellationToken).ConfigureAwait(false);
 
         await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Planning, WorkflowOperationalState.Working, [], cancellationToken)
             .ConfigureAwait(false);
@@ -40,11 +60,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         await deps.Git.CreateWorktreeAsync(config.Repository.Id, workflowId.ToString(), worktreePath, branchName, baseCommit, cancellationToken)
             .ConfigureAwait(false);
         await PrepareWorktreeContentAsync(config, worktreePath, cancellationToken).ConfigureAwait(false);
-
-        var initialState = new WorkflowState(
-            workflowId, WorkflowPhase.Planning, WorkflowOperationalState.Working, null,
-            PlanRevision: 0, ApprovedPlanRevision: null, session.SessionId, branchName, targetBranch, baseCommit, deps.Clock.UtcNow);
-
+        var planningInput = await CaptureInputSnapshotAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
         var context = await deps.ContextBuilder
             .BuildAsync(config.Repository, issueNumber, initialState, currentPlan: null, mergeRequest: null, attachmentsPath, cancellationToken)
             .ConfigureAwait(false);
@@ -61,11 +77,21 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         }
 
         var planningResult = PlanningResult.Parse(outcome.Completed!.ResultJson);
-        var reconciledResult = await ReconcileNewInputDuringPlanningAsync(
-            config, issueNumber, omp, session.SessionId, worktreePath, context, planningResult, cancellationToken)
-            .ConfigureAwait(false);
+        PlanningResult reconciledResult;
+        try
+        {
+            reconciledResult = await ReconcileNewInputDuringPlanningAsync(
+                config, issueNumber, omp, session.SessionId, worktreePath, context, planningResult, planningInput, currentPlan: null, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (WorkflowContractException exception)
+        {
+            return await FailAsync(config, issueNumber, initialState, WaitingReason.ManualIntervention, exception.Message, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        var latestIssue = await deps.Provider.GetIssueAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
 
-        return await PublishPlanAsync(config, issueNumber, initialState, reconciledResult, planRevision: 1, issue.Title, issue.Description, cancellationToken).ConfigureAwait(false);
+        return await PublishPlanAsync(config, issueNumber, initialState, reconciledResult, planRevision: 1, latestIssue.Title, latestIssue.Description, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Resumes the same OMP session with the complete relevant planning conversation and
@@ -102,6 +128,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         var existingContent = CanonicalCommentMarkdown.Parse(canonicalComment.Body);
         var currentPlan = new PlanContext(existingContent.State.PlanRevision, existingContent.PlanText, existingContent.DecisionsAndRationale);
 
+        var planningInput = await CaptureInputSnapshotAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
         var context = await deps.ContextBuilder
             .BuildAsync(config.Repository, issueNumber, workingState, currentPlan, mergeRequest: null, attachmentsPath, cancellationToken)
             .ConfigureAwait(false);
@@ -122,8 +149,42 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         }
 
         var planningResult = PlanningResult.Parse(outcome.Completed!.ResultJson);
-        return await PublishPlanAsync(config, issueNumber, workingState, planningResult, existingContent.State.PlanRevision + 1, context.PrimaryIssue.Title, context.PrimaryIssue.Description, cancellationToken)
+        PlanningResult reconciled;
+        try
+        {
+            reconciled = await ReconcileNewInputDuringPlanningAsync(
+                config, issueNumber, omp, currentState.OmpSessionId, worktreePath, context, planningResult, planningInput, currentPlan, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (WorkflowContractException exception)
+        {
+            return await FailAsync(config, issueNumber, workingState, WaitingReason.ManualIntervention, exception.Message, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        var latestIssue = await deps.Provider.GetIssueAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        return await PublishPlanAsync(config, issueNumber, workingState, reconciled, existingContent.State.PlanRevision + 1, latestIssue.Title, latestIssue.Description, cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    private sealed record InputSnapshot(string Title, string Description, string CommentsDigest);
+
+    private async Task<InputSnapshot> CaptureInputSnapshotAsync(
+        RepositoryRef repository,
+        long issueNumber,
+        CancellationToken cancellationToken)
+    {
+        var issue = await deps.Provider.GetIssueAsync(repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var commentStamps = new List<string>();
+        await foreach (var comment in deps.Provider.GetIssueCommentsAsync(repository, issueNumber, cancellationToken).ConfigureAwait(false))
+        {
+            if (!comment.IsBot && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
+            {
+                commentStamps.Add($"{comment.Id}:{comment.UpdatedAt:O}:{comment.Body}");
+            }
+        }
+
+        var digest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('|', commentStamps))));
+        return new InputSnapshot(issue.Title, issue.Description, digest);
     }
 
     private async Task<PlanningResult> ReconcileNewInputDuringPlanningAsync(
@@ -134,35 +195,44 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         string worktreePath,
         AgentContext contextUsedForPlanning,
         PlanningResult initialResult,
+        InputSnapshot inputSnapshot,
+        PlanContext? currentPlan,
         CancellationToken cancellationToken)
     {
-        var latestComments = new List<HumanComment>();
-        await foreach (var comment in deps.Provider.GetIssueCommentsAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false))
+        var result = initialResult;
+        var context = contextUsedForPlanning;
+        var baseline = inputSnapshot;
+        while (true)
         {
-            if (!comment.IsBot && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
+            var latest = await CaptureInputSnapshotAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+            if (latest == baseline)
             {
-                latestComments.Add(new HumanComment(comment.AuthorLogin, comment.CreatedAt, comment.Body));
+                return result;
             }
+
+            var latestPlan = new PlanContext(currentPlan?.Revision ?? 0, result.PlanText, result.DecisionsAndRationale);
+            context = await deps.ContextBuilder
+                .BuildAsync(config.Repository, issueNumber, context.WorkflowState, latestPlan, mergeRequest: null,
+                    AttachmentsPath(config, context.WorkflowState.WorkflowId), cancellationToken)
+                .ConfigureAwait(false);
+            var feedback = context.PrimaryIssue.HumanComments
+                .Where(comment => !contextUsedForPlanning.PrimaryIssue.HumanComments.Any(
+                    previous => previous.Author == comment.Author && previous.CreatedAt == comment.CreatedAt && previous.Body == comment.Body))
+                .ToList();
+            var prompt = config.ApplyInstructions(PlanningPromptBuilder.BuildReplanPrompt(
+                context with { CurrentPlan = latestPlan }, feedback));
+            var outcome = await OmpRunCollector
+                .RunToCompletionAsync(omp, new OmpRunRequest(sessionId, worktreePath, prompt, config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
+                .ConfigureAwait(false);
+            if (!outcome.Succeeded)
+            {
+                throw new WorkflowContractException($"OMP reconciliation run failed: {outcome.Error?.Message ?? "unknown error"}");
+            }
+
+            result = PlanningResult.Parse(outcome.Completed!.ResultJson);
+            contextUsedForPlanning = context;
+            baseline = latest;
         }
-
-        var newComments = latestComments
-            .Where(latest => !contextUsedForPlanning.PrimaryIssue.HumanComments.Any(seen => seen.CreatedAt == latest.CreatedAt && seen.Author == latest.Author))
-            .ToList();
-
-        if (newComments.Count == 0)
-        {
-            return initialResult;
-        }
-
-        var prompt = config.ApplyInstructions(PlanningPromptBuilder.BuildReplanPrompt(
-            contextUsedForPlanning with { CurrentPlan = new PlanContext(0, initialResult.PlanText, initialResult.DecisionsAndRationale) },
-            newComments));
-
-        var outcome = await OmpRunCollector
-            .RunToCompletionAsync(omp, new OmpRunRequest(sessionId, worktreePath, prompt, config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
-            .ConfigureAwait(false);
-
-        return outcome.Succeeded ? PlanningResult.Parse(outcome.Completed!.ResultJson) : initialResult;
     }
 
     private async Task<WorkflowOutcome> PublishPlanAsync(
@@ -216,13 +286,30 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             WaitingReason = reason,
             UpdatedAt = deps.Clock.UtcNow,
         };
+        var canonical = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        if (canonical is not null)
+        {
+            try
+            {
+                var content = CanonicalCommentMarkdown.Parse(canonical.Body);
+                await UpsertCanonicalCommentAsync(
+                    config,
+                    issueNumber,
+                    content with { State = CanonicalStateSerializer.ToDocument(failedState, content.State.PullOrMergeRequest) },
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (CanonicalCommentCorruptException)
+            {
+                // Preserve the original corruption handling path; labels still transition to a
+                // waiting state, but no guessed canonical document is written.
+            }
+        }
 
         await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Failed, WorkflowOperationalState.Waiting, [], cancellationToken)
             .ConfigureAwait(false);
         await deps.Notifier.NotifyAsync(
             new WorkflowNotification(WorkflowNotificationKind.PlanFailed, config.Repository.Id, issueNumber, failedState.WorkflowId.ToString(), message),
             cancellationToken).ConfigureAwait(false);
-
         return new WorkflowOutcome(WorkflowOutcomeStatus.Failed, failedState, message);
     }
 
