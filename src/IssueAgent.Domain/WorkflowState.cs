@@ -92,7 +92,8 @@ public sealed record WorkflowState(
     string Branch,
     string TargetBranch,
     string BaseCommit,
-    DateTimeOffset UpdatedAt)
+    DateTimeOffset UpdatedAt,
+    string? PlanInputHash = null)
 {
     public void EnsureValid()
     {
