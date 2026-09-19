@@ -117,9 +117,66 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         CancellationToken cancellationToken)
     {
         var barePath = BareRepositoryPath(repositoryId);
+        var worktreesMetadataPath = Path.Combine(barePath, "worktrees");
+        if (Directory.Exists(worktreesMetadataPath))
+        {
+            foreach (var metadataPath in Directory.GetDirectories(worktreesMetadataPath))
+            {
+                var gitDirectoryPath = Path.Combine(metadataPath, "gitdir");
+                if (File.Exists(gitDirectoryPath))
+                {
+                    var checkoutGitPath = File.ReadAllText(gitDirectoryPath).Trim();
+                    if (!File.Exists(checkoutGitPath) && !Directory.Exists(checkoutGitPath))
+                    {
+                        Directory.Delete(metadataPath, recursive: true);
+                    }
+                }
+            }
+        }
         using var repo = new Repository(barePath);
+        if (!Directory.Exists(worktreePath) &&
+            !string.Equals(worktreeId, branchName, StringComparison.Ordinal) &&
+            repo.Branches[worktreeId] is { } staleWorktreeBranch)
+        {
+            repo.Branches.Remove(staleWorktreeBranch);
+        }
 
         Directory.CreateDirectory(Path.GetDirectoryName(worktreePath)!);
+
+        // LibGit2Sharp can retain a registration after an interrupted directory removal.
+        // Recreating the same durable workflow must prune that stale registration instead of
+        // failing with "worktree already exists"; a live registration at the requested path is
+        // already the idempotent success case.
+        Worktree? existingWorktree = null;
+        foreach (var candidate in repo.Worktrees.ToList())
+        {
+            try
+            {
+                if (string.Equals(candidate.Name, worktreeId, StringComparison.Ordinal))
+                {
+                    existingWorktree = candidate;
+                    break;
+                }
+            }
+            catch (NullReferenceException)
+            {
+                // A registration whose checkout directory disappeared can throw while LibGit2Sharp
+                // materializes its name. It is stale by definition and safe to prune.
+                repo.Worktrees.Prune(candidate, ifLocked: true);
+            }
+        }
+
+        if (existingWorktree is not null)
+        {
+            if (Directory.Exists(worktreePath))
+            {
+                DisableHooks(worktreePath);
+                ConfigureLfsFilters(worktreePath);
+                return ValueTask.CompletedTask;
+            }
+
+            repo.Worktrees.Prune(existingWorktree, ifLocked: true);
+        }
 
         var branch = repo.Branches[branchName];
         if (branch is null)
