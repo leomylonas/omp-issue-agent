@@ -1,3 +1,4 @@
+using System.Net;
 using IssueAgent.Providers;
 
 namespace IssueAgent.Context.Tests;
@@ -97,5 +98,138 @@ public sealed class AttachmentPipelineTests
             CancellationToken.None);
 
         Assert.Equal(1000 - 42, budget.Remaining);
+    }
+
+    [Theory]
+    [InlineData("127.0.0.1")]
+    [InlineData("169.254.169.254")]
+    [InlineData("0.0.0.0")]
+    [InlineData("100.64.0.1")]
+    [InlineData("192.0.0.8")]
+    [InlineData("198.18.0.1")]
+    [InlineData("::")]
+    [InlineData("ff02::1")]
+    public async Task ProcessAsyncOmitsDirectFileLinkResolvingToUnsafeAddress(string resolvedAddress)
+    {
+        var pipeline = new AttachmentPipeline(
+            provider,
+            new AttachmentLimits(),
+            (_, _) => Task.FromResult(new[] { IPAddress.Parse(resolvedAddress) }));
+        var budget = new RemainingBudget(100 * 1024 * 1024);
+
+        var results = await pipeline.ProcessAsync(
+            "[metadata](https://untrusted.example/metadata.json)",
+            new AttachmentSource("issue-description", "1"),
+            destination,
+            budget,
+            CancellationToken.None);
+
+        var attachment = Assert.Single(results);
+        Assert.True(attachment.IsOmitted);
+        Assert.Contains("unsafe network address", attachment.OmissionReason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ProcessAsyncOmitsRatherThanCrashesOnADownloadTransportFailureSuchAsABlockedRedirect()
+    {
+        // Regression: the anonymous attachment client disables AllowAutoRedirect so an unvalidated
+        // 3xx to an internal/loopback/cloud-metadata endpoint is never followed (specification §15).
+        // A blocked redirect surfaces as HttpRequestException from EnsureSuccessStatusCode; one bad
+        // link must be omitted, not crash the whole ProcessAsync call for every other link.
+        provider.TrustedHosts.Add("github.example");
+        provider.AttachmentDownloadOverride = (_, _, _) => throw new HttpRequestException("Response status code does not indicate success: 302 (Found).", null, System.Net.HttpStatusCode.Found);
+
+        var results = await RunProcessAsync("[redirect](https://github.example/files/redirect.pdf)");
+
+        var attachment = Assert.Single(results);
+        Assert.True(attachment.IsOmitted);
+        Assert.Contains("download failed", attachment.OmissionReason, StringComparison.Ordinal);
+    }
+
+    private async Task<IReadOnlyList<IssueAgent.Domain.AttachmentReference>> RunProcessAsync(string body)
+    {
+        var pipeline = new AttachmentPipeline(provider, new AttachmentLimits());
+        var budget = new RemainingBudget(100 * 1024 * 1024);
+        return await pipeline.ProcessAsync(body, new AttachmentSource("issue-description", "1"), destination, budget, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task ProcessAsyncOmitsLinksBeyondAttachmentCountLimit()
+    {
+        provider.TrustedHosts.Add("github.example");
+        provider.DownloadableContent["https://github.example/files/a.pdf"] = [1];
+        provider.DownloadableContent["https://github.example/files/b.pdf"] = [2];
+        var pipeline = new AttachmentPipeline(provider, new AttachmentLimits { MaxAttachmentCount = 2 });
+        var budget = new RemainingBudget(100 * 1024 * 1024);
+
+        var results = await pipeline.ProcessAsync(
+            "[a](https://github.example/files/a.pdf) [b](https://github.example/files/b.pdf) [c](https://github.example/files/c.pdf)",
+            new AttachmentSource("issue-description", "1"),
+            destination,
+            budget,
+            CancellationToken.None);
+
+        Assert.Equal(3, results.Count);
+        Assert.All(results.Take(2), attachment => Assert.False(attachment.IsOmitted));
+        Assert.True(results[2].IsOmitted);
+        Assert.Contains("count exceeds", results[2].OmissionReason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ProcessAsyncEnforcesTheAttachmentCountLimitAcrossMultipleCallsSharingOneBudget()
+    {
+        // Regression: the count limit must bound the whole workflow context (every comment body),
+        // not reset per ProcessAsync call — otherwise many comments each carrying one link drive
+        // unbounded downloads for a single planning turn (specification §15).
+        provider.TrustedHosts.Add("github.example");
+        for (var i = 0; i < 5; i++)
+        {
+            provider.DownloadableContent[$"https://github.example/files/{i}.pdf"] = [1];
+        }
+
+        var pipeline = new AttachmentPipeline(provider, new AttachmentLimits { MaxAttachmentCount = 2 });
+        var budget = new RemainingBudget(100 * 1024 * 1024);
+
+        var allResults = new List<IssueAgent.Domain.AttachmentReference>();
+        for (var i = 0; i < 5; i++)
+        {
+            allResults.AddRange(await pipeline.ProcessAsync(
+                $"[link](https://github.example/files/{i}.pdf)",
+                new AttachmentSource("issue-comment", i.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                destination,
+                budget,
+                CancellationToken.None));
+        }
+
+        Assert.Equal(5, allResults.Count);
+        Assert.Equal(2, allResults.Count(attachment => !attachment.IsOmitted));
+        Assert.Equal(3, allResults.Count(attachment => attachment.IsOmitted));
+    }
+
+    [Fact]
+    public async Task ProcessAsyncOmitsDownloadWhoseActualSizeExceedsRequestedCap()
+    {
+        provider.TrustedHosts.Add("github.example");
+        var partialPath = Path.Combine(destination, "oversized.pdf");
+        provider.AttachmentDownloadOverride = (_, _, _) =>
+        {
+            Directory.CreateDirectory(destination);
+            File.WriteAllBytes(partialPath, new byte[6]);
+            return new DownloadedAttachment(partialPath, "oversized.pdf", 6);
+        };
+        var pipeline = new AttachmentPipeline(provider, new AttachmentLimits { MaxAttachmentSizeBytes = 5 });
+        var budget = new RemainingBudget(5);
+
+        var results = await pipeline.ProcessAsync(
+            "[oversized](https://github.example/files/oversized.pdf)",
+            new AttachmentSource("issue-description", "1"),
+            destination,
+            budget,
+            CancellationToken.None);
+
+        var attachment = Assert.Single(results);
+        Assert.True(attachment.IsOmitted);
+        Assert.Equal(5, budget.Remaining);
+        Assert.False(File.Exists(partialPath));
     }
 }

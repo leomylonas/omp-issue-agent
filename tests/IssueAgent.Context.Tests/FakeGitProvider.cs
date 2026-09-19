@@ -19,6 +19,8 @@ public sealed class FakeGitProvider : IGitProvider
 
     public Dictionary<string, byte[]> DownloadableContent { get; } = [];
 
+    public Func<ProviderAttachment, string, long, DownloadedAttachment>? AttachmentDownloadOverride { get; set; }
+
     public HashSet<string> TrustedHosts { get; } = [];
 
     public string Name => "fake";
@@ -56,7 +58,12 @@ public sealed class FakeGitProvider : IGitProvider
 
     public ValueTask<ProviderIdentity> GetCurrentIdentityAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
 
+    public ValueTask<string> GetDefaultBranchAsync(RepositoryRef repository, CancellationToken cancellationToken) => throw new NotSupportedException();
+
     public IAsyncEnumerable<IssueSummary> DiscoverAssignedOpenIssuesAsync(RepositoryRef repository, string identity, DateTimeOffset startDate, CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
+    public IAsyncEnumerable<IssueSummary> DiscoverManagedIssuesAsync(RepositoryRef repository, CancellationToken cancellationToken) =>
         throw new NotSupportedException();
 
     public ValueTask<ProviderIssue> GetIssueAsync(RepositoryRef repository, long issueNumber, CancellationToken cancellationToken) =>
@@ -134,6 +141,11 @@ public sealed class FakeGitProvider : IGitProvider
 
     public ValueTask<DownloadedAttachment> DownloadAttachmentAsync(ProviderAttachment attachment, string destinationDirectory, long maxSizeBytes, CancellationToken cancellationToken)
     {
+        if (AttachmentDownloadOverride is not null)
+        {
+            return ValueTask.FromResult(AttachmentDownloadOverride(attachment, destinationDirectory, maxSizeBytes));
+        }
+
         if (!DownloadableContent.TryGetValue(attachment.Url.ToString(), out var content))
         {
             throw new KeyNotFoundException($"No fake content registered for {attachment.Url}.");

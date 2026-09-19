@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.RegularExpressions;
 using IssueAgent.Domain;
 using YamlDotNet.Core;
 using YamlDotNet.Core.Events;
@@ -19,6 +20,7 @@ public sealed record CanonicalStateDocument
     public string? WaitingReason { get; init; }
     public required int PlanRevision { get; init; }
     public int? ApprovedPlanRevision { get; init; }
+    public string? PlanInputHash { get; init; }
     public required string OmpSessionId { get; init; }
     public required string Branch { get; init; }
     public required string TargetBranch { get; init; }
@@ -48,7 +50,7 @@ internal sealed class DateTimeOffsetYamlConverter : IYamlTypeConverter
 
 /// <summary>Converts between the domain <see cref="WorkflowState"/> and the durable YAML document,
 /// and serializes/deserializes that document to/from the exact text stored in the canonical comment.</summary>
-public static class CanonicalStateSerializer
+public static partial class CanonicalStateSerializer
 {
     private static readonly ISerializer Serializer = new SerializerBuilder()
         .WithNamingConvention(CamelCaseNamingConvention.Instance)
@@ -71,6 +73,7 @@ public static class CanonicalStateSerializer
         WaitingReason = state.WaitingReason is { } reason ? ToKebabCase(reason.ToString()) : null,
         PlanRevision = state.PlanRevision,
         ApprovedPlanRevision = state.ApprovedPlanRevision,
+        PlanInputHash = state.PlanInputHash,
         OmpSessionId = state.OmpSessionId,
         Branch = state.Branch,
         TargetBranch = state.TargetBranch,
@@ -91,6 +94,10 @@ public static class CanonicalStateSerializer
             throw new CanonicalStateException($"Canonical state workflowId '{document.WorkflowId}' is not a valid identifier.");
         }
 
+        var branch = ValidateBranchName(document.Branch, "branch");
+        var targetBranch = ValidateBranchName(document.TargetBranch, "targetBranch");
+        var baseCommit = ValidateCommitSha(document.BaseCommit);
+
         return new WorkflowState(
             new WorkflowId(workflowIdValue),
             ParseEnum<WorkflowPhase>(document.Phase, "phase"),
@@ -99,10 +106,44 @@ public static class CanonicalStateSerializer
             document.PlanRevision,
             document.ApprovedPlanRevision,
             document.OmpSessionId,
-            document.Branch,
-            document.TargetBranch,
-            document.BaseCommit,
-            document.UpdatedAt);
+            branch,
+            targetBranch,
+            baseCommit,
+            document.UpdatedAt,
+            document.PlanInputHash);
+    }
+
+    [GeneratedRegex(@"^[A-Za-z0-9]([A-Za-z0-9._/-]*[A-Za-z0-9])?$")]
+    private static partial Regex SafeBranchNamePattern();
+
+    [GeneratedRegex(@"^[0-9a-fA-F]{4,64}$")]
+    private static partial Regex CommitShaPattern();
+
+    /// <summary>Rejects a branch name that does not match a safe shape before it can ever reach a
+    /// git/git-lfs command line (specification §10, §11): a maintainer-editable canonical comment
+    /// must never be able to inject an option into a remote-touching git invocation.</summary>
+    private static string ValidateBranchName(string value, string fieldName)
+    {
+        if (string.IsNullOrWhiteSpace(value) ||
+            value.StartsWith('-') ||
+            value.Contains("..", StringComparison.Ordinal) ||
+            value.Any(char.IsWhiteSpace) ||
+            !SafeBranchNamePattern().IsMatch(value))
+        {
+            throw new CanonicalStateException($"Canonical state field '{fieldName}' has an unsafe value.");
+        }
+
+        return value;
+    }
+
+    private static string ValidateCommitSha(string value)
+    {
+        if (!CommitShaPattern().IsMatch(value))
+        {
+            throw new CanonicalStateException("Canonical state field 'baseCommit' is not a valid commit SHA.");
+        }
+
+        return value;
     }
 
     public static string Serialize(CanonicalStateDocument document) => Serializer.Serialize(document).TrimEnd();

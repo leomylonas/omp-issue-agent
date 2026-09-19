@@ -23,6 +23,36 @@ public sealed class AgentContextBuilderTests
     }
 
     [Fact]
+    public async Task BuildAsyncExcludesCanonicalCommentEvenWhenIgnoreBotCommentsIsFalseAndAuthorIsNotBot()
+    {
+        var provider = new FakeGitProvider();
+        provider.AddIssue(Repository, 1, "Bug report", "Something is broken");
+        provider.AddComment(Repository, 1, "alice", "Here is more detail", isBot: false);
+        var canonicalBody = CanonicalCommentMarkdown.Render(new CanonicalCommentContent(
+            "Plan text", [], null,
+            CanonicalStateSerializer.ToDocument(
+                new WorkflowState(
+                    WorkflowId.New(), WorkflowPhase.Planned, WorkflowOperationalState.Waiting, WaitingReason.PlanApproval,
+                    1, null, "omp-session", "agent/issue-1", "main", "abc123", DateTimeOffset.UtcNow),
+                null)));
+        provider.AddComment(Repository, 1, "issue-agent-bot", canonicalBody, isBot: false);
+
+        var options = new AgentContextBuilderOptions { IgnoreBotComments = false };
+        var builder = new AgentContextBuilder(provider, new AttachmentPipeline(provider, options.AttachmentLimits), options);
+        var state = new WorkflowState(
+            WorkflowId.New(), WorkflowPhase.Planning, WorkflowOperationalState.Working, null,
+            0, null, "omp-session", "agent/issue-1", "main", "abc123", DateTimeOffset.UtcNow);
+
+        var context = await builder.BuildAsync(
+            Repository, 1, state, currentPlan: null, mergeRequest: null,
+            Path.Combine(Path.GetTempPath(), "issueagent-context-tests", Guid.NewGuid().ToString("N")),
+            CancellationToken.None);
+
+        var comment = Assert.Single(context.PrimaryIssue.HumanComments);
+        Assert.Equal("alice", comment.Author);
+    }
+
+    [Fact]
     public async Task BuildAsyncFollowsRelatedIssuesOneHopByDefault()
     {
         var provider = new FakeGitProvider();

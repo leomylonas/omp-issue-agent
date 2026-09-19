@@ -65,7 +65,7 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
         var humanComments = new List<HumanComment>();
         await foreach (var comment in provider.GetIssueCommentsAsync(repository, issueNumber, cancellationToken).ConfigureAwait(false))
         {
-            if (options.IgnoreBotComments && comment.IsBot)
+            if (comment.IsBot && options.IgnoreBotComments || CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
             {
                 continue;
             }
@@ -143,7 +143,7 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
         var comments = new List<HumanComment>();
         await foreach (var comment in provider.GetMergeRequestCommentsAsync(repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false))
         {
-            if (options.IgnoreBotComments && comment.IsBot)
+            if (comment.IsBot && options.IgnoreBotComments || CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
             {
                 continue;
             }
@@ -159,7 +159,7 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
         {
             foreach (var comment in thread.Comments)
             {
-                if (options.IgnoreBotComments && comment.IsBot)
+                if (comment.IsBot && options.IgnoreBotComments || CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
                 {
                     continue;
                 }

@@ -36,7 +36,17 @@ public static partial class CanonicalCommentMarkdown
             builder.AppendLine("### Key decisions and rationale");
             foreach (var decision in content.DecisionsAndRationale)
             {
-                builder.Append("- ").AppendLine(decision);
+                if (string.IsNullOrWhiteSpace(decision))
+                {
+                    continue;
+                }
+
+                var lines = decision.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+                builder.Append("- ").AppendLine(lines[0]);
+                for (var i = 1; i < lines.Length; i++)
+                {
+                    builder.Append("  ").AppendLine(lines[i]);
+                }
             }
         }
 
@@ -109,7 +119,7 @@ public static partial class CanonicalCommentMarkdown
         {
             foreach (Match bullet in BulletLinePattern().Matches(decisionsMatch.Groups["decisions"].Value))
             {
-                decisions.Add(bullet.Groups["text"].Value.Trim());
+                decisions.Add(JoinContinuationLines(bullet.Groups["text"].Value));
             }
         }
 
@@ -135,8 +145,19 @@ public static partial class CanonicalCommentMarkdown
     [GeneratedRegex(@"^## Implementation result\r?\n(?<result>.*?)(?=\r?\n<details>|\z)", RegexOptions.Multiline | RegexOptions.Singleline)]
     private static partial Regex ImplementationResultSectionPattern();
 
-    [GeneratedRegex(@"^-\s+(?<text>.+)$", RegexOptions.Multiline)]
+    [GeneratedRegex(@"^-\s+(?<text>.+?)(?=\r?\n-\s|\z)", RegexOptions.Multiline | RegexOptions.Singleline)]
     private static partial Regex BulletLinePattern();
+
+    private static string JoinContinuationLines(string text)
+    {
+        var lines = text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        for (var i = 1; i < lines.Length; i++)
+        {
+            lines[i] = lines[i].StartsWith("  ", StringComparison.Ordinal) ? lines[i][2..] : lines[i];
+        }
+
+        return string.Join('\n', lines).Trim();
+    }
 }
 
 public sealed class CanonicalCommentCorruptException : Exception

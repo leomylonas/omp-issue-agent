@@ -22,6 +22,37 @@ public sealed class CanonicalCommentMarkdownTests
     }
 
     [Fact]
+    public void RenderThenParseRoundTripsMultilineDecisionRationale()
+    {
+        var content = CreateContent(
+            planText: "Plan text",
+            decisions: [
+                "First line of rationale.\nSecond line explains the tradeoff.\nThird line has the final detail.",
+                "A second, single-line decision.",
+            ],
+            implementationResult: null);
+
+        var rendered = CanonicalCommentMarkdown.Render(content);
+        var parsed = CanonicalCommentMarkdown.Parse(rendered);
+
+        Assert.Equal(content.DecisionsAndRationale, parsed.DecisionsAndRationale);
+    }
+
+    [Fact]
+    public void RenderThenParseRoundTripsWhenDecisionsContainBlankEntries()
+    {
+        var content = CreateContent(
+            planText: "Plan text",
+            decisions: ["First.", "", "   ", "Third."],
+            implementationResult: null);
+
+        var rendered = CanonicalCommentMarkdown.Render(content);
+        var parsed = CanonicalCommentMarkdown.Parse(rendered);
+
+        Assert.Equal(["First.", "Third."], parsed.DecisionsAndRationale);
+    }
+
+    [Fact]
     public void RenderIncludesHeaderAndLocatorMarker()
     {
         var rendered = CanonicalCommentMarkdown.Render(CreateContent("Plan text", [], null));
