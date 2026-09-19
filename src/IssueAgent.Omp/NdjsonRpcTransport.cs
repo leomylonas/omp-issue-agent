@@ -6,20 +6,18 @@ using System.Threading.Channels;
 namespace IssueAgent.Omp;
 
 /// <summary>
-/// Generic newline-delimited-JSON RPC transport over a child process's stdio. Frames a
-/// JSON-RPC 2.0-shaped request/response/notification protocol: each line is one JSON object with
-/// an optional <c>id</c> (present on requests/responses, absent on notifications). Owns the child
-/// process lifecycle and exposes unsolicited notifications as an async stream.
-///
-/// This transport is protocol-agnostic; it knows nothing about OMP's specific method names or
-/// payload shapes. See <see cref="OmpProcessClient"/> for the OMP-specific layer built on top.
+/// Newline-delimited JSON transport for OMP's typed RPC mode. OMP does not speak JSON-RPC:
+/// commands have a <c>type</c> discriminator and responses are <c>type=response</c> frames
+/// correlated by an optional string id.
 /// </summary>
 public sealed class NdjsonRpcTransport : IAsyncDisposable
 {
     private readonly Process process;
-    private readonly Channel<JsonObject> notifications = Channel.CreateUnbounded<JsonObject>();
-    private readonly Dictionary<long, TaskCompletionSource<JsonObject>> pendingRequests = [];
+    private readonly Channel<JsonObject> frames = Channel.CreateUnbounded<JsonObject>();
+    private readonly Dictionary<string, TaskCompletionSource<JsonObject>> pendingRequests = [];
     private readonly Lock pendingRequestsLock = new();
+    private readonly TaskCompletionSource<JsonObject> ready =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task readLoopTask;
     private long nextRequestId;
     private int disposed;
@@ -30,8 +28,8 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
         readLoopTask = Task.Run(ReadLoopAsync);
     }
 
-    /// <summary>Starts <paramref name="executablePath"/> with an explicit allow-listed environment
-    /// (never the full ambient process environment) and returns a transport bound to its stdio.</summary>
+    /// <summary>Starts OMP with an explicit allow-listed environment and waits for its startup
+    /// <c>ready</c> frame before returning.</summary>
     public static NdjsonRpcTransport Start(
         string executablePath,
         IReadOnlyList<string> arguments,
@@ -57,55 +55,75 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
             startInfo.EnvironmentVariables[key] = value;
         }
 
-        var process = Process.Start(startInfo) ?? throw new InvalidOperationException($"Failed to start OMP process '{executablePath}'.");
-        return new NdjsonRpcTransport(process);
-    }
-
-    /// <summary>Notifications (lines without a matching pending request id) in arrival order.</summary>
-    public IAsyncEnumerable<JsonObject> Notifications => notifications.Reader.ReadAllAsync();
-
-    /// <summary>Sends a JSON-RPC request and awaits its correlated response line.</summary>
-    public async Task<JsonObject> SendRequestAsync(string method, JsonNode? parameters, CancellationToken cancellationToken)
-    {
-        var id = Interlocked.Increment(ref nextRequestId);
-        var completion = new TaskCompletionSource<JsonObject>(TaskCreationOptions.RunContinuationsAsynchronously);
-        lock (pendingRequestsLock)
+        var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException($"Failed to start OMP process '{executablePath}'.");
+        var transport = new NdjsonRpcTransport(process);
+        try
         {
-            pendingRequests[id] = completion;
+            transport.ready.Task.Wait(TimeSpan.FromSeconds(10));
+            if (!transport.ready.Task.IsCompletedSuccessfully)
+            {
+                throw new InvalidOperationException("OMP process exited without sending its ready frame.");
+            }
+        }
+        catch
+        {
+            transport.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            throw;
         }
 
-        var request = new JsonObject
+        return transport;
+    }
+
+    /// <summary>Non-response OMP frames (agent events, UI requests, and metadata updates) in
+    /// arrival order.</summary>
+    public IAsyncEnumerable<JsonObject> Frames => frames.Reader.ReadAllAsync();
+
+    /// <summary>Sends a typed OMP command and awaits its correlated response.</summary>
+    public async Task<JsonObject> SendCommandAsync(
+        string type,
+        JsonObject? fields,
+        CancellationToken cancellationToken)
+    {
+        var id = Interlocked.Increment(ref nextRequestId).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var command = fields ?? new JsonObject();
+        command["id"] = id;
+        command["type"] = type;
+        lock (pendingRequestsLock)
         {
-            ["id"] = id,
-            ["method"] = method,
-            ["params"] = parameters,
-        };
+            pendingRequests[id] = new TaskCompletionSource<JsonObject>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+        }
 
-        await WriteLineAsync(request, cancellationToken).ConfigureAwait(false);
+        TaskCompletionSource<JsonObject> completion;
+        lock (pendingRequestsLock)
+        {
+            completion = pendingRequests[id];
+        }
 
-        await using (cancellationToken.Register(() =>
+        try
+        {
+            await WriteLineAsync(command, cancellationToken).ConfigureAwait(false);
+            using (cancellationToken.Register(() =>
+            {
+                lock (pendingRequestsLock)
+                {
+                    pendingRequests.Remove(id);
+                }
+                completion.TrySetCanceled(cancellationToken);
+            }))
+            {
+                return await completion.Task.ConfigureAwait(false);
+            }
+        }
+        catch
         {
             lock (pendingRequestsLock)
             {
                 pendingRequests.Remove(id);
             }
-
-            completion.TrySetCanceled(cancellationToken);
-        }).ConfigureAwait(false))
-        {
-            return await completion.Task.ConfigureAwait(false);
+            throw;
         }
-    }
-
-    /// <summary>Sends a fire-and-forget notification (no <c>id</c>, no response expected).</summary>
-    public Task SendNotificationAsync(string method, JsonNode? parameters, CancellationToken cancellationToken)
-    {
-        var notification = new JsonObject
-        {
-            ["method"] = method,
-            ["params"] = parameters,
-        };
-        return WriteLineAsync(notification, cancellationToken);
     }
 
     private async Task WriteLineAsync(JsonObject payload, CancellationToken cancellationToken)
@@ -142,41 +160,55 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
                     continue;
                 }
 
-                if (parsed.TryGetPropertyValue("id", out var idNode) && idNode is not null && idNode.GetValueKind() != JsonValueKind.Null)
+                if (string.Equals(parsed["type"]?.GetValue<string>(), "ready", StringComparison.Ordinal))
                 {
-                    var id = idNode.GetValue<long>();
+                    ready.TrySetResult(parsed);
+                    continue;
+                }
+
+                if (string.Equals(parsed["type"]?.GetValue<string>(), "response", StringComparison.Ordinal) &&
+                    parsed["id"]?.GetValue<string>() is { } id)
+                {
                     TaskCompletionSource<JsonObject>? completion;
                     lock (pendingRequestsLock)
                     {
-                        if (pendingRequests.Remove(id, out completion))
-                        {
-                        }
+                        pendingRequests.Remove(id, out completion);
                     }
-
                     completion?.TrySetResult(parsed);
+                    continue;
                 }
-                else
+
+                await frames.Writer.WriteAsync(parsed).ConfigureAwait(false);
+            }
+        }
+        catch (Exception exception)
+        {
+            ready.TrySetException(exception);
+            lock (pendingRequestsLock)
+            {
+                foreach (var completion in pendingRequests.Values)
                 {
-                    await notifications.Writer.WriteAsync(parsed).ConfigureAwait(false);
+                    completion.TrySetException(exception);
                 }
+                pendingRequests.Clear();
             }
         }
         finally
         {
-            notifications.Writer.TryComplete();
+            ready.TrySetException(new InvalidOperationException("OMP process exited before sending its ready frame."));
+            frames.Writer.TryComplete();
             lock (pendingRequestsLock)
             {
                 foreach (var completion in pendingRequests.Values)
                 {
                     completion.TrySetException(new InvalidOperationException("OMP process exited before responding."));
                 }
-
                 pendingRequests.Clear();
             }
         }
     }
 
-    /// <summary>Requests bounded-graceful process shutdown: closes stdin, waits up to
+    /// <summary>Requests bounded graceful process shutdown: closes stdin, waits up to
     /// <paramref name="gracePeriod"/>, then kills the process tree if still running.</summary>
     public async Task ShutdownAsync(TimeSpan gracePeriod, CancellationToken cancellationToken)
     {
@@ -219,9 +251,9 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
         {
             await readLoopTask.ConfigureAwait(false);
         }
-        catch (Exception)
+        catch
         {
-            // Read loop failures are already surfaced to pending requests/notifications.
+            // Read loop failures are surfaced to pending commands.
         }
 
         process.Dispose();

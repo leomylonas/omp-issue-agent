@@ -5,6 +5,21 @@ namespace IssueAgent.Omp.Tests;
 public sealed class OmpEnvironmentTests
 {
     [Fact]
+    public void BuildAllowsSupportedConfigPathButNotLegacyConfigVariable()
+    {
+        var ambient = new Dictionary<string, string?>
+        {
+            ["PI_CONFIG_FILES"] = "/etc/omp/config.yml",
+            ["OMP_CONFIG_DIR"] = "/etc/omp",
+        };
+
+        var result = OmpEnvironment.Build(ambient, new Dictionary<string, string>(), new Dictionary<string, string>());
+
+        Assert.Equal("/etc/omp/config.yml", result["PI_CONFIG_FILES"]);
+        Assert.DoesNotContain("OMP_CONFIG_DIR", result.Keys);
+    }
+
+    [Fact]
     public void BuildIncludesOnlyAllowListedAmbientVariables()
     {
         var ambient = new Dictionary<string, string?>

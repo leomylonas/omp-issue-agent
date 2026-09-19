@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal scripted NDJSON RPC server used only to test NdjsonRpcTransport framing,
-correlation, and notification delivery. Not a real OMP implementation."""
+"""Scripted OMP typed-RPC server used to test NDJSON framing and session events."""
 import json
 import sys
 
@@ -10,55 +9,65 @@ def send(obj):
     sys.stdout.flush()
 
 
+def response(request_id, command, data=None, error=None):
+    payload = {"id": request_id, "type": "response", "command": command}
+    if error is None:
+        payload["success"] = True
+        if data is not None:
+            payload["data"] = data
+    else:
+        payload.update({"success": False, "error": error})
+    send(payload)
+
+
 def main():
+    send({
+        "type": "ready",
+        "protocolVersion": 1,
+        "supportedProtocolVersions": [1, 2],
+        "maxFrameBytes": 1048576,
+        "maxReassembledFrameBytes": 67108864,
+    })
+    session_id = "fake-session-1"
     for line in sys.stdin:
         line = line.strip()
         if not line:
             continue
         request = json.loads(line)
-        method = request.get("method")
+        command = request.get("type")
         request_id = request.get("id")
-        params = request.get("params") or {}
 
-        if method == "session.create":
-            send({"id": request_id, "result": {"sessionId": "fake-session-1"}})
-        elif method == "session.resume":
-            send({"id": request_id, "result": {"role": "task"}})
-        elif method == "run":
-            session_id = params.get("sessionId")
-            send({"id": request_id, "result": {"accepted": True}})
-            send({"method": "event", "params": {
-                "sessionId": session_id, "type": "message", "text": "starting work",
-                "timestamp": "2024-01-01T00:00:00Z",
-            }})
-            send({"method": "event", "params": {
-                "sessionId": session_id, "type": "toolCall", "toolCallId": "call-1",
-                "toolName": "read_file", "arguments": {"path": "README.md"},
-                "timestamp": "2024-01-01T00:00:01Z",
-            }})
-            send({"method": "event", "params": {
-                "sessionId": session_id, "type": "toolResult", "toolCallId": "call-1",
-                "isError": False, "result": {"content": "hello"},
-                "timestamp": "2024-01-01T00:00:02Z",
-            }})
-            send({"method": "event", "params": {
-                "sessionId": session_id, "type": "completed",
-                "result": {"summary": "done"},
-                "timestamp": "2024-01-01T00:00:03Z",
-            }})
-        elif method == "run-error":
-            session_id = params.get("sessionId")
-            send({"id": request_id, "result": {"accepted": True}})
-            send({"method": "event", "params": {
-                "sessionId": session_id, "type": "error", "message": "boom", "cancelled": False,
-                "timestamp": "2024-01-01T00:00:01Z",
-            }})
-        elif method == "cancel":
-            send({"id": request_id, "result": {"cancelled": True}})
-        elif method == "error-request":
-            send({"id": request_id, "error": {"message": "requested failure"}})
+        if command == "new_session":
+            response(request_id, command, {"cancelled": False})
+        elif command == "switch_session":
+            session_id = request.get("sessionPath", session_id)
+            response(request_id, command, {"cancelled": False})
+        elif command == "get_state":
+            response(request_id, command, {"sessionId": session_id})
+        elif command == "prompt":
+            response(request_id, command, {"agentInvoked": True})
+            send({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": '{"summary":"done"}'}})
+            send({
+                "type": "tool_execution_start",
+                "toolCallId": "call-1",
+                "toolName": "read_file",
+                "arguments": {"path": "README.md"},
+            })
+            send({
+                "type": "tool_execution_end",
+                "toolCallId": "call-1",
+                "isError": False,
+                "result": {"content": "hello"},
+            })
+            send({
+                "type": "agent_end",
+                "messages": [],
+                "isTerminal": True,
+            })
+        elif command == "abort":
+            response(request_id, command, {"cancelled": True})
         else:
-            send({"id": request_id, "error": {"message": f"unknown method {method}"}})
+            response(request_id, command, error=f"unknown command {command}")
 
 
 if __name__ == "__main__":

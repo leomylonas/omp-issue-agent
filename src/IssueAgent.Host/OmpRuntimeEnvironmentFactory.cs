@@ -18,11 +18,6 @@ public sealed class OmpRuntimeEnvironmentFactory(EffectiveIssueAgentConfiguratio
         {
             connection["OMP_AUTH_BROKER_URL"] = configuration.Omp.AuthBrokerUrl;
         }
-        if (ambientEnvironment.TryGetValue("OMP_CONFIG_DIR", out var ompConfigDirectory) &&
-            !string.IsNullOrWhiteSpace(ompConfigDirectory))
-        {
-            connection["OMP_CONFIG_DIR"] = ompConfigDirectory;
-        }
 
         // OMP performs commits inside the worktree. Apply identity after configured execution
         // variables so the repository's resolved GitIdentity always governs those commits.

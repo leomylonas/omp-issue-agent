@@ -1,4 +1,4 @@
-using IssueAgent.Omp;
+using System.Text.Json.Nodes;
 
 namespace IssueAgent.Omp.Tests;
 
@@ -18,14 +18,13 @@ public sealed class OmpProcessClientTests
     }
 
     [Fact]
-    public async Task ResumeSessionAsyncReturnsRoleFromServer()
+    public async Task ResumeSessionAsyncSwitchesToPersistedSession()
     {
         await using var client = StartClient();
 
         var session = await client.ResumeSessionAsync("existing-session", CancellationToken.None);
 
         Assert.Equal("existing-session", session.SessionId);
-        Assert.Equal("task", session.Role);
     }
 
     [Fact]
@@ -93,5 +92,34 @@ public sealed class OmpProcessClientTests
         }
 
         return results;
+    }
+
+    [Fact]
+    public async Task RealPinnedBinarySupportsTypedStartupAndSessionCommandsWhenConfigured()
+    {
+        var executable = Environment.GetEnvironmentVariable("OMP_TEST_BINARY");
+        if (string.IsNullOrWhiteSpace(executable) || !File.Exists(executable))
+        {
+            Assert.Skip("Set OMP_TEST_BINARY to run the pinned-binary protocol smoke test.");
+        }
+
+        var sessionDirectory = Path.Combine(Path.GetTempPath(), "issue-agent-omp-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(sessionDirectory);
+        await using var transport = NdjsonRpcTransport.Start(
+            executable,
+            ["--mode", "rpc", "--session-dir", sessionDirectory, "--no-tools"],
+            AppContext.BaseDirectory,
+            new Dictionary<string, string>
+            {
+                ["PATH"] = Environment.GetEnvironmentVariable("PATH") ?? string.Empty,
+                ["HOME"] = Environment.GetEnvironmentVariable("HOME") ?? sessionDirectory,
+            });
+
+        var created = await transport.SendCommandAsync("new_session", null, CancellationToken.None);
+        Assert.True(created["success"]?.GetValue<bool>());
+        var stateResponse = await transport.SendCommandAsync("get_state", null, CancellationToken.None);
+        Assert.True(stateResponse["data"]?["sessionId"]?.GetValue<string>() is { Length: > 0 });
+        var aborted = await transport.SendCommandAsync("abort", null, CancellationToken.None);
+        Assert.True(aborted["success"]?.GetValue<bool>());
     }
 }

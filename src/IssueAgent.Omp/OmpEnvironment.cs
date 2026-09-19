@@ -7,7 +7,8 @@ namespace IssueAgent.Omp;
 /// </summary>
 public static class OmpEnvironment
 {
-    private static readonly string[] AlwaysAllowedNames = ["PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "TZ"];
+    private static readonly string[] AlwaysAllowedNames =
+        ["PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "TZ", "PI_CONFIG_DIR", "PI_CONFIG_FILES", "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR"];
     private static readonly string[] AlwaysAllowedPrefixes = ["LC_"];
     private static readonly string[] ProxyNames = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"];
 
