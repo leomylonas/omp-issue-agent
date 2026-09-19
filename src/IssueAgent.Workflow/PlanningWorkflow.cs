@@ -67,6 +67,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             .ConfigureAwait(false);
 
         var prompt = config.ApplyInstructions(PlanningPromptBuilder.BuildInitialPlanPrompt(context));
+        await omp.SelectRoleAsync(config.PlanningRole, cancellationToken).ConfigureAwait(false);
         var outcome = await OmpRunCollector
             .RunToCompletionAsync(omp, new OmpRunRequest(session.SessionId, worktreePath, prompt, config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
             .ConfigureAwait(false);
@@ -155,6 +156,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             .ToList();
 
         var prompt = config.ApplyInstructions(PlanningPromptBuilder.BuildReplanPrompt(context, feedback));
+        await omp.SelectRoleAsync(config.PlanningRole, cancellationToken).ConfigureAwait(false);
         var outcome = await OmpRunCollector
             .RunToCompletionAsync(omp, new OmpRunRequest(currentState.OmpSessionId, worktreePath, prompt, config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
             .ConfigureAwait(false);
@@ -248,6 +250,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
                 .ToList();
             var prompt = config.ApplyInstructions(PlanningPromptBuilder.BuildReplanPrompt(
                 context with { CurrentPlan = latestPlan }, feedback));
+            await omp.SelectRoleAsync(config.PlanningRole, cancellationToken).ConfigureAwait(false);
             var outcome = await OmpRunCollector
                 .RunToCompletionAsync(omp, new OmpRunRequest(sessionId, worktreePath, prompt, config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
                 .ConfigureAwait(false);
@@ -311,6 +314,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             Phase = WorkflowPhase.Failed,
             OperationalState = WorkflowOperationalState.Waiting,
             WaitingReason = reason,
+            InterruptedPhase = workingState.Phase,
             UpdatedAt = deps.Clock.UtcNow,
         };
         var canonical = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);

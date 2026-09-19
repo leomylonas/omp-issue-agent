@@ -50,12 +50,13 @@ public sealed class RevisionWorkflowTests : IDisposable
         Assert.Contains("resolved: true", request.Prompt, StringComparison.Ordinal);
 
         var checkpoints = provider.UpdatedComments;
-        Assert.Equal(2, checkpoints.Count);
+        Assert.Equal(3, checkpoints.Count);
         Assert.Contains("phase: revising", checkpoints[0].Body, StringComparison.Ordinal);
         Assert.Contains("state: working", checkpoints[0].Body, StringComparison.Ordinal);
         Assert.Contains("Renamed the variable.", checkpoints[1].Body, StringComparison.Ordinal);
+        Assert.Contains("Renamed the variable.", checkpoints[2].Body, StringComparison.Ordinal);
         Assert.Contains(provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)], l => l == "agent:phase:review");
-        Assert.Equal(clock.UtcNow, CanonicalCommentMarkdown.Parse(checkpoints[1].Body).State.ReviewFeedbackCutoff);
+        Assert.Equal(clock.UtcNow, CanonicalCommentMarkdown.Parse(checkpoints[2].Body).State.ReviewFeedbackCutoff);
         Assert.DoesNotContain("agent:cmd:revise", provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
     }
 
@@ -86,15 +87,39 @@ public sealed class RevisionWorkflowTests : IDisposable
                 clock.UtcNow,
                 """{"summary":"Revision.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""))
             .EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """{"summary":"Conflict resolved.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
-
         var outcome = await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
-            .RunAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
+            .RunAsync(
+                CreateConfig() with { RevisionRole = "reviewer", ConflictResolutionRole = "resolver" },
+                1,
+                state,
+                omp,
+                CancellationToken.None);
 
         Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
         Assert.Equal(1, git.MergeAttempts);
         Assert.Equal(2, omp.RunRequests.Count);
         Assert.All(omp.RunRequests, request => Assert.Equal("session-1", request.SessionId));
+        Assert.Equal(["reviewer", "resolver"], omp.SelectedRoles);
         Assert.Contains("conflict", omp.RunRequests[1].Prompt, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task RunAsyncPausesForMaterialDeviationBeforeMergeOrPush()
+    {
+        var state = await SeedReviewStateAsync();
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"summary":"Needs architecture change.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":["Requires a new service boundary."],"risks":[],"isMaterialDeviation":true,"materialDeviationExplanation":"The approved plan cannot safely support the required service boundary."}"""));
+
+        var outcome = await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WaitingReason.MaterialPlanDeviation, outcome.State.WaitingReason);
+        Assert.Equal(0, git.MergeAttempts);
+        Assert.Contains("service boundary", Assert.Single(notifier.Notifications).Message, StringComparison.Ordinal);
+        Assert.Contains("Needs architecture change.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
     }
 
     private async Task<WorkflowState> SeedReviewStateAsync()

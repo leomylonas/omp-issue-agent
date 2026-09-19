@@ -24,7 +24,11 @@ public sealed class PlanningWorkflowTests : IDisposable
             .EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """{"planText":"Add a guard clause before save.","decisions":["Guard clause chosen over try/catch for clarity."]}"""));
 
         var workflow = CreateWorkflow();
-        var config = CreateConfig() with { SupplementalInstructions = ["Keep public APIs source-compatible."] };
+        var config = CreateConfig() with
+        {
+            PlanningRole = "repository-planner",
+            SupplementalInstructions = ["Keep public APIs source-compatible."],
+        };
 
         var outcome = await workflow.RunInitialPlanningAsync(config, 1, omp, CancellationToken.None);
 
@@ -45,6 +49,7 @@ public sealed class PlanningWorkflowTests : IDisposable
 
         Assert.Single(git.CreatedWorktrees);
         Assert.Contains("Keep public APIs source-compatible.", Assert.Single(omp.RunRequests).Prompt, StringComparison.Ordinal);
+        Assert.Equal(["repository-planner"], omp.SelectedRoles);
     }
 
     [Fact]

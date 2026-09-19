@@ -79,6 +79,9 @@ public sealed partial class ActiveOmpSessionRegistry(ILogger<ActiveOmpSessionReg
             return session;
         }
 
+        public ValueTask SelectRoleAsync(string role, CancellationToken cancellationToken) =>
+            inner.SelectRoleAsync(role, cancellationToken);
+
         public IAsyncEnumerable<OmpEvent> RunAsync(OmpRunRequest request, CancellationToken cancellationToken) =>
             inner.RunAsync(request, cancellationToken);
 

@@ -18,6 +18,16 @@ public sealed class OmpProcessClientTests
     }
 
     [Fact]
+    public async Task CreateSessionAsyncSelectsConfiguredSemanticRole()
+    {
+        await using var client = StartClient();
+
+        var session = await client.CreateSessionAsync("repository-planner", CancellationToken.None);
+
+        Assert.Equal("repository-planner", session.Role);
+    }
+
+    [Fact]
     public async Task ResumeSessionAsyncSwitchesToPersistedSession()
     {
         await using var client = StartClient();

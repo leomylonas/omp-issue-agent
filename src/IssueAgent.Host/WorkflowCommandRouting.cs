@@ -54,6 +54,9 @@ public static class WorkflowCommandRouting
         return state.Phase switch
         {
             WorkflowPhase.Review => null,
+            WorkflowPhase.Failed when state.InterruptedPhase == WorkflowPhase.Planning => WorkflowCommand.Replan,
+            WorkflowPhase.Failed when state.InterruptedPhase == WorkflowPhase.Revising => WorkflowCommand.Revise,
+            WorkflowPhase.Failed when state.InterruptedPhase == WorkflowPhase.Implementing => WorkflowCommand.Implement,
             WorkflowPhase.Planning when state.InterruptedPhase == WorkflowPhase.Planning => WorkflowCommand.Replan,
             WorkflowPhase.Planning when durableState.Phase == WorkflowPhase.Planning &&
                 durableState.OperationalState == WorkflowOperationalState.Working => WorkflowCommand.Replan,

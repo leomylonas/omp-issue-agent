@@ -117,6 +117,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             .ConfigureAwait(false);
         var inputSnapshot = await CaptureInputSnapshotAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
 
+        await omp.SelectRoleAsync(config.ImplementationRole, cancellationToken).ConfigureAwait(false);
         var implementOutcome = await OmpRunCollector
             .RunToCompletionAsync(omp, new OmpRunRequest(currentState.OmpSessionId, worktreePath, config.ApplyInstructions(ImplementationPromptBuilder.BuildImplementationPrompt(context)), config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
             .ConfigureAwait(false);
@@ -250,6 +251,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             var rebased = await deps.Git.TryRebaseOntoAsync(config.Repository.Id, worktreePath, latestTargetCommit, config.GitIdentity, cancellationToken).ConfigureAwait(false);
             if (!rebased)
             {
+                await omp.SelectRoleAsync(config.ConflictResolutionRole, cancellationToken).ConfigureAwait(false);
                 var conflictOutcome = await OmpRunCollector
                     .RunToCompletionAsync(omp, new OmpRunRequest(workingState.OmpSessionId, worktreePath, config.ApplyInstructions(ImplementationPromptBuilder.BuildConflictResolutionPrompt()), config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
                     .ConfigureAwait(false);
@@ -534,6 +536,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             Phase = WorkflowPhase.Failed,
             OperationalState = WorkflowOperationalState.Waiting,
             WaitingReason = WaitingReason.ManualIntervention,
+            InterruptedPhase = workingState.Phase,
             UpdatedAt = deps.Clock.UtcNow,
         };
         var canonical = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);

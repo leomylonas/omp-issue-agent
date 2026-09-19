@@ -66,6 +66,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         var feedback = context.PullOrMergeRequest is { } mrContext
             ? mrContext.Comments.Concat(mrContext.ReviewThreads).Where(c => c.CreatedAt > reviewFeedbackCutoff).ToList()
             : [];
+        await omp.SelectRoleAsync(config.RevisionRole, cancellationToken).ConfigureAwait(false);
         var revisionOutcome = await OmpRunCollector
             .RunToCompletionAsync(omp, new OmpRunRequest(currentState.OmpSessionId, worktreePath, config.ApplyInstructions(ImplementationPromptBuilder.BuildRevisionPrompt(context, feedback)), config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
             .ConfigureAwait(false);
@@ -83,6 +84,16 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         {
             return await FailAsync(config, issueNumber, workingState, exception.Message, cancellationToken).ConfigureAwait(false);
         }
+        if (result.IsMaterialDeviation)
+        {
+            return await PauseForMaterialDeviationAsync(
+                config, issueNumber, workingState, existingContent, result, cancellationToken).ConfigureAwait(false);
+        }
+
+        var resultMarkdown = result.RenderMarkdown();
+        var publicationCheckpoint = existingContent with { ImplementationResult = resultMarkdown };
+        await UpsertCanonicalCommentAsync(config, issueNumber, publicationCheckpoint, cancellationToken).ConfigureAwait(false);
+
         await deps.Git.FetchAsync(config.Repository.Id, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
         var latestTargetCommit = await deps.Git
             .ResolveBranchCommitAsync(config.Repository.Id, currentState.TargetBranch, cancellationToken)
@@ -92,6 +103,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             .ConfigureAwait(false);
         if (!merged)
         {
+            await omp.SelectRoleAsync(config.ConflictResolutionRole, cancellationToken).ConfigureAwait(false);
             var conflictOutcome = await OmpRunCollector
                 .RunToCompletionAsync(
                     omp,
@@ -130,8 +142,8 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 config,
                 issueNumber,
                 workingState,
-                existingContent,
-                result.RenderMarkdown(),
+                publicationCheckpoint,
+                resultMarkdown,
                 "New review feedback arrived while OMP was revising. The retained worktree was preserved; review the feedback and request another revision.",
                 cancellationToken).ConfigureAwait(false);
         }
@@ -156,7 +168,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         var content = new CanonicalCommentContent(
             existingContent.PlanText,
             existingContent.DecisionsAndRationale,
-            result.RenderMarkdown(),
+            resultMarkdown,
             CanonicalStateSerializer.ToDocument(publishedState, $"{config.Repository.Id}#{mergeRequest.Number}"));
 
         await UpsertCanonicalCommentAsync(config, issueNumber, content, cancellationToken).ConfigureAwait(false);
@@ -216,6 +228,23 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         return snapshot;
     }
 
+    private Task<WorkflowOutcome> PauseForMaterialDeviationAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState workingState,
+        CanonicalCommentContent existingContent,
+        ImplementationResult result,
+        CancellationToken cancellationToken) =>
+        PauseForNewFeedbackAsync(
+            config,
+            issueNumber,
+            workingState,
+            existingContent,
+            result.RenderMarkdown(),
+            result.MaterialDeviationExplanation!,
+            cancellationToken,
+            WaitingReason.MaterialPlanDeviation);
+
     private async Task<WorkflowOutcome> PauseForNewFeedbackAsync(
         WorkflowRepositoryConfig config,
         long issueNumber,
@@ -223,12 +252,13 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         CanonicalCommentContent existingContent,
         string implementationResult,
         string message,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        WaitingReason reason = WaitingReason.ManualIntervention)
     {
         var pausedState = workingState with
         {
             OperationalState = WorkflowOperationalState.Waiting,
-            WaitingReason = WaitingReason.ManualIntervention,
+            WaitingReason = reason,
             UpdatedAt = deps.Clock.UtcNow,
         };
         await UpsertCanonicalCommentAsync(
@@ -254,6 +284,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             Phase = WorkflowPhase.Failed,
             OperationalState = WorkflowOperationalState.Waiting,
             WaitingReason = WaitingReason.ManualIntervention,
+            InterruptedPhase = workingState.Phase,
             UpdatedAt = deps.Clock.UtcNow,
         };
         var canonical = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);

@@ -86,13 +86,22 @@ public sealed class WorkflowWorkerPoolTests
         var key = new WorkflowWorkKey("github", "repo", 1);
         var activeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var cancellationRan = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var activeAttemptCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var omp = new BlockingOmpClient();
         async Task Active(CancellationToken cancellationToken)
         {
             await using var tracked = fixture.Registry.Track(key, omp);
             await tracked.ResumeSessionAsync("session-1", "/data/omp/session-1.jsonl", cancellationToken);
             activeStarted.SetResult();
-            await omp.Cancelled.Task.WaitAsync(cancellationToken);
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                activeAttemptCancelled.SetResult();
+                throw;
+            }
         }
         await fixture.Pool.AdmitAsync(
             [new WorkflowCandidate(key, WorkflowCandidateKind.ExistingWorkflow, WorkflowWorkPriority.HumanCommand, WorkflowCommand.Implement, 1, Active)],
@@ -104,10 +113,51 @@ public sealed class WorkflowWorkerPoolTests
             [new WorkflowCandidate(key, WorkflowCandidateKind.ExistingWorkflow, WorkflowWorkPriority.HumanCommand, WorkflowCommand.Cancel, 2, _ => { cancellationRan.SetResult(); return Task.CompletedTask; })],
             CancellationToken.None);
 
+        await activeAttemptCancelled.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
         await cancellationRan.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
         Assert.Equal(["session-1"], omp.CancelledSessions);
         Assert.True(await fixture.Pool.WaitForDrainAsync(TimeSpan.FromSeconds(2), CancellationToken.None));
         await fixture.StopAsync();
+    }
+
+    [Fact]
+    public async Task ExplicitCancelReplacesQueuedWorkForSameWorkflow()
+    {
+        using var fixture = new PoolFixture(agentConcurrency: 1);
+        var blockingKey = new WorkflowWorkKey("github", "repo", 1);
+        var queuedKey = new WorkflowWorkKey("github", "repo", 2);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var executed = new List<string>();
+
+        await fixture.Pool.AdmitAsync(
+        [
+            new WorkflowCandidate(blockingKey, WorkflowCandidateKind.ExistingWorkflow, WorkflowWorkPriority.HumanCommand, WorkflowCommand.Implement, 1, async _ =>
+            {
+                started.SetResult();
+                await release.Task;
+            }),
+            new WorkflowCandidate(queuedKey, WorkflowCandidateKind.ExistingWorkflow, WorkflowWorkPriority.HumanCommand, WorkflowCommand.Implement, 2, _ =>
+            {
+                executed.Add("implementation");
+                return Task.CompletedTask;
+            }),
+        ], CancellationToken.None);
+        fixture.Start();
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+
+        await fixture.Pool.AdmitAsync(
+            [new WorkflowCandidate(queuedKey, WorkflowCandidateKind.ExistingWorkflow, WorkflowWorkPriority.HumanCommand, WorkflowCommand.Cancel, 3, _ =>
+            {
+                executed.Add("cancel");
+                return Task.CompletedTask;
+            })],
+            CancellationToken.None);
+        release.SetResult();
+
+        Assert.True(await fixture.Pool.WaitForDrainAsync(TimeSpan.FromSeconds(2), CancellationToken.None));
+        await fixture.StopAsync();
+        Assert.Equal(["cancel"], executed);
     }
 
     [Fact]

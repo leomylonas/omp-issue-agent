@@ -76,7 +76,9 @@ public sealed record WorkflowRepositoryConfig(
     IReadOnlyList<string>? SupplementalInstructions = null,
     TimeSpan? OmpTimeout = null,
     Func<string, GitAuthentication?>? SubmoduleAuthenticationResolver = null,
-    bool CloseIssueOnMerge = true)
+    bool CloseIssueOnMerge = true,
+    string RevisionRole = "task",
+    string ConflictResolutionRole = "task")
 {
     public string ApplyInstructions(string prompt)
     {

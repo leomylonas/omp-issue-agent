@@ -21,6 +21,9 @@ public interface IOmpClient : IAsyncDisposable
     /// by OMP's <c>switch_session</c> command.</summary>
     ValueTask<OmpSession> ResumeSessionAsync(string sessionId, string sessionFile, CancellationToken cancellationToken);
 
+    /// <summary>Selects the configured semantic role for the next turn of this durable session.</summary>
+    ValueTask SelectRoleAsync(string role, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
     /// <summary>Runs one turn of the session against <paramref name="request"/> and streams
     /// structured events as they occur, ending in exactly one <see cref="OmpCompletedEvent"/> or
     /// <see cref="OmpErrorEvent"/>. The working directory, allow-listed environment, and prompt are

@@ -16,6 +16,7 @@ public sealed partial class WorkflowWorkerPool(
 {
     private readonly FairWorkAdmission admission = new();
     private readonly ConcurrentDictionary<WorkflowWorkKey, WorkflowCandidate> deferredCancellations = new();
+    private readonly ConcurrentDictionary<WorkflowWorkKey, CancellationTokenSource> activeAttemptCancellations = new();
     private readonly SemaphoreSlim available = new(0);
     private volatile bool accepting = true;
 
@@ -36,6 +37,12 @@ public sealed partial class WorkflowWorkerPool(
             {
                 if (candidate.Command == WorkflowCommand.Cancel)
                 {
+                    if (admission.TryReplaceQueued(candidate))
+                    {
+                        available.Release();
+                        continue;
+                    }
+
                     deferredCancellations[candidate.Key] = candidate;
                     if (admission.IsInFlight(candidate.Key))
                     {
@@ -50,6 +57,10 @@ public sealed partial class WorkflowWorkerPool(
                         catch (Exception exception)
                         {
                             LogWorkflowFailure(logger, exception, candidate.Key.Provider, candidate.Key.RepositoryId, candidate.Key.IssueNumber);
+                        }
+                        finally
+                        {
+                            CancelActiveAttempt(candidate.Key);
                         }
                     }
                 }
@@ -93,13 +104,23 @@ public sealed partial class WorkflowWorkerPool(
             if (!admission.TryStart(out var candidate)) continue;
             metrics.ActiveOperations.Add(1);
             using var activeOperation = metrics.BeginActiveOperation();
+            using var attemptCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            if (!activeAttemptCancellations.TryAdd(candidate!.Key, attemptCancellation))
+            {
+                throw new InvalidOperationException($"A workflow attempt is already active for {candidate.Key.Provider}/{candidate.Key.RepositoryId} issue {candidate.Key.IssueNumber}.");
+            }
             try
             {
-                await candidate!.ExecuteAsync(cancellationToken).ConfigureAwait(false);
+                await candidate.ExecuteAsync(attemptCancellation.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
+            }
+            catch (OperationCanceledException) when (attemptCancellation.IsCancellationRequested)
+            {
+                // An explicit cancel command interrupted this admitted attempt; its durable
+                // cancellation candidate is queued in the finally block below.
             }
             catch (Exception exception)
             {
@@ -107,6 +128,7 @@ public sealed partial class WorkflowWorkerPool(
             }
             finally
             {
+                activeAttemptCancellations.TryRemove(candidate!.Key, out _);
                 metrics.ActiveOperations.Add(-1);
                 admission.Complete(candidate!.Key);
                 if (accepting &&
@@ -119,6 +141,14 @@ public sealed partial class WorkflowWorkerPool(
         }
     }
 
+
+    private void CancelActiveAttempt(WorkflowWorkKey key)
+    {
+        if (activeAttemptCancellations.TryGetValue(key, out var attemptCancellation))
+        {
+            attemptCancellation.Cancel();
+        }
+    }
     public void Dispose() => available.Dispose();
 
     [LoggerMessage(EventId = 13, Level = LogLevel.Error,

@@ -39,6 +39,8 @@ public sealed record ImplementationResult(
                 result.KnownFailures is null ||
                 result.Deviations is null ||
                 result.Risks is null ||
+                (result.IsMaterialDeviation && string.IsNullOrWhiteSpace(result.MaterialDeviationExplanation)) ||
+                (!result.IsMaterialDeviation && result.MaterialDeviationExplanation is not null) ||
                 ContainsBlankItem(result.KeyChanges) ||
                 ContainsBlankItem(result.DecisionsAndRationale) ||
                 ContainsBlankItem(result.ChecksRun) ||
@@ -46,7 +48,7 @@ public sealed record ImplementationResult(
                 ContainsBlankItem(result.Deviations) ||
                 ContainsBlankItem(result.Risks))
             {
-                throw new WorkflowContractException("OMP implementation result JSON contains null or blank required content.");
+                throw new WorkflowContractException("OMP implementation result JSON contains null, blank, or inconsistent required content.");
             }
 
             return result;

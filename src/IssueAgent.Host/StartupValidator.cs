@@ -72,6 +72,10 @@ public sealed partial class StartupValidator(
         {
             var path = Path.Combine(rootPath, child);
             Directory.CreateDirectory(path);
+            if (string.Equals(child, "omp", StringComparison.Ordinal))
+            {
+                MakeDirectoryWritableByOmp(path);
+            }
             if (!Directory.Exists(path))
             {
                 throw new InvalidOperationException($"IssueAgent workspace path '{path}' is unusable.");
@@ -79,6 +83,20 @@ public sealed partial class StartupValidator(
         }
     }
 
+
+    private static void MakeDirectoryWritableByOmp(string path)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        var mode = File.GetUnixFileMode(path) |
+            UnixFileMode.GroupRead |
+            UnixFileMode.GroupWrite |
+            UnixFileMode.GroupExecute;
+        File.SetUnixFileMode(path, mode);
+    }
     [LoggerMessage(Level = LogLevel.Warning,
         Message = "Provider identity validation failed for {Provider}; polling will retry at runtime")]
     private static partial void LogProviderValidationWarning(ILogger logger, Exception exception, string provider);

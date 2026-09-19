@@ -54,9 +54,17 @@ public sealed partial class WorkflowDispatcher(
         }
         if (canonical is null)
         {
+            var managedLabels = await provider.GetLabelsAsync(
+                new ProviderWorkItemReference(repository, ProviderWorkItemKind.Issue, issueNumber),
+                cancellationToken).ConfigureAwait(false);
+            var managedSnapshot = LabelProtocol.Analyze(managedLabels);
             return new WorkflowCandidateClassification(
-                WorkflowCandidateKind.NewPlanning,
-                WorkflowWorkPriority.NewPlanning,
+                managedSnapshot.Phase is not null || managedSnapshot.OperationalState is not null
+                    ? WorkflowCandidateKind.ExistingWorkflow
+                    : WorkflowCandidateKind.NewPlanning,
+                managedSnapshot.Phase is not null || managedSnapshot.OperationalState is not null
+                    ? WorkflowWorkPriority.Reconciliation
+                    : WorkflowWorkPriority.NewPlanning,
                 Command: null);
         }
 
@@ -161,6 +169,7 @@ public sealed partial class WorkflowDispatcher(
             .ConfigureAwait(false);
         var initialBranchName = BranchNaming.DeriveBranchName(issueNumber, initialIssue.Title);
         var initialWorktreePath = Path.Combine(runtime.Config.WorkflowsStoragePath, workflowId.ToString(), "worktree");
+        var worktreeCreated = false;
         IOmpClient omp = null!;
         try
         {
@@ -171,22 +180,26 @@ public sealed partial class WorkflowDispatcher(
                 initialBranchName,
                 initialBaseCommit,
                 cancellationToken).ConfigureAwait(false);
+            worktreeCreated = true;
             omp = StartOmp(runtime, issueNumber, initialWorktreePath);
         }
         catch
         {
-            try
+            if (worktreeCreated)
             {
-                await runtime.Dependencies.Git
-                    .RemoveWorktreeAsync(runtime.Repository.Id, workflowId.ToString(), initialWorktreePath, CancellationToken.None)
-                    .ConfigureAwait(false);
-                await runtime.Dependencies.Git
-                    .RemoveLocalBranchAsync(runtime.Repository.Id, initialBranchName, CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-            catch
-            {
-                // Best-effort cleanup; the original startup failure remains authoritative.
+                try
+                {
+                    await runtime.Dependencies.Git
+                        .RemoveWorktreeAsync(runtime.Repository.Id, workflowId.ToString(), initialWorktreePath, CancellationToken.None)
+                        .ConfigureAwait(false);
+                    await runtime.Dependencies.Git
+                        .RemoveLocalBranchAsync(runtime.Repository.Id, initialBranchName, CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Best-effort cleanup; the original startup failure remains authoritative.
+                }
             }
             throw;
         }
@@ -241,14 +254,7 @@ public sealed partial class WorkflowDispatcher(
 
         if (canonical is null)
         {
-            await runtime.Dependencies.Notifier.NotifyAsync(
-                new WorkflowNotification(
-                    WorkflowNotificationKind.HumanActionRequired,
-                    runtime.Repository.Id,
-                    issueNumber,
-                    "unknown",
-                    "IssueAgent canonical state is missing; restore the managed comment before continuing."),
-                cancellationToken).ConfigureAwait(false);
+            await PauseMissingCanonicalStateAsync(runtime, issueNumber, cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -490,6 +496,7 @@ public sealed partial class WorkflowDispatcher(
             {
                 WorkflowCommand.Replan => WorkflowPhase.Planning,
                 WorkflowCommand.Revise => WorkflowPhase.Revising,
+                WorkflowCommand.Implement => WorkflowPhase.Implementing,
                 _ => state.Phase,
             },
             OperationalState = WorkflowOperationalState.Working,
@@ -543,6 +550,35 @@ public sealed partial class WorkflowDispatcher(
         }
     }
 
+    private static async Task PauseMissingCanonicalStateAsync(
+        Runtime runtime,
+        long issueNumber,
+        CancellationToken cancellationToken)
+    {
+        var workItem = new ProviderWorkItemReference(runtime.Repository, ProviderWorkItemKind.Issue, issueNumber);
+        var labels = await runtime.Provider.GetLabelsAsync(workItem, cancellationToken).ConfigureAwait(false);
+        if (!labels.Contains(WorkflowLabels.WaitingState))
+        {
+            await runtime.Provider.EnsureLabelAsync(
+                runtime.Repository,
+                LabelCatalog.All.First(label => label.Name == WorkflowLabels.WaitingState),
+                cancellationToken).ConfigureAwait(false);
+            await runtime.Provider.AddLabelsAsync(workItem, [WorkflowLabels.WaitingState], cancellationToken).ConfigureAwait(false);
+        }
+        if (labels.Contains(WorkflowLabels.WorkingState))
+        {
+            await runtime.Provider.RemoveLabelAsync(workItem, WorkflowLabels.WorkingState, cancellationToken).ConfigureAwait(false);
+        }
+        await runtime.Dependencies.Notifier.NotifyAsync(
+            new WorkflowNotification(
+                WorkflowNotificationKind.HumanActionRequired,
+                runtime.Repository.Id,
+                issueNumber,
+                "unknown",
+                "IssueAgent canonical state is missing; restore the managed comment before continuing."),
+            cancellationToken).ConfigureAwait(false);
+    }
+
     private async Task<Runtime?> PrepareRuntimeAsync(string providerName, RepositoryOptions repositoryOptions, CancellationToken cancellationToken)
     {
         var resolved = effectiveConfiguration.GetProvider(providerName).Repositories
@@ -587,7 +623,7 @@ public sealed partial class WorkflowDispatcher(
             authentication,
             gitIdentity,
             effectiveConfiguration.Omp.ExecutablePath,
-            ["--mode", "rpc", "--session-dir", "/data/omp"],
+            ["--mode", "rpc", "--session-dir", Path.Combine(options.Value.Workspace.RootPath, "omp")],
             ompEnvironment.Create(
                 ReadAmbientEnvironment(),
                 gitIdentity),
@@ -596,7 +632,9 @@ public sealed partial class WorkflowDispatcher(
             resolved.SupplementalInstructions,
             resolved.OmpTimeout,
             providers.TryGetGitAuthenticationForHost,
-            resolved.CloseIssueOnMerge);
+            resolved.CloseIssueOnMerge,
+            resolved.OmpRoles.GetValueOrDefault("revision", "task"),
+            resolved.OmpRoles.GetValueOrDefault("conflictResolution", "task"));
         var workflowMode = resolved.WorkflowMode == ConfiguredWorkflowMode.PlanOnly ? WorkflowMode.PlanOnly : WorkflowMode.Full;
         return new Runtime(provider, repository, dependencies, config, workflowMode, resolved.OmpTimeout, new TagList { { LogContextFields.Provider, providerName }, { LogContextFields.Repository, repository.Id } });
     }

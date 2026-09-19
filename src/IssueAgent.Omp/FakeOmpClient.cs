@@ -16,6 +16,8 @@ public sealed class FakeOmpClient : IOmpClient
 
     public List<string> ResumedSessionIds { get; } = [];
 
+    public List<string> SelectedRoles { get; } = [];
+
     public List<OmpRunRequest> RunRequests { get; } = [];
 
     public List<string> CancelledSessionIds { get; } = [];
@@ -65,6 +67,12 @@ public sealed class FakeOmpClient : IOmpClient
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionFile);
         ResumedSessionIds.Add(sessionId);
         return ValueTask.FromResult(new OmpSession(sessionId, "resumed", sessionFile));
+    }
+
+    public ValueTask SelectRoleAsync(string role, CancellationToken cancellationToken)
+    {
+        SelectedRoles.Add(role);
+        return ValueTask.CompletedTask;
     }
 
     public async IAsyncEnumerable<OmpEvent> RunAsync(OmpRunRequest request, [EnumeratorCancellation] CancellationToken cancellationToken)

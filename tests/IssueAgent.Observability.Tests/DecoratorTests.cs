@@ -187,6 +187,22 @@ public sealed class ObservableOmpClientTests
     }
 
     [Fact]
+    public async Task RunAsyncLogsFullPromptAndEventPayloadAtDebug()
+    {
+        using var metrics = new IssueAgentMetrics();
+        var logger = new RecordingLogger<ObservableOmpClient>();
+        var decorated = new ObservableOmpClient(new FakeOmpClient(), metrics, logger);
+        var request = new OmpRunRequest("session-1", "/tmp", "full prompt payload", new Dictionary<string, string>());
+
+        await foreach (var _ in decorated.RunAsync(request, CancellationToken.None))
+        {
+        }
+
+        Assert.Contains(logger.Messages, message => message.Contains("full prompt payload", StringComparison.Ordinal));
+        Assert.Contains(logger.Messages, message => message.Contains("\"Text\":\"working\"", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task RunAsyncRecordsErrorMetricsAndRethrowsOnFailure()
     {
         using var capture = new MetricCapture();

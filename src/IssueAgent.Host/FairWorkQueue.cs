@@ -37,6 +37,7 @@ public sealed class FairWorkAdmission
     private readonly object gate = new();
     private readonly SortedDictionary<WorkflowWorkPriority, PriorityBucket> buckets = [];
     private readonly Dictionary<WorkflowWorkKey, AdmissionState> admitted = [];
+    private readonly Dictionary<WorkflowWorkKey, WorkflowCandidate> queuedCandidates = [];
 
     public int Count
     {
@@ -74,12 +75,20 @@ public sealed class FairWorkAdmission
         lock (gate)
         {
             if (!admitted.TryAdd(candidate.Key, AdmissionState.Queued)) return false;
-            if (!buckets.TryGetValue(candidate.Priority, out var bucket))
-            {
-                bucket = new PriorityBucket();
-                buckets.Add(candidate.Priority, bucket);
-            }
-            bucket.Enqueue(candidate);
+            Enqueue(candidate);
+            return true;
+        }
+    }
+
+    /// <summary>Replaces a queued attempt for the same workflow with a durable cancellation attempt.
+    /// An in-flight attempt is never replaced because it must first receive OMP cancellation.</summary>
+    public bool TryReplaceQueued(WorkflowCandidate candidate)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        lock (gate)
+        {
+            if (!admitted.TryGetValue(candidate.Key, out var state) || state != AdmissionState.Queued) return false;
+            Enqueue(candidate);
             return true;
         }
     }
@@ -91,9 +100,17 @@ public sealed class FairWorkAdmission
         {
             foreach (var bucket in buckets.Values)
             {
-                if (!bucket.TryDequeue(out candidate)) continue;
-                admitted[candidate!.Key] = AdmissionState.InFlight;
-                return true;
+                while (bucket.TryDequeue(out candidate))
+                {
+                    if (!queuedCandidates.TryGetValue(candidate!.Key, out var current) ||
+                        !ReferenceEquals(candidate, current))
+                    {
+                        continue;
+                    }
+                    queuedCandidates.Remove(candidate.Key);
+                    admitted[candidate.Key] = AdmissionState.InFlight;
+                    return true;
+                }
             }
         }
         candidate = null;
@@ -109,6 +126,7 @@ public sealed class FairWorkAdmission
                 .Select(pair => pair.Key)
                 .ToArray();
             foreach (var key in queued) admitted.Remove(key);
+            queuedCandidates.Clear();
             foreach (var bucket in buckets.Values) bucket.Clear();
             return queued.Length;
         }
@@ -126,6 +144,17 @@ public sealed class FairWorkAdmission
             }
         }
     }
+    private void Enqueue(WorkflowCandidate candidate)
+    {
+        if (!buckets.TryGetValue(candidate.Priority, out var bucket))
+        {
+            bucket = new PriorityBucket();
+            buckets.Add(candidate.Priority, bucket);
+        }
+        queuedCandidates[candidate.Key] = candidate;
+        bucket.Enqueue(candidate);
+    }
+
 
     private enum AdmissionState
     {

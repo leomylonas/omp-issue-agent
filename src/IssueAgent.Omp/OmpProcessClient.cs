@@ -23,6 +23,16 @@ public sealed class OmpProcessClient(
                 null,
                 cancellationToken).ConfigureAwait(false))
             .ConfigureAwait(false);
+        await SelectRoleAsync(role, cancellationToken).ConfigureAwait(false);
+        var state = RequireData(
+            await transport.SendCommandAsync("get_state", null, cancellationToken).ConfigureAwait(false));
+        var sessionId = RequireString(state, "sessionId");
+        return new OmpSession(sessionId, role, RequireSessionFile(ExtractSessionFile(state, sessionId)));
+    }
+
+    public async ValueTask SelectRoleAsync(string role, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(role);
         if (OmpModel.TryParse(role, out var model))
         {
             await RequireSuccessAsync(
@@ -31,11 +41,15 @@ public sealed class OmpProcessClient(
                     new JsonObject { ["provider"] = model.Provider, ["modelId"] = model.ModelId },
                     cancellationToken).ConfigureAwait(false))
                 .ConfigureAwait(false);
+            return;
         }
-        var state = RequireData(
-            await transport.SendCommandAsync("get_state", null, cancellationToken).ConfigureAwait(false));
-        var sessionId = RequireString(state, "sessionId");
-        return new OmpSession(sessionId, role, RequireSessionFile(ExtractSessionFile(state, sessionId)));
+
+        await RequireSuccessAsync(
+            await transport.SendCommandAsync(
+                "set_agent",
+                new JsonObject { ["agent"] = role },
+                cancellationToken).ConfigureAwait(false))
+            .ConfigureAwait(false);
     }
 
     public async ValueTask<OmpSession> ResumeSessionAsync(

@@ -71,6 +71,9 @@ public sealed class ObservableOmpClient(IOmpClient inner, IssueAgentMetrics metr
         }
     }
 
+    public ValueTask SelectRoleAsync(string role, CancellationToken cancellationToken) =>
+        inner.SelectRoleAsync(role, cancellationToken);
+
     public async IAsyncEnumerable<OmpEvent> RunAsync(OmpRunRequest request, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         using var activity = IssueAgentActivitySource.StartOmpOperation("run", request.SessionId);
@@ -80,6 +83,8 @@ public sealed class ObservableOmpClient(IOmpClient inner, IssueAgentMetrics metr
         var stopwatch = Stopwatch.StartNew();
         var failed = false;
 
+
+        OmpLogMessages.PromptDispatched(logger, request.SessionId, request.Prompt);
         var enumerator = inner.RunAsync(request, cancellationToken).GetAsyncEnumerator(cancellationToken);
         try
         {
@@ -109,6 +114,11 @@ public sealed class ObservableOmpClient(IOmpClient inner, IssueAgentMetrics metr
                 }
 
                 OmpLogMessages.EventObserved(logger, domainEvent.GetType().Name, request.SessionId);
+                if (logger.IsEnabled(LogLevel.Debug))
+                {
+                    var payload = System.Text.Json.JsonSerializer.Serialize(domainEvent, domainEvent.GetType());
+                    OmpLogMessages.EventPayload(logger, request.SessionId, payload);
+                }
                 if (domainEvent is OmpErrorEvent errorEvent && !errorEvent.WasCancelled)
                 {
                     failed = true;

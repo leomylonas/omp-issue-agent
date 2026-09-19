@@ -47,6 +47,15 @@ public sealed class OmpResultContractTests
         Assert.Throws<WorkflowContractException>(() => ImplementationResult.Parse("""{"summary":"Done","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":null}"""));
     }
 
+    [Fact]
+    public void ImplementationResultParserRequiresExplanationForMaterialDeviation()
+    {
+        const string materialDeviationWithoutExplanation =
+            """{"summary":"Done","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":["Requires a migration"],"risks":[],"isMaterialDeviation":true}""";
+
+        Assert.Throws<WorkflowContractException>(() => ImplementationResult.Parse(materialDeviationWithoutExplanation));
+    }
+
     private static void AssertOutputOnlyPlanningContract(string prompt)
     {
         Assert.Contains("Return only one JSON object", prompt, StringComparison.Ordinal);

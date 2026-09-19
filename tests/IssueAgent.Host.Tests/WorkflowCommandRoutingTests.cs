@@ -92,6 +92,22 @@ public sealed class WorkflowCommandRoutingTests
         Assert.Equal(WorkflowCommand.Replan, WorkflowCommandRouting.ContinueRoute(recoveredPlanning, recoveredPlanning));
     }
 
+    [Theory]
+    [InlineData(WorkflowPhase.Planning, WorkflowCommand.Replan)]
+    [InlineData(WorkflowPhase.Implementing, WorkflowCommand.Implement)]
+    [InlineData(WorkflowPhase.Revising, WorkflowCommand.Revise)]
+    public void ContinueRouteUsesFailedOperationProvenance(
+        WorkflowPhase interruptedPhase,
+        WorkflowCommand expectedCommand)
+    {
+        var failed = CreateState(WorkflowPhase.Failed, WorkflowOperationalState.Waiting) with
+        {
+            InterruptedPhase = interruptedPhase,
+        };
+
+        Assert.Equal(expectedCommand, WorkflowCommandRouting.ContinueRoute(failed, failed));
+    }
+
     [Fact]
     public async Task ReviewContinueRecoveryResetsCleanRetainedWorkspaceToRemoteHead()
     {
