@@ -103,6 +103,28 @@ public sealed class EffectiveConfigurationResolverTests
     }
 
     [Fact]
+    public void ResolveMarksAuthenticatedProviderIdentityAsGitIdentityDefault()
+    {
+        var options = CreateOptions() with
+        {
+            Providers =
+            [
+                CreateProvider() with
+                {
+                    IdentityOverride = null,
+                    Repositories = [new RepositoryOptions { Id = "github/octo/widgets", Name = "octo/widgets" }],
+                },
+            ],
+        };
+
+        var repository = Assert.Single(Assert.Single(
+            EffectiveConfigurationResolver.Resolve(options, _ => "token", _ => throw new InvalidOperationException()).Providers).Repositories);
+
+        Assert.True(repository.UsesProviderIdentityForName);
+        Assert.True(repository.UsesProviderIdentityForEmail);
+    }
+
+    [Fact]
     public void ResolveAppliesConfiguredNotificationsTlsTrustInsteadOfDefaultingToSystemForEveryField()
     {
         // Regression: notification sink HttpClients previously hardcoded TlsTrust.System regardless

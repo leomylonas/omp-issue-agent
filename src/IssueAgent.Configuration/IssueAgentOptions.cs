@@ -201,11 +201,23 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
             ValidateTlsTrust(notificationTls, "IssueAgent:Notifications:Tls", failures);
         }
 
+        if (options.Notifications.Telegram is { } telegram)
+        {
+            if (!telegram.BotToken.IsExactlyOneSource())
+            {
+                failures.Add("IssueAgent:Notifications:Telegram:BotToken must configure exactly one of env or file.");
+            }
+            if (string.IsNullOrWhiteSpace(telegram.ChatId))
+            {
+                failures.Add("IssueAgent:Notifications:Telegram:ChatId must be non-empty.");
+            }
+        }
 
         if (options.Notifications.Slack is { } slack && !slack.WebhookUrl.IsExactlyOneSource())
         {
             failures.Add("IssueAgent:Notifications:Slack:WebhookUrl must configure exactly one secret source.");
         }
+
 
         var providerNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var repositoryIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -256,9 +268,11 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
                 if (repository.CloneUrl is { } cloneUrl &&
                     Uri.TryCreate(cloneUrl, UriKind.Absolute, out var parsedCloneUrl) &&
                     ((parsedCloneUrl.Scheme is "http" or "https" && parsedCloneUrl.UserInfo.Length > 0) ||
-                     (parsedCloneUrl.Scheme == "ssh" && parsedCloneUrl.UserInfo.Contains(':', StringComparison.Ordinal))))
+                     (parsedCloneUrl.Scheme == "ssh" && parsedCloneUrl.UserInfo.Contains(':', StringComparison.Ordinal)) ||
+                     parsedCloneUrl.Query.Length > 0 ||
+                     parsedCloneUrl.Fragment.Length > 0))
                 {
-                    failures.Add($"Repository '{repository.Id}' CloneUrl must not contain credentials.");
+                    failures.Add($"Repository '{repository.Id}' CloneUrl must not contain credentials or query/fragment components.");
                 }
                 var hasOwner = !string.IsNullOrWhiteSpace(repository.OwnerOrNamespace) ||
                     repository.Name.Contains('/', StringComparison.Ordinal) ||

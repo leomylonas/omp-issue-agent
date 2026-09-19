@@ -110,7 +110,7 @@ public interface IGitProvider
 
 public sealed record RepositoryRef(string Id, string OwnerOrNamespace, string Name);
 
-public sealed record ProviderIdentity(string Login, string DisplayName);
+public sealed record ProviderIdentity(string Login, string DisplayName, string? Email = null);
 
 public sealed record IssueSummary(long Number, string Title, DateTimeOffset CreatedAt, IReadOnlySet<string> Assignees);
 

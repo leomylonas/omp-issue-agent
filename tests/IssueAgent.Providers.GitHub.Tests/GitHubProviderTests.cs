@@ -17,18 +17,18 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
-    public async Task GetCurrentIdentityAsyncReturnsAuthenticatedLogin()
+    public async Task GetCurrentIdentityAsyncReturnsAuthenticatedLoginAndEmail()
     {
         fixture.Server
             .Given(Request.Create().WithPath("/api/v3/user").UsingGet())
-            .RespondWith(JsonResponse("""{"login":"issue-agent-bot","id":1,"name":"IssueAgent Bot"}"""));
+            .RespondWith(JsonResponse("""{"login":"issue-agent-bot","id":1,"name":"IssueAgent Bot","email":"bot@example.com"}"""));
 
         var identity = await fixture.Provider.GetCurrentIdentityAsync(CancellationToken.None);
 
         Assert.Equal("issue-agent-bot", identity.Login);
         Assert.Equal("IssueAgent Bot", identity.DisplayName);
+        Assert.Equal("bot@example.com", identity.Email);
     }
-
     [Fact]
     public async Task DiscoverAssignedOpenIssuesAsyncExcludesPullRequestsAndIssuesBeforeStartDate()
     {
@@ -183,6 +183,25 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
         Assert.Equal("hello", created.Body);
         Assert.Equal("updated", updated.Body);
     }
+    [Fact]
+    public async Task UpdateIssueCommentAsyncRetriesTransientServerErrors()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/comments/100").UsingPatch())
+            .InScenario("comment-update-retry")
+            .WillSetStateTo("recovered")
+            .RespondWith(Response.Create().WithStatusCode(503).WithBody("""{"message":"temporary"}"""));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/comments/100").UsingPatch())
+            .InScenario("comment-update-retry")
+            .WhenStateIs("recovered")
+            .RespondWith(JsonResponse("""{"id":100,"user":{"login":"issue-agent-bot"},"body":"updated","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-02T00:00:00Z"}"""));
+
+        var updated = await fixture.Provider.UpdateIssueCommentAsync(Repository, 7, 100, "updated", CancellationToken.None);
+
+        Assert.Equal("updated", updated.Body);
+    }
+
 
     [Fact]
     public async Task GetIssueCommentsAsyncFlagsBotAuthorsByLoginSuffix()

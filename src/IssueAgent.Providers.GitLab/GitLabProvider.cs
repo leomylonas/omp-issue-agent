@@ -27,7 +27,7 @@ public sealed class GitLabProvider(
     public async ValueTask<ProviderIdentity> GetCurrentIdentityAsync(CancellationToken cancellationToken)
     {
         var user = await client.GetCurrentUserAsync(cancellationToken).ConfigureAwait(false);
-        return new ProviderIdentity(user.Username, user.Name);
+        return new ProviderIdentity(user.Username, user.Name, user.Email);
     }
 
     public async ValueTask<string> GetDefaultBranchAsync(RepositoryRef repository, CancellationToken cancellationToken)

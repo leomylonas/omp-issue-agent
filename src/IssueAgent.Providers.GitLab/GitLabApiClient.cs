@@ -194,7 +194,8 @@ public sealed partial class GitLabApiClient(HttpClient httpClient)
 public sealed record GitLabUser(
     [property: JsonPropertyName("id")] long Id,
     [property: JsonPropertyName("username")] string Username,
-    [property: JsonPropertyName("name")] string Name);
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("email")] string? Email = null);
 
 public sealed record GitLabAuthor(
     [property: JsonPropertyName("username")] string Username,

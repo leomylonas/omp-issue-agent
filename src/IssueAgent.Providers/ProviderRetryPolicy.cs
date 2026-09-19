@@ -6,7 +6,7 @@ namespace IssueAgent.Providers;
 public static class ProviderRetryPolicy
 {
     private const int MaxAttempts = 3;
-    private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(5);
 
     /// <param name="send">Issues one HTTP attempt.</param>
     /// <param name="cancellationToken">Cancels the whole retry loop, including any delay.</param>
@@ -71,10 +71,14 @@ public static class ProviderRetryPolicy
 
             return delay > MaxRetryDelay ? MaxRetryDelay : delay;
         }
-
-        var exponential = TimeSpan.FromMilliseconds(100 * Math.Pow(2, attempt - 1));
-        var jitter = TimeSpan.FromMilliseconds(Random.Shared.Next(0, 100));
-        return exponential + jitter;
+        var exponential = IsDefinitiveRateLimitRejection(response)
+            ? TimeSpan.FromMinutes(Math.Min(5, Math.Pow(2, attempt - 1)))
+            : TimeSpan.FromMilliseconds(100 * Math.Pow(2, attempt - 1));
+        var jitter = IsDefinitiveRateLimitRejection(response)
+            ? TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000))
+            : TimeSpan.FromMilliseconds(Random.Shared.Next(0, 100));
+        var fallback = exponential + jitter;
+        return fallback > MaxRetryDelay ? MaxRetryDelay : fallback;
     }
 
     private static TimeSpan? GetResetDelay(HttpResponseMessage response, string header, DateTimeOffset now)

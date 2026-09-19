@@ -196,6 +196,74 @@ public sealed class IssueAgentOptionsValidatorTests
     }
 
     [Fact]
+    public void ValidateRejectsTelegramWithoutExactlyOneTokenSourceOrChatId()
+    {
+        var options = CreateOptions() with
+        {
+            Notifications = new NotificationsOptions
+            {
+                Telegram = new TelegramOptions
+                {
+                    BotToken = new SecretSource { Env = "TELEGRAM_TOKEN", File = "/run/secrets/telegram" },
+                    ChatId = " ",
+                },
+            },
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("Telegram:BotToken must configure exactly one", StringComparison.Ordinal));
+        Assert.Contains(result.Failures!, failure => failure.Contains("Telegram:ChatId must be non-empty", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ValidateAcceptsTelegramWithExactlyOneTokenSourceAndChatId()
+    {
+        var options = CreateOptions() with
+        {
+            Notifications = new NotificationsOptions
+            {
+                Telegram = new TelegramOptions
+                {
+                    BotToken = new SecretSource { Env = "TELEGRAM_TOKEN" },
+                    ChatId = "123",
+                },
+            },
+        };
+
+        Assert.False(validator.Validate(null, options).Failed);
+    }
+
+    [Fact]
+    public void ValidateRejectsCloneUrlQueryAndFragment()
+    {
+        var options = CreateOptions() with
+        {
+            Providers =
+            [
+                CreateProvider() with
+                {
+                    Repositories =
+                    [
+                        new RepositoryOptions
+                        {
+                            Id = "github/example/repo",
+                            Name = "example/repo",
+                            CloneUrl = "https://example.test/example/repo.git?access_token=secret#fragment",
+                        },
+                    ],
+                },
+            ],
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("CloneUrl must not contain credentials", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ValidateRejectsUnsupportedSshPassphrasesAndMissingModeCredentials()
     {
         var options = CreateOptions() with

@@ -115,7 +115,14 @@ public sealed record EffectiveRepositoryConfiguration(
     string GitIdentityName,
     string GitIdentityEmail,
     TimeSpan? OmpTimeout,
-    IReadOnlyDictionary<string, string> OmpRoles);
+    IReadOnlyDictionary<string, string> OmpRoles)
+{
+    /// <summary>True when the Git author name should come from the authenticated provider user.</summary>
+    public bool UsesProviderIdentityForName { get; init; }
+
+    /// <summary>True when the Git author email should come from the authenticated provider user.</summary>
+    public bool UsesProviderIdentityForEmail { get; init; }
+}
 
 public sealed record EffectiveGitConfiguration(
     ConfiguredGitAuthenticationMode Mode,
@@ -229,9 +236,12 @@ public static class EffectiveConfigurationResolver
             settings.GitIdentity?.Name ?? provider.IdentityOverride ?? "IssueAgent",
             settings.GitIdentity?.Email ?? "issue-agent@localhost",
             settings.OmpTimeout ?? root.Omp.Timeout,
-            roles);
+            roles)
+        {
+            UsesProviderIdentityForName = settings.GitIdentity?.Name is null && string.IsNullOrWhiteSpace(provider.IdentityOverride),
+            UsesProviderIdentityForEmail = settings.GitIdentity?.Email is null,
+        };
     }
-
     internal static RepositorySettingsOptions Merge(params RepositorySettingsOptions[] levels)
     {
         bool? ignoreBots = null;

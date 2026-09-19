@@ -26,7 +26,7 @@ public sealed class GitHubProvider(
         var user = await ExecuteReadWithCancellationAsync(
             token => client.Connection.Get<User>(new Uri("user", UriKind.Relative), null, null, token),
             cancellationToken).ConfigureAwait(false);
-        return new ProviderIdentity(user.Login, user.Name ?? user.Login);
+        return new ProviderIdentity(user.Login, user.Name ?? user.Login, user.Email);
     }
 
     public async ValueTask<string> GetDefaultBranchAsync(RepositoryRef repository, CancellationToken cancellationToken)
@@ -155,7 +155,7 @@ public sealed class GitHubProvider(
         CancellationToken cancellationToken)
     {
         var comment = await ExecuteWithRetryAsync(
-            () => client.Issue.Comment.Create(repository.OwnerOrNamespace, repository.Name, checked((int)issueNumber), body),
+            token => PostAsync<IssueComment>(client.Connection, new Uri($"repos/{repository.OwnerOrNamespace}/{repository.Name}/issues/{checked((int)issueNumber)}/comments", UriKind.Relative), new { body }, null, null, new Dictionary<string, string>(), token),
             cancellationToken,
             isIdempotent: false).ConfigureAwait(false);
         return ToProviderComment(comment, issueNumber);
@@ -170,8 +170,7 @@ public sealed class GitHubProvider(
     {
         var comment = await ExecuteWithRetryAsync(
             () => client.Issue.Comment.Update(repository.OwnerOrNamespace, repository.Name, checked((int)commentId), body),
-            cancellationToken,
-            isIdempotent: false).ConfigureAwait(false);
+            cancellationToken).ConfigureAwait(false);
         return ToProviderComment(comment, issueNumber);
     }
 
@@ -191,7 +190,7 @@ public sealed class GitHubProvider(
         CancellationToken cancellationToken)
     {
         await ExecuteWithRetryAsync(
-            () => client.Issue.Labels.AddToIssue(workItem.Repository.OwnerOrNamespace, workItem.Repository.Name, checked((int)workItem.Number), [.. labels]),
+            token => PostAsync<IReadOnlyList<Label>>(client.Connection, new Uri($"repos/{workItem.Repository.OwnerOrNamespace}/{workItem.Repository.Name}/issues/{checked((int)workItem.Number)}/labels", UriKind.Relative), new { labels }, null, null, new Dictionary<string, string>(), token),
             cancellationToken,
             isIdempotent: false).ConfigureAwait(false);
     }
@@ -221,10 +220,11 @@ public sealed class GitHubProvider(
         catch (NotFoundException)
         {
             await ExecuteWithRetryAsync(
-                () => client.Issue.Labels.Create(repository.OwnerOrNamespace, repository.Name, new NewLabel(label.Name, label.Color) { Description = label.Description }),
+                token => PostAsync<Label>(client.Connection, new Uri($"repos/{repository.OwnerOrNamespace}/{repository.Name}/labels", UriKind.Relative), new NewLabel(label.Name, label.Color) { Description = label.Description }, null, null, new Dictionary<string, string>(), token),
                 cancellationToken,
                 isIdempotent: false).ConfigureAwait(false);
         }
+
     }
 
     public async ValueTask<ProviderMergeRequest?> FindMergeRequestAsync(
@@ -259,7 +259,7 @@ public sealed class GitHubProvider(
         };
 
         var created = await ExecuteWithRetryAsync(
-            () => client.PullRequest.Create(request.Repository.OwnerOrNamespace, request.Repository.Name, newPullRequest),
+            token => PostAsync<PullRequest>(client.Connection, new Uri($"repos/{request.Repository.OwnerOrNamespace}/{request.Repository.Name}/pulls", UriKind.Relative), newPullRequest, null, null, new Dictionary<string, string>(), token),
             cancellationToken,
             isIdempotent: false).ConfigureAwait(false);
 
@@ -384,6 +384,27 @@ public sealed class GitHubProvider(
         new AttachmentSource("issue-comment", issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture), comment.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)),
         comment.User.Login.EndsWith("[bot]", StringComparison.Ordinal));
 
+    private static Task<T> ExecuteWithRetryAsync<T>(
+        Func<CancellationToken, Task<T>> execute,
+        CancellationToken cancellationToken,
+        bool isIdempotent = true) =>
+        ExecuteWithRetryAsync(() => execute(cancellationToken), cancellationToken, isIdempotent);
+
+    private static async Task<T> PostAsync<T>(
+        IConnection connection,
+        Uri uri,
+        object body,
+        string? accepts,
+        string? contentType,
+        IDictionary<string, string> parameters,
+        CancellationToken cancellationToken)
+    {
+        var response = await connection
+            .Post<T>(uri, body, accepts, contentType, parameters, cancellationToken)
+            .ConfigureAwait(false);
+        return response.Body;
+    }
+
     private static async Task<T> ExecuteWithRetryAsync<T>(
         Func<Task<T>> execute,
         CancellationToken cancellationToken,
@@ -403,7 +424,7 @@ public sealed class GitHubProvider(
             }
             catch (SecondaryRateLimitExceededException exception) when (attempt < 3)
             {
-                var delay = GetSecondaryRetryAfter(exception) ?? TimeSpan.FromSeconds(1);
+                var delay = GetSecondaryRetryAfter(exception) ?? GetSecondaryFallbackDelay(attempt);
                 await Task.Delay(delay > MaxRetryDelay ? MaxRetryDelay : delay, cancellationToken).ConfigureAwait(false);
             }
             catch (ApiException exception) when (isIdempotent && (int)exception.StatusCode >= 500 && attempt < 3)
@@ -440,8 +461,10 @@ public sealed class GitHubProvider(
         return null;
     }
 
-    private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(1);
+    private static TimeSpan GetSecondaryFallbackDelay(int attempt) =>
+        TimeSpan.FromMinutes(Math.Min(5, Math.Pow(2, attempt - 1)));
 
+    private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(5);
     private static ProviderMergeRequest ToProviderMergeRequest(RepositoryRef repository, PullRequest pullRequest) => new(
         repository,
         pullRequest.Number,
