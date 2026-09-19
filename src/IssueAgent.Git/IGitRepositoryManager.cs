@@ -25,6 +25,14 @@ public interface IGitRepositoryManager
         string branchName,
         CancellationToken cancellationToken);
 
+    /// <summary>Returns whether <paramref name="ancestorCommit"/> is an ancestor of
+    /// <paramref name="descendantCommit"/> in the fetched canonical repository history.</summary>
+    ValueTask<bool> IsAncestorAsync(
+        string repositoryId,
+        string ancestorCommit,
+        string descendantCommit,
+        CancellationToken cancellationToken);
+
     /// <summary>Creates a retained worktree at <paramref name="worktreePath"/> checking out
     /// <paramref name="branchName"/>, creating the branch from <paramref name="baseCommit"/> if it
     /// does not already exist locally. Idempotent when the worktree already exists at that commit.</summary>

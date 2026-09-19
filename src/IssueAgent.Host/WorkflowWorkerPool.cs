@@ -23,6 +23,8 @@ public sealed partial class WorkflowWorkerPool(
 
     public int InFlightCount => admission.InFlightCount;
 
+    public bool IsInFlight(WorkflowWorkKey key) => admission.IsInFlight(key);
+
     public async Task AdmitAsync(IEnumerable<WorkflowCandidate> candidates, CancellationToken cancellationToken)
     {
         foreach (var candidate in candidates

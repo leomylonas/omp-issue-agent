@@ -106,9 +106,10 @@ public sealed class ObservableOmpClient(IOmpClient inner, IssueAgentMetrics metr
                 }
 
                 OmpLogMessages.EventObserved(logger, domainEvent.GetType().Name, request.SessionId);
-                if (domainEvent is OmpErrorEvent)
+                if (domainEvent is OmpErrorEvent errorEvent && !errorEvent.WasCancelled)
                 {
                     failed = true;
+                    metrics.OmpErrors.Add(1, tags);
                 }
 
                 yield return domainEvent;

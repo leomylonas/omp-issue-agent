@@ -22,6 +22,9 @@ internal sealed class FakeGitRepositoryManager : IGitRepositoryManager
     public ValueTask<string?> TryResolveRemoteBranchCommitAsync(string repositoryId, string branchName, CancellationToken cancellationToken) =>
         ValueTask.FromResult<string?>("abc123");
 
+    public ValueTask<bool> IsAncestorAsync(string repositoryId, string ancestorCommit, string descendantCommit, CancellationToken cancellationToken) =>
+        ValueTask.FromResult(true);
+
     public ValueTask CreateWorktreeAsync(string repositoryId, string worktreeId, string worktreePath, string branchName, string baseCommit, CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
     public ValueTask ResetWorktreeAsync(string repositoryId, string worktreePath, string commit, CancellationToken cancellationToken) => ValueTask.CompletedTask;

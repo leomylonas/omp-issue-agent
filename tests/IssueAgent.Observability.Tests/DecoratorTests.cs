@@ -151,6 +151,7 @@ public sealed class ObservableGitRepositoryManagerTests
         }
         public ValueTask<string> ResolveBranchCommitAsync(string repositoryId, string branchName, CancellationToken cancellationToken) => throw new NotSupportedException();
         public ValueTask<string?> TryResolveRemoteBranchCommitAsync(string repositoryId, string branchName, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask<bool> IsAncestorAsync(string repositoryId, string ancestorCommit, string descendantCommit, CancellationToken cancellationToken) => throw new NotSupportedException();
         public ValueTask CreateWorktreeAsync(string repositoryId, string worktreeId, string worktreePath, string branchName, string baseCommit, CancellationToken cancellationToken) => throw new NotSupportedException();
         public ValueTask ResetWorktreeAsync(string repositoryId, string worktreePath, string commit, CancellationToken cancellationToken) => throw new NotSupportedException();
         public ValueTask<bool> HasUncommittedChangesAsync(string repositoryId, string worktreePath, CancellationToken cancellationToken) => throw new NotSupportedException();
@@ -277,11 +278,10 @@ public sealed class ObservableGitProviderTests
     private static readonly RepositoryRef Repository = new("github/octo/widgets", "octo", "widgets");
 
     [Fact]
-    public async Task DiscoverAssignedOpenIssuesAsyncRecordsOneRequestMeasurementPerYieldedItemNotOnePerEnumeration()
+    public async Task DiscoverAssignedOpenIssuesAsyncRecordsOneRequestMeasurementAtProviderBoundary()
     {
-        // Regression: the whole-enumeration span previously recorded exactly one request/duration
-        // measurement regardless of how many items/pages the inner provider produced, under-
-        // reporting request volume by the pagination factor (specification §30).
+        // Buffered issue records are not HTTP request boundaries; counting each yielded item
+        // inflates request volume and makes metrics depend on consumer iteration.
         using var capture = new MetricCapture();
         using var metrics = new IssueAgentMetrics();
         var inner = new FakeGitProvider
@@ -302,9 +302,9 @@ public sealed class ObservableGitProviderTests
         }
 
         Assert.Equal(3, results.Count);
-        // 3 items yielded + 1 terminal MoveNextAsync call that returns false.
-        Assert.Equal(4, capture.CountFor("issueagent.provider.requests"));
+        Assert.Equal(1, capture.CountFor("issueagent.provider.requests"));
     }
+
 
     [Fact]
     public async Task DiscoverAssignedOpenIssuesAsyncDoesNotRecordAnErrorWhenCancelledByItsOwnToken()

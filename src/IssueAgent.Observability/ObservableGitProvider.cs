@@ -196,12 +196,10 @@ public sealed class ObservableGitProvider(IGitProvider inner, IssueAgentMetrics 
         }
     }
 
-    /// <summary>Wraps a paginated/streaming provider call. Unlike the unary <see cref="RunAsync{T}"/>
-    /// overloads, duration and request-count are measured per <c>MoveNextAsync</c> call rather than
-    /// across the whole consumer iteration: the naive whole-enumeration span would otherwise fold in
-    /// arbitrary inline consumer work performed between yielded items (a caller may run a full
-    /// dispatch between two elements), and a single measurement would under-report request volume
-    /// for a multi-page enumeration by the pagination factor.</summary>
+    /// <summary>Wraps a paginated provider call at its public request boundary. The provider
+    /// implementations buffer each page before yielding items; measuring every yielded item
+    /// counts buffered records as HTTP requests and inflates latency. This decorator therefore
+    /// records one request and duration for the provider operation itself.</summary>
     private async IAsyncEnumerable<T> RunEnumerableAsync<T>(
         string operation,
         IAsyncEnumerable<T> source,
@@ -210,48 +208,42 @@ public sealed class ObservableGitProvider(IGitProvider inner, IssueAgentMetrics 
         using var activity = IssueAgentActivitySource.Source.StartActivity($"provider.{operation}", ActivityKind.Client);
         activity?.SetTag(LogContextFields.Provider, inner.Name);
         var tags = new KeyValuePair<string, object?>[] { new(LogContextFields.Operation, operation), new(LogContextFields.Provider, inner.Name) };
+        var stopwatch = Stopwatch.StartNew();
+        metrics.ProviderRequests.Add(1, tags);
         var enumerator = source.GetAsyncEnumerator(cancellationToken);
         try
         {
             while (true)
             {
-                T current;
-                var stopwatch = Stopwatch.StartNew();
-                metrics.ProviderRequests.Add(1, tags);
+                bool hasNext;
                 try
                 {
-                    var hasNext = await enumerator.MoveNextAsync().ConfigureAwait(false);
-                    stopwatch.Stop();
-                    metrics.ProviderDuration.Record(stopwatch.Elapsed.TotalSeconds, tags);
-                    if (!hasNext)
-                    {
-                        break;
-                    }
-
-                    current = enumerator.Current;
+                    hasNext = await enumerator.MoveNextAsync().ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-                    stopwatch.Stop();
-                    metrics.ProviderDuration.Record(stopwatch.Elapsed.TotalSeconds, tags);
                     throw;
                 }
                 catch (Exception ex)
                 {
-                    stopwatch.Stop();
-                    metrics.ProviderDuration.Record(stopwatch.Elapsed.TotalSeconds, tags);
                     metrics.ProviderErrors.Add(1, tags);
                     activity?.SetStatus(ActivityStatusCode.Error);
                     ProviderLogMessages.ProviderOperationFailed(logger, ex.GetType().Name, operation, inner.Name);
                     throw;
                 }
 
-                yield return current;
+                if (!hasNext)
+                {
+                    break;
+                }
+
+                yield return enumerator.Current;
             }
         }
         finally
         {
             await enumerator.DisposeAsync().ConfigureAwait(false);
+            metrics.ProviderDuration.Record(stopwatch.Elapsed.TotalSeconds, tags);
         }
     }
 }

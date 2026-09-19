@@ -101,6 +101,12 @@ public sealed partial class PollingScheduler(
                         .ConfigureAwait(false);
                     if (classification.Priority == WorkflowWorkPriority.Reconciliation)
                     {
+                        var key = new WorkflowWorkKey(provider.Name, repository.Id, issue.Number);
+                        if (workerPool.IsInFlight(key))
+                        {
+                            continue;
+                        }
+
                         metrics.ActiveOperations.Add(1);
                         using var activeOperation = metrics.BeginActiveOperation();
                         try

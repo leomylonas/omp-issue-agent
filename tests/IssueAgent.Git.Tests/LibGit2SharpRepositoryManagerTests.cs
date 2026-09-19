@@ -83,6 +83,27 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task IsAncestorAsyncDistinguishesFastForwardFromRewrite()
+    {
+        var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out var baseSha));
+        await manager.EnsureBareRepositoryAsync("repo-ancestry", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+
+        string descendantSha;
+        using (var remoteRepo = new Repository(remotePath))
+        {
+            File.WriteAllText(Path.Combine(remotePath, "second.txt"), "more content\n");
+            Commands.Stage(remoteRepo, "second.txt");
+            var signature = new Signature("Test", "test@example.com", DateTimeOffset.UtcNow);
+            descendantSha = remoteRepo.Commit("Second commit", signature, signature).Sha;
+        }
+
+        await manager.FetchAsync("repo-ancestry", TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+
+        Assert.True(await manager.IsAncestorAsync("repo-ancestry", baseSha, descendantSha, CancellationToken.None));
+        Assert.False(await manager.IsAncestorAsync("repo-ancestry", descendantSha, baseSha, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task CreateWorktreeAsyncChecksOutNewBranchAtBaseCommit()
     {
         var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out var baseCommit));

@@ -90,6 +90,24 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         return ValueTask.FromResult(repo.Branches[$"origin/{branchName}"]?.Tip.Sha);
     }
 
+    public ValueTask<bool> IsAncestorAsync(
+        string repositoryId,
+        string ancestorCommit,
+        string descendantCommit,
+        CancellationToken cancellationToken)
+    {
+        using var repo = new Repository(BareRepositoryPath(repositoryId));
+        var ancestor = repo.Lookup<Commit>(ancestorCommit);
+        var descendant = repo.Lookup<Commit>(descendantCommit);
+        if (ancestor is null || descendant is null)
+        {
+            return ValueTask.FromResult(false);
+        }
+
+        return ValueTask.FromResult(
+            repo.ObjectDatabase.FindMergeBase(ancestor, descendant)?.Sha == ancestor.Sha);
+    }
+
     public ValueTask CreateWorktreeAsync(
         string repositoryId,
         string worktreeId,

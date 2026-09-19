@@ -28,6 +28,17 @@ public sealed class ObservableGitRepositoryManager(IGitRepositoryManager inner, 
             cancellationToken)
             .ConfigureAwait(false);
 
+    public async ValueTask<bool> IsAncestorAsync(
+        string repositoryId,
+        string ancestorCommit,
+        string descendantCommit,
+        CancellationToken cancellationToken) =>
+        await RunAsync(
+            "is-ancestor",
+            repositoryId,
+            () => inner.IsAncestorAsync(repositoryId, ancestorCommit, descendantCommit, cancellationToken).AsTask(),
+            cancellationToken).ConfigureAwait(false);
+
     public async ValueTask CreateWorktreeAsync(string repositoryId, string worktreeId, string worktreePath, string branchName, string baseCommit, CancellationToken cancellationToken) =>
         await RunAsync("create-worktree", repositoryId, () => inner.CreateWorktreeAsync(repositoryId, worktreeId, worktreePath, branchName, baseCommit, cancellationToken).AsTask(), cancellationToken).ConfigureAwait(false);
 

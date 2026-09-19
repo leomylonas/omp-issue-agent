@@ -40,9 +40,18 @@ public sealed partial class WorkflowDispatcher(
         var resolved = effectiveProvider.Repositories.Single(repository => repository.Id == repositoryOptions.Id);
         var provider = providers.Get(providerName);
         var repository = new RepositoryRef(resolved.Id, resolved.OwnerOrNamespace, resolved.Name);
-        var canonical = await CanonicalCommentLocator
-            .FindAsync(provider, repository, issueNumber, cancellationToken)
-            .ConfigureAwait(false);
+        ProviderComment? canonical;
+        try
+        {
+            canonical = await CanonicalCommentLocator
+                .FindAsync(provider, repository, issueNumber, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (CanonicalCommentCorruptException exception)
+        {
+            LogCorruptState(logger, exception, providerName, repository.Id, issueNumber);
+            return new WorkflowCandidateClassification(WorkflowCandidateKind.ExistingWorkflow, WorkflowWorkPriority.Reconciliation, null);
+        }
         if (canonical is null)
         {
             return new WorkflowCandidateClassification(
@@ -92,7 +101,17 @@ public sealed partial class WorkflowDispatcher(
     public async Task DispatchInitialPlanningAsync(string providerName, RepositoryOptions repositoryOptions, long issueNumber, CancellationToken cancellationToken)
     {
         var runtime = await PrepareRuntimeAsync(providerName, repositoryOptions, cancellationToken).ConfigureAwait(false);
-        if (runtime is null || await CanonicalCommentLocator.FindAsync(runtime.Provider, runtime.Repository, issueNumber, cancellationToken).ConfigureAwait(false) is not null) return;
+        if (runtime is null) return;
+        try
+        {
+            if (await CanonicalCommentLocator.FindAsync(runtime.Provider, runtime.Repository, issueNumber, cancellationToken).ConfigureAwait(false) is not null) return;
+        }
+        catch (CanonicalCommentCorruptException exception)
+        {
+            LogCorruptState(logger, exception, providerName, runtime.Repository.Id, issueNumber);
+            return;
+        }
+
         await using var omp = StartOmp(runtime, issueNumber);
         var stopwatch = Stopwatch.StartNew();
         metrics.PlanCount.Add(1, runtime.Tags);
@@ -100,25 +119,48 @@ public sealed partial class WorkflowDispatcher(
         {
             await new PlanningWorkflow(runtime.Dependencies).RunInitialPlanningAsync(runtime.Config, issueNumber, omp, cancellationToken).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch
         {
             metrics.PlanErrors.Add(1, runtime.Tags);
             throw;
         }
-        finally { metrics.PlanDuration.Record(stopwatch.Elapsed.TotalSeconds, runtime.Tags); }
+        finally
+        {
+            metrics.PlanDuration.Record(stopwatch.Elapsed.TotalSeconds, runtime.Tags);
+        }
     }
 
     public async Task DispatchExistingAsync(string providerName, RepositoryOptions repositoryOptions, long issueNumber, CancellationToken cancellationToken)
     {
         var runtime = await PrepareRuntimeAsync(providerName, repositoryOptions, cancellationToken).ConfigureAwait(false);
         if (runtime is null) return;
-        var canonical = await CanonicalCommentLocator.FindAsync(runtime.Provider, runtime.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
-        if (canonical is null) return;
+        ProviderComment? canonical;
+        try
+        {
+            canonical = await CanonicalCommentLocator.FindAsync(runtime.Provider, runtime.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        }
+        catch (CanonicalCommentCorruptException exception)
+        {
+            LogCorruptState(logger, exception, providerName, runtime.Repository.Id, issueNumber);
+            return;
+        }
 
+        var labels = await runtime.Provider.GetLabelsAsync(
+            new ProviderWorkItemReference(runtime.Repository, ProviderWorkItemKind.Issue, issueNumber),
+            cancellationToken).ConfigureAwait(false);
+        var snapshot = LabelProtocol.Analyze(labels);
+        var command = !snapshot.IsAmbiguous && snapshot.Commands.Count == 1
+            ? snapshot.Commands[0]
+            : (WorkflowCommand?)null;
+        var recoveryCommand = command is WorkflowCommand.Cancel or WorkflowCommand.Continue;
         var reconciliation = new WorkflowReconciliationService(runtime.Dependencies);
         using var reconciliationActivity = IssueAgentActivitySource.StartReconciliation(workflowId: null);
         var reconciled = await reconciliation
-            .ReconcileAsync(runtime.Config, issueNumber, canonical, cancellationToken)
+            .ReconcileAsync(runtime.Config, issueNumber, canonical!, cancellationToken)
             .ConfigureAwait(false);
         if (reconciled.State is not null)
         {
@@ -136,21 +178,41 @@ public sealed partial class WorkflowDispatcher(
                 issueNumber);
             return;
         }
-        if (reconciled.Disposition != ReconciliationDisposition.ResumeAllowed) return;
+        var canInspectReviewCommand = command is null && reconciled.State is not null;
+        if (reconciled.Disposition != ReconciliationDisposition.ResumeAllowed &&
+            !(recoveryCommand || canInspectReviewCommand))
+        {
+            return;
+        }
 
         var state = reconciled.State!;
-        var labels = await runtime.Provider.GetLabelsAsync(
-            new ProviderWorkItemReference(runtime.Repository, ProviderWorkItemKind.Issue, issueNumber),
-            cancellationToken).ConfigureAwait(false);
-        var snapshot = LabelProtocol.Analyze(labels);
-        if (snapshot.IsAmbiguous || snapshot.Commands.Count != 1) return;
-
-        var command = snapshot.Commands[0];
+        if (command is null)
+        {
+            var mergeRequest = await runtime.Provider
+                .FindMergeRequestAsync(runtime.Repository, state.Branch, state.TargetBranch, cancellationToken)
+                .ConfigureAwait(false);
+            if (mergeRequest is not null)
+            {
+                var mergeRequestLabels = await runtime.Provider.GetLabelsAsync(
+                    new ProviderWorkItemReference(runtime.Repository, ProviderWorkItemKind.MergeRequest, mergeRequest.Number),
+                    cancellationToken).ConfigureAwait(false);
+                var mergeRequestSnapshot = LabelProtocol.Analyze(mergeRequestLabels);
+                if (!mergeRequestSnapshot.IsAmbiguous && mergeRequestSnapshot.Commands.Count == 1)
+                {
+                    command = mergeRequestSnapshot.Commands[0];
+                }
+            }
+        }
+        if (command is null) return;
         if (command == WorkflowCommand.Cancel)
         {
             await new CancellationWorkflow(runtime.Dependencies)
                 .RunAsync(runtime.Config, issueNumber, state, reconciled.Content!, omp: null, cancellationToken)
                 .ConfigureAwait(false);
+            return;
+        }
+        if (command is not (WorkflowCommand.Implement or WorkflowCommand.Revise or WorkflowCommand.Continue or WorkflowCommand.Replan))
+        {
             return;
         }
 
@@ -168,7 +230,7 @@ public sealed partial class WorkflowDispatcher(
             await reconciliation.PauseForHumanAsync(
                 runtime.Config,
                 issueNumber,
-                canonical,
+                canonical!,
                 reconciled.Content!,
                 state,
                 WaitingReason.ManualIntervention,
@@ -177,6 +239,7 @@ public sealed partial class WorkflowDispatcher(
             LogOmpResumeFailure(logger, exception, providerName, runtime.Repository.Id, issueNumber);
             return;
         }
+
         var stopwatch = Stopwatch.StartNew();
         var implementation = command is WorkflowCommand.Implement or WorkflowCommand.Revise or WorkflowCommand.Continue;
         if (implementation) metrics.ImplementationCount.Add(1, runtime.Tags);
@@ -198,6 +261,10 @@ public sealed partial class WorkflowDispatcher(
                     await ContinueAsync(runtime, issueNumber, state, omp, cancellationToken).ConfigureAwait(false);
                     break;
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {
@@ -255,8 +322,10 @@ public sealed partial class WorkflowDispatcher(
             authentication,
             new GitIdentity(resolved.GitIdentityName, resolved.GitIdentityEmail),
             effectiveConfiguration.Omp.ExecutablePath,
-            [],
-            ompEnvironment.Create(ReadAmbientEnvironment()),
+            ["--rpc", "--session-dir", "/data/omp"],
+            ompEnvironment.Create(
+                ReadAmbientEnvironment(),
+                new GitIdentity(resolved.GitIdentityName, resolved.GitIdentityEmail)),
             resolved.OmpRoles.GetValueOrDefault("planning", "plan"),
             resolved.OmpRoles.GetValueOrDefault("implementation", "task"),
             resolved.SupplementalInstructions,

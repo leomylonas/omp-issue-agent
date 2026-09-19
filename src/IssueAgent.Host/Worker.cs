@@ -14,6 +14,9 @@ public sealed partial class Worker(
     ReadinessState readiness,
     ILogger<Worker> logger) : BackgroundService
 {
+    // Program configures HostOptions.ShutdownTimeout as grace plus this bounded cancellation
+    // headroom. OMP cancellation must not consume the whole per-run timeout after grace expires.
+    public static readonly TimeSpan ShutdownCancellationHeadroom = TimeSpan.FromSeconds(10);
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var configuration = options.Value;
@@ -38,11 +41,9 @@ public sealed partial class Worker(
         }
         finally
         {
-            var discarded = pollingScheduler.StopAdmission();
-            LogShutdown(logger, configuration.ShutdownGracePeriod, discarded);
             var shutdown = await shutdownCoordinator.DrainAndCancelAsync(
                 configuration.ShutdownGracePeriod,
-                configuration.Omp.Timeout ?? TimeSpan.FromSeconds(15),
+                ShutdownCancellationHeadroom,
                 workerCancellation).ConfigureAwait(false);
             try
             {

@@ -12,7 +12,7 @@ builder.Host.ConfigureServices((context, services) =>
 {
     var shutdownGracePeriod = context.Configuration.GetValue<TimeSpan?>("IssueAgent:ShutdownGracePeriod")
         ?? TimeSpan.FromSeconds(15);
-    services.Configure<HostOptions>(options => options.ShutdownTimeout = shutdownGracePeriod + TimeSpan.FromSeconds(10));
+    services.Configure<HostOptions>(options => options.ShutdownTimeout = shutdownGracePeriod + Worker.ShutdownCancellationHeadroom);
 });
 
 builder.Host.UseSerilog((context, services, configuration) => configuration
