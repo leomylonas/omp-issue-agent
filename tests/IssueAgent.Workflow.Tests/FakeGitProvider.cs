@@ -25,6 +25,8 @@ public sealed class FakeGitProvider : IGitProvider
 
     public string Name => "fake";
 
+    public string DefaultBranch { get; set; } = "main";
+
     public void AddIssue(RepositoryRef repository, long number, string title, string description, IReadOnlySet<string>? labels = null, DateTimeOffset? updatedAt = null)
     {
         var timestamp = updatedAt ?? DateTimeOffset.UnixEpoch;
@@ -52,7 +54,18 @@ public sealed class FakeGitProvider : IGitProvider
 
     public ValueTask<ProviderIdentity> GetCurrentIdentityAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
 
+    public ValueTask<string> GetDefaultBranchAsync(RepositoryRef repository, CancellationToken cancellationToken) => ValueTask.FromResult(DefaultBranch);
+
     public IAsyncEnumerable<IssueSummary> DiscoverAssignedOpenIssuesAsync(RepositoryRef repository, string identity, DateTimeOffset startDate, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+    public async IAsyncEnumerable<IssueSummary> DiscoverManagedIssuesAsync(RepositoryRef repository, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await Task.Yield();
+        foreach (var issue in Issues.Values.Where(issue => issue.Repository.Id == repository.Id && issue.Labels.Any(label => label.StartsWith("agent:phase:", StringComparison.Ordinal))))
+        {
+            yield return new IssueSummary(issue.Number, issue.Title, issue.CreatedAt, issue.Assignees);
+        }
+    }
 
     public ValueTask<ProviderIssue> GetIssueAsync(RepositoryRef repository, long issueNumber, CancellationToken cancellationToken) =>
         ValueTask.FromResult(Issues[(repository.Id, issueNumber)]);

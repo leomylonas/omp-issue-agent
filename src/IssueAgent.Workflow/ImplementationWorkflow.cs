@@ -41,8 +41,12 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, restoredState, "plan-only mode: implementation command rejected.");
         }
 
-        var canonicalComment = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false)
-            ?? throw new WorkflowContractException("Cannot implement: no canonical comment was found for this issue.");
+        var canonicalComment = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        if (canonicalComment is null)
+        {
+            return await EscalateWithoutCanonicalCommentAsync(
+                config, issueNumber, currentState, "Cannot implement: no canonical comment was found for this issue.", cancellationToken).ConfigureAwait(false);
+        }
         var existingContent = CanonicalCommentMarkdown.Parse(canonicalComment.Body);
 
         var issue = await deps.Provider.GetIssueAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
@@ -56,20 +60,57 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, staleState, "Plan is stale; replan required before implementation.");
         }
 
-        var workingState = currentState with { Phase = WorkflowPhase.Implementing, OperationalState = WorkflowOperationalState.Working, WaitingReason = null };
+        if (currentState.Phase == WorkflowPhase.Implementing)
+        {
+            if (currentState.WaitingReason is WaitingReason.NewInputDuringImplementation or WaitingReason.MaterialPlanDeviation)
+            {
+                // The human explicitly asked to continue past a pause that intentionally kept the
+                // worktree and its commits (specification §22, §25): resume in place rather than
+                // resetting or redoing the implementation.
+                return await ResumeAfterPauseAsync(config, issueNumber, currentState, existingContent, issue, omp, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            var recovered = await TryRecoverPublishedImplementationAsync(config, issueNumber, currentState, existingContent, cancellationToken)
+                .ConfigureAwait(false);
+            if (recovered is not null)
+            {
+                return recovered;
+            }
+
+            // No durable record of a completed, published implementation exists for this attempt:
+            // never publish review for unverified work. Discard any partial local state and redo
+            // implementation cleanly from the approved base commit below.
+        }
+
+        var approvedPlanRevision = existingContent.State.PlanRevision;
+        var workingState = currentState with
+        {
+            Phase = WorkflowPhase.Implementing,
+            OperationalState = WorkflowOperationalState.Working,
+            WaitingReason = null,
+            ApprovedPlanRevision = approvedPlanRevision,
+        };
+        var workingContent = existingContent with
+        {
+            ImplementationResult = null,
+            State = CanonicalStateSerializer.ToDocument(workingState, existingContent.State.PullOrMergeRequest),
+        };
+        await UpsertCanonicalCommentAsync(config, issueNumber, workingContent, cancellationToken).ConfigureAwait(false);
         await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Implementing, WorkflowOperationalState.Working, [], cancellationToken).ConfigureAwait(false);
 
         var worktreePath = WorktreePath(config, currentState.WorkflowId);
-        await deps.Git.ResetWorktreeAsync(worktreePath, currentState.BaseCommit, cancellationToken).ConfigureAwait(false);
+        await deps.Git.ResetWorktreeAsync(config.Repository.Id, worktreePath, currentState.BaseCommit, cancellationToken).ConfigureAwait(false);
 
         var currentPlan = new PlanContext(existingContent.State.PlanRevision, existingContent.PlanText, existingContent.DecisionsAndRationale);
         var attachmentsPath = AttachmentsPath(config, currentState.WorkflowId);
         var context = await deps.ContextBuilder
             .BuildAsync(config.Repository, issueNumber, workingState, currentPlan, mergeRequest: null, attachmentsPath, cancellationToken)
             .ConfigureAwait(false);
+        var inputSnapshot = await CaptureInputSnapshotAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
 
         var implementOutcome = await OmpRunCollector
-            .RunToCompletionAsync(omp, new OmpRunRequest(currentState.OmpSessionId, worktreePath, ImplementationPromptBuilder.BuildImplementationPrompt(context), config.OmpAllowedEnvironment), cancellationToken)
+            .RunToCompletionAsync(omp, new OmpRunRequest(currentState.OmpSessionId, worktreePath, config.ApplyInstructions(ImplementationPromptBuilder.BuildImplementationPrompt(context)), config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
             .ConfigureAwait(false);
         if (!implementOutcome.Succeeded)
         {
@@ -79,29 +120,87 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         var result = ImplementationResult.Parse(implementOutcome.Completed!.ResultJson);
         if (result.IsMaterialDeviation)
         {
-            return await PauseForMaterialDeviationAsync(config, issueNumber, workingState, result, cancellationToken).ConfigureAwait(false);
+            return await PauseForMaterialDeviationAsync(config, issueNumber, workingState, workingContent, result, cancellationToken).ConfigureAwait(false);
         }
 
-        if (await deps.Git.HasUncommittedChangesAsync(worktreePath, cancellationToken).ConfigureAwait(false))
+        return await PublishImplementationResultAsync(
+            config, issueNumber, workingState, workingContent, worktreePath, issue, omp,
+            result.RenderMarkdown(), inputSnapshot, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Resumes an implementation attempt the human explicitly asked to continue past a
+    /// content-reviewed pause (new input, or an accepted material deviation). The retained worktree
+    /// and its commits are never reset; a fresh input baseline is captured so the pre-publication
+    /// gate can still catch input that arrives during this resumed turn.</summary>
+    private async Task<WorkflowOutcome> ResumeAfterPauseAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState currentState,
+        CanonicalCommentContent existingContent,
+        ProviderIssue issue,
+        IOmpClient omp,
+        CancellationToken cancellationToken)
+    {
+        if (existingContent.ImplementationResult is not { Length: > 0 } resultMarkdown)
+        {
+            return await PauseAsync(
+                config, issueNumber, currentState, existingContent, existingContent.ImplementationResult ?? string.Empty,
+                WaitingReason.CorruptState,
+                "Cannot continue: no implementation result was recorded for the paused attempt.",
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        var workingState = currentState with { OperationalState = WorkflowOperationalState.Working, WaitingReason = null };
+        var workingContent = existingContent with
+        {
+            State = CanonicalStateSerializer.ToDocument(workingState, existingContent.State.PullOrMergeRequest),
+        };
+        await UpsertCanonicalCommentAsync(config, issueNumber, workingContent, cancellationToken).ConfigureAwait(false);
+        await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Implementing, WorkflowOperationalState.Working, [], cancellationToken).ConfigureAwait(false);
+
+        var worktreePath = WorktreePath(config, currentState.WorkflowId);
+        var inputSnapshot = await CaptureInputSnapshotAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+
+        return await PublishImplementationResultAsync(
+            config, issueNumber, workingState, workingContent, worktreePath, issue, omp,
+            resultMarkdown, inputSnapshot, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Shared publication tail: optional corrective pass, rebase/conflict resolution
+    /// against the latest target, a final pre-push human-input check, the durable pre-publication
+    /// checkpoint, LFS upload, push, and merge-request publication.</summary>
+    private async Task<WorkflowOutcome> PublishImplementationResultAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState workingState,
+        CanonicalCommentContent workingContent,
+        string worktreePath,
+        ProviderIssue issue,
+        IOmpClient omp,
+        string resultMarkdown,
+        InputSnapshot inputSnapshot,
+        CancellationToken cancellationToken)
+    {
+        if (await deps.Git.HasUncommittedChangesAsync(config.Repository.Id, worktreePath, cancellationToken).ConfigureAwait(false))
         {
             var correctiveOutcome = await OmpRunCollector
-                .RunToCompletionAsync(omp, new OmpRunRequest(currentState.OmpSessionId, worktreePath, ImplementationPromptBuilder.BuildCorrectivePrompt(), config.OmpAllowedEnvironment), cancellationToken)
+                .RunToCompletionAsync(omp, new OmpRunRequest(workingState.OmpSessionId, worktreePath, config.ApplyInstructions(ImplementationPromptBuilder.BuildCorrectivePrompt()), config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
                 .ConfigureAwait(false);
             if (correctiveOutcome.Succeeded)
             {
-                result = ImplementationResult.Parse(correctiveOutcome.Completed!.ResultJson);
+                resultMarkdown = ImplementationResult.Parse(correctiveOutcome.Completed!.ResultJson).RenderMarkdown();
             }
         }
 
         await deps.Git.FetchAsync(config.Repository.Id, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
-        var latestTargetCommit = await deps.Git.ResolveBranchCommitAsync(config.Repository.Id, currentState.TargetBranch, cancellationToken).ConfigureAwait(false);
-        if (latestTargetCommit != currentState.BaseCommit)
+        var latestTargetCommit = await deps.Git.ResolveBranchCommitAsync(config.Repository.Id, workingState.TargetBranch, cancellationToken).ConfigureAwait(false);
+        if (latestTargetCommit != workingState.BaseCommit)
         {
-            var rebased = await deps.Git.TryRebaseOntoAsync(worktreePath, latestTargetCommit, config.GitIdentity, cancellationToken).ConfigureAwait(false);
+            var rebased = await deps.Git.TryRebaseOntoAsync(config.Repository.Id, worktreePath, latestTargetCommit, config.GitIdentity, cancellationToken).ConfigureAwait(false);
             if (!rebased)
             {
                 var conflictOutcome = await OmpRunCollector
-                    .RunToCompletionAsync(omp, new OmpRunRequest(currentState.OmpSessionId, worktreePath, ImplementationPromptBuilder.BuildConflictResolutionPrompt(), config.OmpAllowedEnvironment), cancellationToken)
+                    .RunToCompletionAsync(omp, new OmpRunRequest(workingState.OmpSessionId, worktreePath, config.ApplyInstructions(ImplementationPromptBuilder.BuildConflictResolutionPrompt()), config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
                     .ConfigureAwait(false);
                 if (!conflictOutcome.Succeeded)
                 {
@@ -110,34 +209,125 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             }
         }
 
-        if (deps.Git.WorktreeRequiresLfs(worktreePath))
+        // Re-check human input immediately before publication. A single check here covers the
+        // whole remaining implementation window, including the corrective pass and conflict
+        // resolution above, and compares title/description content plus per-comment identity/edit
+        // timestamps rather than a bare count, so an edited comment or attachment is caught even if
+        // the comment count is unchanged (specification §22).
+        var latestInputSnapshot = await CaptureInputSnapshotAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        if (latestInputSnapshot != inputSnapshot)
         {
-            await deps.Git.UploadLfsObjectsAsync(worktreePath, currentState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+            return await PauseAsync(
+                config,
+                issueNumber,
+                workingState,
+                workingContent,
+                resultMarkdown,
+                WaitingReason.NewInputDuringImplementation,
+                "New or edited human input arrived during implementation. The current worktree was retained; choose continue, replan, or cancel.",
+                cancellationToken).ConfigureAwait(false);
         }
 
-        await deps.Git.PushAsync(worktreePath, currentState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+        // Durable pre-publication checkpoint: from this point, an interrupted attempt can be safely
+        // recovered by republishing this exact result once the branch and MR/PR are also confirmed
+        // to exist (see TryRecoverPublishedImplementationAsync).
+        var checkpointContent = workingContent with { ImplementationResult = resultMarkdown };
+        await UpsertCanonicalCommentAsync(config, issueNumber, checkpointContent, cancellationToken).ConfigureAwait(false);
 
-        var mergeRequest = await FindOrCreateMergeRequestAsync(config, issueNumber, issue, currentState, cancellationToken).ConfigureAwait(false);
+        if (deps.Git.WorktreeRequiresLfs(worktreePath))
+        {
+            await deps.Git.UploadLfsObjectsAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+        }
 
-        var publishedState = workingState with
+        await deps.Git.PushAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+
+        var mergeRequest = await FindOrCreateMergeRequestAsync(config, issueNumber, issue, workingState, cancellationToken).ConfigureAwait(false);
+
+        return await PublishReviewAsync(
+            config,
+            issueNumber,
+            workingState,
+            checkpointContent,
+            mergeRequest,
+            resultMarkdown,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Recovers an interrupted implementation attempt only when a real (non-placeholder)
+    /// implementation result was durably persisted before the crash, the branch was actually
+    /// pushed, and a matching PR/MR already exists (never creates one during recovery). Otherwise
+    /// returns <see langword="null"/> so the caller redoes implementation from the approved base
+    /// commit rather than publishing review for unverified work (specification §20, §23, §26).</summary>
+    private async Task<WorkflowOutcome?> TryRecoverPublishedImplementationAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState currentState,
+        CanonicalCommentContent existingContent,
+        CancellationToken cancellationToken)
+    {
+        if (existingContent.ImplementationResult is not { Length: > 0 } implementationResult)
+        {
+            return null;
+        }
+
+        var remoteBranchHead = await deps.Git
+            .TryResolveRemoteBranchCommitAsync(config.Repository.Id, currentState.Branch, cancellationToken)
+            .ConfigureAwait(false);
+        if (remoteBranchHead is null)
+        {
+            return null;
+        }
+
+        var existingMergeRequest = await deps.Provider
+            .FindMergeRequestAsync(config.Repository, currentState.Branch, currentState.TargetBranch, cancellationToken)
+            .ConfigureAwait(false);
+        if (existingMergeRequest is null)
+        {
+            return null;
+        }
+
+        return await PublishReviewAsync(
+            config,
+            issueNumber,
+            currentState,
+            existingContent,
+            existingMergeRequest,
+            implementationResult,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<WorkflowOutcome> PublishReviewAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState state,
+        CanonicalCommentContent existingContent,
+        ProviderMergeRequest mergeRequest,
+        string implementationResult,
+        CancellationToken cancellationToken)
+    {
+        var publishedState = state with
         {
             Phase = WorkflowPhase.Review,
             OperationalState = WorkflowOperationalState.Waiting,
             WaitingReason = WaitingReason.ReviewRequested,
             UpdatedAt = deps.Clock.UtcNow,
         };
-
-        var content = new CanonicalCommentContent(
-            existingContent.PlanText,
-            existingContent.DecisionsAndRationale,
-            result.RenderMarkdown(),
-            CanonicalStateSerializer.ToDocument(publishedState, $"{config.Repository.Id}#{mergeRequest.Number}"));
-
+        var content = existingContent with
+        {
+            ImplementationResult = implementationResult,
+            State = CanonicalStateSerializer.ToDocument(
+                publishedState,
+                $"{config.Repository.Id}#{mergeRequest.Number}"),
+        };
         await UpsertCanonicalCommentAsync(config, issueNumber, content, cancellationToken).ConfigureAwait(false);
         await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Review, WorkflowOperationalState.Waiting, [], cancellationToken).ConfigureAwait(false);
-        await NotifyAsync(config, issueNumber, publishedState, WorkflowNotificationKind.ImplementationReady, "Draft PR/MR is ready for review.", cancellationToken)
-            .ConfigureAwait(false);
-
+        await NotifyAsync(
+            config,
+            issueNumber,
+            publishedState,
+            WorkflowNotificationKind.ImplementationReady,
+            "Draft PR/MR is ready for review.",
+            cancellationToken).ConfigureAwait(false);
         return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, publishedState, "Implementation published; awaiting review.");
     }
 
@@ -155,24 +345,108 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>The plan is stale when the issue's title/description content no longer matches
+    /// what the currently published plan was written against (specification §22). Comparing a
+    /// content hash rather than a generic timestamp avoids false staleness from IssueAgent's own
+    /// label/comment writes, which bump the provider's issue <c>updated_at</c> without changing
+    /// title or description.</summary>
     private static bool IsPlanStale(ProviderIssue issue, CanonicalCommentContent existingContent) =>
-        issue.UpdatedAt > existingContent.State.UpdatedAt && existingContent.State.ApprovedPlanRevision is not null;
+        existingContent.State.PlanInputHash is { } hash &&
+        hash != PlanInputHasher.Compute(issue.Title, issue.Description);
 
-    private async Task<WorkflowOutcome> PauseForMaterialDeviationAsync(
-        WorkflowRepositoryConfig config, long issueNumber, WorkflowState workingState, ImplementationResult result, CancellationToken cancellationToken)
+    private Task<WorkflowOutcome> PauseForMaterialDeviationAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState workingState,
+        CanonicalCommentContent existingContent,
+        ImplementationResult result,
+        CancellationToken cancellationToken) =>
+        PauseAsync(
+            config,
+            issueNumber,
+            workingState,
+            existingContent,
+            result.RenderMarkdown(),
+            WaitingReason.MaterialPlanDeviation,
+            result.MaterialDeviationExplanation
+                ?? "OMP identified a material deviation from the approved plan and paused before proceeding.",
+            cancellationToken);
+
+    private async Task<WorkflowOutcome> PauseAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState workingState,
+        CanonicalCommentContent existingContent,
+        string implementationResult,
+        WaitingReason reason,
+        string message,
+        CancellationToken cancellationToken)
     {
         var pausedState = workingState with
         {
             OperationalState = WorkflowOperationalState.Waiting,
-            WaitingReason = WaitingReason.MaterialPlanDeviation,
+            WaitingReason = reason,
             UpdatedAt = deps.Clock.UtcNow,
         };
-        var message = result.MaterialDeviationExplanation ?? "OMP identified a material deviation from the approved plan and paused before proceeding.";
-
+        await UpsertCanonicalCommentAsync(
+            config,
+            issueNumber,
+            existingContent with
+            {
+                ImplementationResult = implementationResult,
+                State = CanonicalStateSerializer.ToDocument(pausedState, existingContent.State.PullOrMergeRequest),
+            },
+            cancellationToken).ConfigureAwait(false);
         await TransitionLabelsAsync(config, issueNumber, pausedState.Phase, WorkflowOperationalState.Waiting, [], cancellationToken).ConfigureAwait(false);
         await NotifyAsync(config, issueNumber, pausedState, WorkflowNotificationKind.HumanActionRequired, message, cancellationToken).ConfigureAwait(false);
-
         return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, pausedState, message);
+    }
+
+    /// <summary>Preserves state and escalates to a human instead of throwing an unhandled exception
+    /// when the canonical comment itself cannot be located (specification §25); nothing exists yet
+    /// to update, so this only transitions labels and notifies.</summary>
+    private async Task<WorkflowOutcome> EscalateWithoutCanonicalCommentAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState currentState,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        var pausedState = currentState with
+        {
+            OperationalState = WorkflowOperationalState.Waiting,
+            WaitingReason = WaitingReason.CorruptState,
+            UpdatedAt = deps.Clock.UtcNow,
+        };
+        await TransitionLabelsAsync(config, issueNumber, pausedState.Phase, WorkflowOperationalState.Waiting, [], cancellationToken).ConfigureAwait(false);
+        await NotifyAsync(config, issueNumber, pausedState, WorkflowNotificationKind.HumanActionRequired, message, cancellationToken).ConfigureAwait(false);
+        return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, pausedState, message);
+    }
+
+    /// <summary>Human-input identity captured for the new-input gate (specification §22): title and
+    /// description content plus each non-bot comment's id/last-updated timestamp, so an edited
+    /// existing comment (which can add an attachment without changing the comment count) is
+    /// detected just as reliably as an entirely new comment.</summary>
+    private sealed record InputSnapshot(string Title, string Description, string CommentsDigest);
+
+    private async Task<InputSnapshot> CaptureInputSnapshotAsync(
+        RepositoryRef repository,
+        long issueNumber,
+        CancellationToken cancellationToken)
+    {
+        var issue = await deps.Provider.GetIssueAsync(repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var commentStamps = new List<string>();
+        await foreach (var comment in deps.Provider
+            .GetIssueCommentsAsync(repository, issueNumber, cancellationToken)
+            .ConfigureAwait(false))
+        {
+            if (!comment.IsBot && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
+            {
+                commentStamps.Add($"{comment.Id}:{comment.UpdatedAt:O}");
+            }
+        }
+
+        return new InputSnapshot(issue.Title, issue.Description, string.Join('|', commentStamps));
     }
 
     private async Task<WorkflowOutcome> FailAsync(WorkflowRepositoryConfig config, long issueNumber, WorkflowState workingState, string message, CancellationToken cancellationToken)

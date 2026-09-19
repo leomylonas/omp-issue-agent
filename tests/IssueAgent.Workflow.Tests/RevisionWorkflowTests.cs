@@ -45,6 +45,28 @@ public sealed class RevisionWorkflowTests : IDisposable
     }
 
 
+    [Fact]
+    public async Task RunAsyncUsesSameOmpSessionToResolveTargetConflictBeforePush()
+    {
+        var state = await SeedReviewStateAsync();
+        git.MergeSucceeds = false;
+        var omp = new FakeOmpClient()
+            .EnqueueRun(new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"summary":"Revision.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""))
+            .EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """{"summary":"Conflict resolved."}"""));
+
+        var outcome = await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
+        Assert.Equal(1, git.MergeAttempts);
+        Assert.Equal(2, omp.RunRequests.Count);
+        Assert.All(omp.RunRequests, request => Assert.Equal("session-1", request.SessionId));
+        Assert.Contains("conflict", omp.RunRequests[1].Prompt, StringComparison.OrdinalIgnoreCase);
+    }
+
     private async Task<WorkflowState> SeedReviewStateAsync()
     {
         provider.AddIssue(Repository, 1, "Bug", "Description");

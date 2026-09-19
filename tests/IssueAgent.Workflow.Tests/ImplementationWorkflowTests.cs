@@ -45,7 +45,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
         Assert.Equal(WaitingReason.ReviewRequested, outcome.State.WaitingReason);
         Assert.Single(provider.MergeRequests);
         Assert.True(provider.MergeRequests[1].IsDraft);
-        var updated = Assert.Single(provider.UpdatedComments);
+        var updated = provider.UpdatedComments[^1];
         Assert.Contains("Added a guard clause.", updated.Body, StringComparison.Ordinal);
         Assert.Contains(provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)], l => l == "agent:phase:review");
         Assert.Equal(WorkflowNotificationKind.ImplementationReady, Assert.Single(notifier.Notifications).Kind);
@@ -84,7 +84,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
 
         Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
         Assert.Equal(2, omp.RunRequests.Count);
-        var updated = Assert.Single(provider.UpdatedComments);
+        var updated = provider.UpdatedComments[^1];
         Assert.Contains("Committed remaining changes.", updated.Body, StringComparison.Ordinal);
     }
 
@@ -104,13 +104,157 @@ public sealed class ImplementationWorkflowTests : IDisposable
         Assert.Empty(provider.MergeRequests);
     }
 
+    [Fact]
+    public async Task RunAsyncRecoversPublishedBranchWithoutRepeatingImplementationWhenResultIsDurablyRecorded()
+    {
+        var plannedState = await SeedApprovedPlanAsync();
+        var interruptedState = plannedState with
+        {
+            Phase = WorkflowPhase.Implementing,
+            OperationalState = WorkflowOperationalState.Waiting,
+            WaitingReason = WaitingReason.ManualIntervention,
+        };
+        var canonical = Assert.Single(provider.IssueComments[(Repository.Id, 1)]);
+        var existing = CanonicalCommentMarkdown.Parse(canonical.Body);
+        await provider.UpdateIssueCommentAsync(
+            Repository,
+            1,
+            canonical.Id,
+            CanonicalCommentMarkdown.Render(existing with
+            {
+                ImplementationResult = "**Durably recorded implementation summary.**",
+                State = CanonicalStateSerializer.ToDocument(interruptedState, null),
+            }),
+            CancellationToken.None);
+        provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] =
+            ["agent:phase:implementing", "agent:state:waiting", "agent:cmd:continue"];
+        provider.MergeRequests[1] = new ProviderMergeRequest(
+            Repository, 1, interruptedState.Branch, interruptedState.TargetBranch, "Bug", "body",
+            IsDraft: true, IsMerged: false, IsClosed: false, new AttachmentSource("merge-request-description", "1"));
+        var omp = new FakeOmpClient();
+
+        var outcome = await CreateWorkflow().RunAsync(
+            CreateConfig(),
+            WorkflowMode.Full,
+            1,
+            interruptedState,
+            omp,
+            CancellationToken.None);
+
+        Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
+        Assert.Empty(omp.RunRequests);
+        Assert.Single(provider.MergeRequests);
+        Assert.Contains("Durably recorded implementation summary.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunAsyncRedoesImplementationWhenNoDurableResultWasRecordedBeforeInterruption()
+    {
+        var plannedState = await SeedApprovedPlanAsync();
+        var interruptedState = plannedState with
+        {
+            Phase = WorkflowPhase.Implementing,
+            OperationalState = WorkflowOperationalState.Waiting,
+            WaitingReason = WaitingReason.ManualIntervention,
+        };
+        var canonical = Assert.Single(provider.IssueComments[(Repository.Id, 1)]);
+        var existing = CanonicalCommentMarkdown.Parse(canonical.Body);
+        await provider.UpdateIssueCommentAsync(
+            Repository,
+            1,
+            canonical.Id,
+            CanonicalCommentMarkdown.Render(existing with
+            {
+                State = CanonicalStateSerializer.ToDocument(interruptedState, null),
+            }),
+            CancellationToken.None);
+        provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] =
+            ["agent:phase:implementing", "agent:state:waiting", "agent:cmd:continue"];
+        // A remote branch happens to exist, but no durable implementation result was ever recorded
+        // and no MR exists: this must never be trusted as a completed, published implementation.
+        git.RemoteBranchCommitToReturn = git.BranchCommitToReturn;
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """{"summary":"Redone from scratch.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await CreateWorkflow().RunAsync(
+            CreateConfig(),
+            WorkflowMode.Full,
+            1,
+            interruptedState,
+            omp,
+            CancellationToken.None);
+
+        Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
+        Assert.Single(omp.RunRequests);
+        Assert.Contains("Redone from scratch.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
+    }
+
+
+    [Fact]
+    public async Task RunAsyncContinueAfterNewInputPauseResumesWithoutResettingRetainedWorktree()
+    {
+        var state = await SeedApprovedPlanAsync();
+        var pausingOmp = new FakeOmpClient();
+        pausingOmp.EnqueueRun(
+            onStart: () => provider.AddComment(Repository, 1, "alice", "One more thing.", clock.UtcNow.AddMinutes(1)),
+            new OmpCompletedEvent("session-1", clock.UtcNow, """{"summary":"Paused mid-flight.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var pausedOutcome = await CreateWorkflow().RunAsync(CreateConfig(), WorkflowMode.Full, 1, state, pausingOmp, CancellationToken.None);
+
+        Assert.Equal(WaitingReason.NewInputDuringImplementation, pausedOutcome.State.WaitingReason);
+        Assert.Equal(1, git.ResetWorktreeCallCount);
+
+        provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] =
+            ["agent:phase:implementing", "agent:state:waiting", "agent:cmd:continue"];
+        var resumingOmp = new FakeOmpClient();
+
+        var resumedOutcome = await CreateWorkflow().RunAsync(CreateConfig(), WorkflowMode.Full, 1, pausedOutcome.State, resumingOmp, CancellationToken.None);
+
+        Assert.Equal(WorkflowPhase.Review, resumedOutcome.State.Phase);
+        Assert.Empty(resumingOmp.RunRequests);
+        Assert.Equal(1, git.ResetWorktreeCallCount);
+        Assert.Contains("Paused mid-flight.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
+    }
+
+
+    [Fact]
+    public async Task RunAsyncPausesBeforePushWhenHumanInputArrivesDuringImplementation()
+    {
+        var state = await SeedApprovedPlanAsync();
+        var omp = new FakeOmpClient();
+        omp.EnqueueRun(
+            onStart: () => provider.AddComment(
+                Repository,
+                1,
+                "alice",
+                "Please also preserve empty titles.",
+                clock.UtcNow.AddMinutes(1)),
+            new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"summary":"Implemented the plan.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await CreateWorkflow().RunAsync(
+            CreateConfig(),
+            WorkflowMode.Full,
+            1,
+            state,
+            omp,
+            CancellationToken.None);
+
+        Assert.Equal(WaitingReason.NewInputDuringImplementation, outcome.State.WaitingReason);
+        Assert.Empty(provider.MergeRequests);
+        Assert.Contains("New or edited human input", outcome.Message, StringComparison.Ordinal);
+        Assert.Contains("Implemented the plan.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
+    }
+
     private async Task<WorkflowState> SeedApprovedPlanAsync()
     {
         provider.AddIssue(Repository, 1, "Bug", "Original description");
         var workflowId = WorkflowId.New();
         var state = new WorkflowState(
             workflowId, WorkflowPhase.Planned, WorkflowOperationalState.Waiting, WaitingReason.PlanApproval,
-            1, 1, "session-1", "agent/issue-1-bug", "main", "abc123", clock.UtcNow.AddHours(-1));
+            1, 1, "session-1", "agent/issue-1-bug", "main", "abc123", clock.UtcNow.AddHours(-1),
+            PlanInputHash: PlanInputHasher.Compute("Bug", "Original description"));
         var document = CanonicalStateSerializer.ToDocument(state, null);
         var content = new CanonicalCommentContent("Approved plan text.", ["Decision one."], null, document);
         await provider.CreateIssueCommentAsync(Repository, 1, CanonicalCommentMarkdown.Render(content), CancellationToken.None);
@@ -157,10 +301,11 @@ public sealed class ImplementationWorkflowTests : IDisposable
         public ValueTask EnsureBareRepositoryAsync(string repositoryId, string cloneUrl, GitAuthentication authentication, CancellationToken cancellationToken) => inner.EnsureBareRepositoryAsync(repositoryId, cloneUrl, authentication, cancellationToken);
         public ValueTask FetchAsync(string repositoryId, GitAuthentication authentication, CancellationToken cancellationToken) => inner.FetchAsync(repositoryId, authentication, cancellationToken);
         public ValueTask<string> ResolveBranchCommitAsync(string repositoryId, string branchName, CancellationToken cancellationToken) => inner.ResolveBranchCommitAsync(repositoryId, branchName, cancellationToken);
+        public ValueTask<string?> TryResolveRemoteBranchCommitAsync(string repositoryId, string branchName, CancellationToken cancellationToken) => inner.TryResolveRemoteBranchCommitAsync(repositoryId, branchName, cancellationToken);
         public ValueTask CreateWorktreeAsync(string repositoryId, string worktreeId, string worktreePath, string branchName, string baseCommit, CancellationToken cancellationToken) => inner.CreateWorktreeAsync(repositoryId, worktreeId, worktreePath, branchName, baseCommit, cancellationToken);
-        public ValueTask ResetWorktreeAsync(string worktreePath, string commit, CancellationToken cancellationToken) => inner.ResetWorktreeAsync(worktreePath, commit, cancellationToken);
+        public ValueTask ResetWorktreeAsync(string repositoryId, string worktreePath, string commit, CancellationToken cancellationToken) => inner.ResetWorktreeAsync(repositoryId, worktreePath, commit, cancellationToken);
 
-        public ValueTask<bool> HasUncommittedChangesAsync(string worktreePath, CancellationToken cancellationToken)
+        public ValueTask<bool> HasUncommittedChangesAsync(string repositoryId, string worktreePath, CancellationToken cancellationToken)
         {
             if (!reported)
             {
@@ -171,15 +316,15 @@ public sealed class ImplementationWorkflowTests : IDisposable
             return ValueTask.FromResult(false);
         }
 
-        public ValueTask<string> GetHeadCommitAsync(string worktreePath, CancellationToken cancellationToken) => inner.GetHeadCommitAsync(worktreePath, cancellationToken);
-        public ValueTask UpdateSubmodulesAsync(string worktreePath, Func<string, GitAuthentication?> authenticationResolver, CancellationToken cancellationToken) => inner.UpdateSubmodulesAsync(worktreePath, authenticationResolver, cancellationToken);
-        public ValueTask<bool> TryRebaseOntoAsync(string worktreePath, string ontoCommit, GitIdentity identity, CancellationToken cancellationToken) => inner.TryRebaseOntoAsync(worktreePath, ontoCommit, identity, cancellationToken);
-        public ValueTask<bool> TryMergeAsync(string worktreePath, string commit, GitIdentity identity, CancellationToken cancellationToken) => inner.TryMergeAsync(worktreePath, commit, identity, cancellationToken);
-        public ValueTask PushAsync(string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken) => inner.PushAsync(worktreePath, branchName, authentication, cancellationToken);
+        public ValueTask<string> GetHeadCommitAsync(string repositoryId, string worktreePath, CancellationToken cancellationToken) => inner.GetHeadCommitAsync(repositoryId, worktreePath, cancellationToken);
+        public ValueTask UpdateSubmodulesAsync(string repositoryId, string worktreePath, Func<string, GitAuthentication?> authenticationResolver, CancellationToken cancellationToken) => inner.UpdateSubmodulesAsync(repositoryId, worktreePath, authenticationResolver, cancellationToken);
+        public ValueTask<bool> TryRebaseOntoAsync(string repositoryId, string worktreePath, string ontoCommit, GitIdentity identity, CancellationToken cancellationToken) => inner.TryRebaseOntoAsync(repositoryId, worktreePath, ontoCommit, identity, cancellationToken);
+        public ValueTask<bool> TryMergeAsync(string repositoryId, string worktreePath, string commit, GitIdentity identity, CancellationToken cancellationToken) => inner.TryMergeAsync(repositoryId, worktreePath, commit, identity, cancellationToken);
+        public ValueTask PushAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken) => inner.PushAsync(repositoryId, worktreePath, branchName, authentication, cancellationToken);
         public ValueTask RemoveWorktreeAsync(string repositoryId, string worktreeId, string worktreePath, CancellationToken cancellationToken) => inner.RemoveWorktreeAsync(repositoryId, worktreeId, worktreePath, cancellationToken);
         public ValueTask RemoveLocalBranchAsync(string repositoryId, string branchName, CancellationToken cancellationToken) => inner.RemoveLocalBranchAsync(repositoryId, branchName, cancellationToken);
         public bool WorktreeRequiresLfs(string worktreePath) => inner.WorktreeRequiresLfs(worktreePath);
-        public ValueTask MaterializeLfsContentAsync(string worktreePath, GitAuthentication authentication, CancellationToken cancellationToken) => inner.MaterializeLfsContentAsync(worktreePath, authentication, cancellationToken);
-        public ValueTask UploadLfsObjectsAsync(string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken) => inner.UploadLfsObjectsAsync(worktreePath, branchName, authentication, cancellationToken);
+        public ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, CancellationToken cancellationToken) => inner.MaterializeLfsContentAsync(repositoryId, worktreePath, authentication, cancellationToken);
+        public ValueTask UploadLfsObjectsAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken) => inner.UploadLfsObjectsAsync(repositoryId, worktreePath, branchName, authentication, cancellationToken);
     }
 }

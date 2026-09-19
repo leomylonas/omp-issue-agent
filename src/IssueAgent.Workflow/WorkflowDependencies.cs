@@ -72,4 +72,24 @@ public sealed record WorkflowRepositoryConfig(
     IReadOnlyList<string> OmpArguments,
     IReadOnlyDictionary<string, string> OmpAllowedEnvironment,
     string PlanningRole,
-    string ImplementationRole);
+    string ImplementationRole,
+    IReadOnlyList<string>? SupplementalInstructions = null,
+    TimeSpan? OmpTimeout = null,
+    Func<string, GitAuthentication?>? SubmoduleAuthenticationResolver = null)
+{
+    public string ApplyInstructions(string prompt)
+    {
+        if (SupplementalInstructions is not { Count: > 0 })
+        {
+            return prompt;
+        }
+
+        return string.Concat(
+            prompt,
+            Environment.NewLine,
+            Environment.NewLine,
+            "Repository-specific supplemental instructions:",
+            Environment.NewLine,
+            string.Join(Environment.NewLine, SupplementalInstructions.Select(value => $"- {value}")));
+    }
+}

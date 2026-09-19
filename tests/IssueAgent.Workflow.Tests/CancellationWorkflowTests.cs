@@ -18,63 +18,73 @@ public sealed class CancellationWorkflowTests : IDisposable
     [Fact]
     public async Task RunAsyncCancelsOmpSessionSetsCancelledPhaseAndCleansUpLocalState()
     {
-        var state = SeedActiveState();
+        var (state, content) = await SeedActiveStateAsync();
         var worktreePath = Path.Combine(workspaceRoot, state.WorkflowId.ToString(), "worktree");
         Directory.CreateDirectory(worktreePath);
+        var attachmentsPath = Path.Combine(workspaceRoot, state.WorkflowId.ToString(), "attachments");
+        Directory.CreateDirectory(attachmentsPath);
+        await File.WriteAllTextAsync(Path.Combine(attachmentsPath, "evidence.txt"), "evidence", TestContext.Current.CancellationToken);
         var omp = new FakeOmpClient();
 
         var workflow = new CancellationWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock));
-        var outcome = await workflow.RunAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
+        var outcome = await workflow.RunAsync(CreateConfig(), 1, state, content, omp, CancellationToken.None);
 
         Assert.Equal(WorkflowPhase.Cancelled, outcome.State.Phase);
         Assert.Equal(["session-1"], omp.CancelledSessionIds);
         Assert.False(Directory.Exists(worktreePath));
+        Assert.False(Directory.Exists(Path.Combine(workspaceRoot, state.WorkflowId.ToString())));
         Assert.Contains(provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)], l => l == "agent:phase:cancelled");
         Assert.DoesNotContain("agent:cmd:cancel", provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
         Assert.Equal(WorkflowNotificationKind.Cancelled, Assert.Single(notifier.Notifications).Kind);
+        var persisted = CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body);
+        Assert.Equal("cancelled", persisted.State.Phase);
     }
 
     [Fact]
     public async Task RunAsyncSucceedsWithoutAnActiveOmpClient()
     {
-        var state = SeedActiveState();
+        var (state, content) = await SeedActiveStateAsync();
         var workflow = new CancellationWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock));
 
-        var outcome = await workflow.RunAsync(CreateConfig(), 1, state, omp: null, CancellationToken.None);
+        var outcome = await workflow.RunAsync(CreateConfig(), 1, state, content, omp: null, CancellationToken.None);
 
         Assert.Equal(WorkflowPhase.Cancelled, outcome.State.Phase);
     }
 
     [Fact]
-    public async Task CompleteOnMergeAsyncSetsDoneAndCleansUpLocalState()
+    public async Task CompleteOnMergeAsyncPersistsDoneStateBeforeCleaningUpLocalState()
     {
-        var state = SeedActiveState();
+        var (state, content) = await SeedActiveStateAsync();
         var worktreePath = Path.Combine(workspaceRoot, state.WorkflowId.ToString(), "worktree");
         Directory.CreateDirectory(worktreePath);
 
         var workflow = new CancellationWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock));
-        var outcome = await workflow.CompleteOnMergeAsync(CreateConfig(), 1, state, CancellationToken.None);
+        var outcome = await workflow.CompleteOnMergeAsync(CreateConfig(), 1, state, content, CancellationToken.None);
 
         Assert.Equal(WorkflowPhase.Done, outcome.State.Phase);
         Assert.False(Directory.Exists(worktreePath));
         Assert.Contains(provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)], l => l == "agent:phase:done");
+        var persisted = CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body);
+        Assert.Equal("done", persisted.State.Phase);
     }
 
     [Fact]
-    public async Task CompleteOnCloseWithoutMergeAsyncSetsCancelledAndCleansUpLocalState()
+    public async Task CompleteOnCloseWithoutMergeAsyncPersistsCancelledStateBeforeCleaningUpLocalState()
     {
-        var state = SeedActiveState();
+        var (state, content) = await SeedActiveStateAsync();
         var worktreePath = Path.Combine(workspaceRoot, state.WorkflowId.ToString(), "worktree");
         Directory.CreateDirectory(worktreePath);
 
         var workflow = new CancellationWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock));
-        var outcome = await workflow.CompleteOnCloseWithoutMergeAsync(CreateConfig(), 1, state, CancellationToken.None);
+        var outcome = await workflow.CompleteOnCloseWithoutMergeAsync(CreateConfig(), 1, state, content, CancellationToken.None);
 
         Assert.Equal(WorkflowPhase.Cancelled, outcome.State.Phase);
         Assert.False(Directory.Exists(worktreePath));
+        var persisted = CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body);
+        Assert.Equal("cancelled", persisted.State.Phase);
     }
 
-    private WorkflowState SeedActiveState()
+    private async Task<(WorkflowState State, CanonicalCommentContent Content)> SeedActiveStateAsync()
     {
         provider.AddIssue(Repository, 1, "Bug", "Description");
         var workflowId = WorkflowId.New();
@@ -82,8 +92,11 @@ public sealed class CancellationWorkflowTests : IDisposable
             workflowId, WorkflowPhase.Implementing, WorkflowOperationalState.Working, null,
             1, 1, "session-1", "agent/issue-1-bug", "main", "abc123", clock.UtcNow.AddHours(-1));
         provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] = ["agent:phase:implementing", "agent:state:working", "agent:cmd:cancel"];
-        return state;
+        var content = new CanonicalCommentContent("Plan text.", ["Decision."], "Implementation summary.", CanonicalStateSerializer.ToDocument(state, null));
+        await provider.CreateIssueCommentAsync(Repository, 1, CanonicalCommentMarkdown.Render(content), CancellationToken.None);
+        return (state, content);
     }
+
 
     private AgentContextBuilder CreateContextBuilder()
     {

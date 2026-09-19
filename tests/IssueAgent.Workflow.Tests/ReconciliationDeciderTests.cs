@@ -62,6 +62,18 @@ public sealed class ReconciliationDeciderTests
     }
 
     [Fact]
+    public void DecideWaitsWhenPublishedPhaseHasNoRemoteBranch()
+    {
+        var labels = LabelProtocol.Analyze(["agent:phase:review", "agent:state:waiting"]);
+        var comment = CreateComment(WorkflowPhase.Review, WorkflowOperationalState.Waiting);
+
+        var decision = ReconciliationDecider.Decide(new ReconciliationInput(labels, comment, true, "local-sha", null));
+
+        Assert.Equal(ReconciliationAction.WaitForHuman, decision.Action);
+        Assert.Equal(WaitingReason.RemoteHistoryRewrite, decision.Reason);
+    }
+
+    [Fact]
     public void DecideResumesAutomaticallyWhenStateIsConsistentAndWaiting()
     {
         var labels = LabelProtocol.Analyze(["agent:phase:planned", "agent:state:waiting"]);
@@ -74,14 +86,27 @@ public sealed class ReconciliationDeciderTests
     }
 
     [Fact]
-    public void DecideResumesAutomaticallyWhenNoLocalWorktreeExistsToCompare()
+    public void DecideWaitsWhenRetainedWorktreeIsMissing()
     {
         var labels = LabelProtocol.Analyze(["agent:phase:planned", "agent:state:waiting"]);
         var comment = CreateComment(WorkflowPhase.Planned, WorkflowOperationalState.Waiting);
 
         var decision = ReconciliationDecider.Decide(new ReconciliationInput(labels, comment, false, null, "remote-sha"));
 
-        Assert.Equal(ReconciliationAction.ResumeAutomatically, decision.Action);
+        Assert.Equal(ReconciliationAction.WaitForHuman, decision.Action);
+        Assert.Equal(WaitingReason.ManualIntervention, decision.Reason);
+    }
+
+    [Fact]
+    public void DecideWaitsAndPreservesDirtyRetainedWorktree()
+    {
+        var labels = LabelProtocol.Analyze(["agent:phase:planned", "agent:state:waiting"]);
+        var comment = CreateComment(WorkflowPhase.Planned, WorkflowOperationalState.Waiting);
+
+        var decision = ReconciliationDecider.Decide(new ReconciliationInput(labels, comment, true, "abc123", null, LocalWorktreeDirty: true));
+
+        Assert.Equal(ReconciliationAction.WaitForHuman, decision.Action);
+        Assert.Equal(WaitingReason.ManualIntervention, decision.Reason);
     }
 
     private static CanonicalCommentContent CreateComment(WorkflowPhase phase, WorkflowOperationalState operationalState)

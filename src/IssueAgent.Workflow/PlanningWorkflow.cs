@@ -49,9 +49,9 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             .BuildAsync(config.Repository, issueNumber, initialState, currentPlan: null, mergeRequest: null, attachmentsPath, cancellationToken)
             .ConfigureAwait(false);
 
-        var prompt = PlanningPromptBuilder.BuildInitialPlanPrompt(context);
+        var prompt = config.ApplyInstructions(PlanningPromptBuilder.BuildInitialPlanPrompt(context));
         var outcome = await OmpRunCollector
-            .RunToCompletionAsync(omp, new OmpRunRequest(session.SessionId, worktreePath, prompt, config.OmpAllowedEnvironment), cancellationToken)
+            .RunToCompletionAsync(omp, new OmpRunRequest(session.SessionId, worktreePath, prompt, config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
             .ConfigureAwait(false);
 
         if (!outcome.Succeeded)
@@ -65,7 +65,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             config, issueNumber, omp, session.SessionId, worktreePath, context, planningResult, cancellationToken)
             .ConfigureAwait(false);
 
-        return await PublishPlanAsync(config, issueNumber, initialState, reconciledResult, planRevision: 1, cancellationToken).ConfigureAwait(false);
+        return await PublishPlanAsync(config, issueNumber, initialState, reconciledResult, planRevision: 1, issue.Title, issue.Description, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Resumes the same OMP session with the complete relevant planning conversation and
@@ -92,8 +92,13 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         var worktreePath = WorktreePath(config, currentState.WorkflowId);
         var attachmentsPath = AttachmentsPath(config, currentState.WorkflowId);
 
-        var canonicalComment = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false)
-            ?? throw new WorkflowContractException("Cannot replan: no canonical comment was found for this issue.");
+        var canonicalComment = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        if (canonicalComment is null)
+        {
+            return await FailAsync(
+                config, issueNumber, workingState, WaitingReason.CorruptState,
+                "Cannot replan: no canonical comment was found for this issue.", cancellationToken).ConfigureAwait(false);
+        }
         var existingContent = CanonicalCommentMarkdown.Parse(canonicalComment.Body);
         var currentPlan = new PlanContext(existingContent.State.PlanRevision, existingContent.PlanText, existingContent.DecisionsAndRationale);
 
@@ -105,9 +110,9 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             .Where(c => c.CreatedAt > existingContent.State.UpdatedAt)
             .ToList();
 
-        var prompt = PlanningPromptBuilder.BuildReplanPrompt(context, feedback);
+        var prompt = config.ApplyInstructions(PlanningPromptBuilder.BuildReplanPrompt(context, feedback));
         var outcome = await OmpRunCollector
-            .RunToCompletionAsync(omp, new OmpRunRequest(currentState.OmpSessionId, worktreePath, prompt, config.OmpAllowedEnvironment), cancellationToken)
+            .RunToCompletionAsync(omp, new OmpRunRequest(currentState.OmpSessionId, worktreePath, prompt, config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
             .ConfigureAwait(false);
 
         if (!outcome.Succeeded)
@@ -117,7 +122,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         }
 
         var planningResult = PlanningResult.Parse(outcome.Completed!.ResultJson);
-        return await PublishPlanAsync(config, issueNumber, workingState, planningResult, existingContent.State.PlanRevision + 1, cancellationToken)
+        return await PublishPlanAsync(config, issueNumber, workingState, planningResult, existingContent.State.PlanRevision + 1, context.PrimaryIssue.Title, context.PrimaryIssue.Description, cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -134,7 +139,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         var latestComments = new List<HumanComment>();
         await foreach (var comment in deps.Provider.GetIssueCommentsAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false))
         {
-            if (!comment.IsBot)
+            if (!comment.IsBot && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
             {
                 latestComments.Add(new HumanComment(comment.AuthorLogin, comment.CreatedAt, comment.Body));
             }
@@ -149,12 +154,12 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             return initialResult;
         }
 
-        var prompt = PlanningPromptBuilder.BuildReplanPrompt(
+        var prompt = config.ApplyInstructions(PlanningPromptBuilder.BuildReplanPrompt(
             contextUsedForPlanning with { CurrentPlan = new PlanContext(0, initialResult.PlanText, initialResult.DecisionsAndRationale) },
-            newComments);
+            newComments));
 
         var outcome = await OmpRunCollector
-            .RunToCompletionAsync(omp, new OmpRunRequest(sessionId, worktreePath, prompt, config.OmpAllowedEnvironment), cancellationToken)
+            .RunToCompletionAsync(omp, new OmpRunRequest(sessionId, worktreePath, prompt, config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
             .ConfigureAwait(false);
 
         return outcome.Succeeded ? PlanningResult.Parse(outcome.Completed!.ResultJson) : initialResult;
@@ -166,6 +171,8 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         WorkflowState workingState,
         PlanningResult planningResult,
         int planRevision,
+        string issueTitle,
+        string issueDescription,
         CancellationToken cancellationToken)
     {
         var publishedState = workingState with
@@ -175,6 +182,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             WaitingReason = WaitingReason.PlanApproval,
             PlanRevision = planRevision,
             UpdatedAt = deps.Clock.UtcNow,
+            PlanInputHash = PlanInputHasher.Compute(issueTitle, issueDescription),
         };
 
         var content = new CanonicalCommentContent(
@@ -263,10 +271,11 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
 
     private async Task PrepareWorktreeContentAsync(WorkflowRepositoryConfig config, string worktreePath, CancellationToken cancellationToken)
     {
-        await deps.Git.UpdateSubmodulesAsync(worktreePath, _ => config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+        var submoduleAuthenticationResolver = config.SubmoduleAuthenticationResolver ?? (_ => null);
+        await deps.Git.UpdateSubmodulesAsync(config.Repository.Id, worktreePath, submoduleAuthenticationResolver, cancellationToken).ConfigureAwait(false);
         if (deps.Git.WorktreeRequiresLfs(worktreePath))
         {
-            await deps.Git.MaterializeLfsContentAsync(worktreePath, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+            await deps.Git.MaterializeLfsContentAsync(config.Repository.Id, worktreePath, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
         }
     }
 

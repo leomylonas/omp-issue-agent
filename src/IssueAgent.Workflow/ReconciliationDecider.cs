@@ -18,7 +18,8 @@ public sealed record ReconciliationInput(
     CanonicalCommentContent? RemoteCanonicalComment,
     bool LocalWorktreeExists,
     string? LocalWorktreeHeadCommit,
-    string? RemoteBranchHeadCommit);
+    string? RemoteBranchHeadCommit,
+    bool LocalWorktreeDirty = false);
 
 /// <summary>
 /// Decides whether restart reconciliation may resume a workflow automatically or must wait for a
@@ -57,6 +58,21 @@ public static class ReconciliationDecider
         if (string.Equals(document.State, "working", StringComparison.Ordinal))
         {
             return Wait(WaitingReason.ManualIntervention, "The workflow was actively working when the process stopped; its in-flight operation cannot be safely resumed automatically.");
+        }
+
+        if (!input.LocalWorktreeExists)
+        {
+            return Wait(WaitingReason.ManualIntervention, "The retained workflow worktree is missing; IssueAgent will not recreate or discard state without human acknowledgement.");
+        }
+
+        if (input.LocalWorktreeDirty)
+        {
+            return Wait(WaitingReason.ManualIntervention, "The retained worktree contains uncommitted changes from an interrupted attempt; they were preserved for human review.");
+        }
+
+        if (input.RemoteLabels.Phase!.Value is WorkflowPhase.Review or WorkflowPhase.Revising && input.RemoteBranchHeadCommit is null)
+        {
+            return Wait(WaitingReason.RemoteHistoryRewrite, "The workflow is in a published phase (review/revising) but its remote branch no longer exists; publication may have been reverted or deleted externally.");
         }
 
         if (input.LocalWorktreeExists && input.RemoteBranchHeadCommit is not null &&

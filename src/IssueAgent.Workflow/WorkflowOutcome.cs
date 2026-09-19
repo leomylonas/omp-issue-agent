@@ -22,14 +22,22 @@ public static class CanonicalCommentLocator
 {
     public static async Task<ProviderComment?> FindAsync(IGitProvider provider, RepositoryRef repository, long issueNumber, CancellationToken cancellationToken)
     {
+        ProviderComment? canonicalComment = null;
         await foreach (var comment in provider.GetIssueCommentsAsync(repository, issueNumber, cancellationToken).ConfigureAwait(false))
         {
-            if (CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
+            if (!CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
             {
-                return comment;
+                continue;
             }
+
+            if (canonicalComment is not null)
+            {
+                throw new CanonicalCommentCorruptException("Multiple comments contain the canonical state locator marker.");
+            }
+
+            canonicalComment = comment;
         }
 
-        return null;
+        return canonicalComment;
     }
 }

@@ -24,12 +24,20 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             .ConfigureAwait(false);
         var workingState = currentState with { Phase = WorkflowPhase.Revising, OperationalState = WorkflowOperationalState.Working, WaitingReason = null };
 
-        var mergeRequest = await deps.Provider.FindMergeRequestAsync(config.Repository, currentState.Branch, currentState.TargetBranch, cancellationToken).ConfigureAwait(false)
-            ?? throw new WorkflowContractException("Cannot revise: no merge request was found for this workflow's branch.");
-
-        var canonicalComment = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false)
-            ?? throw new WorkflowContractException("Cannot revise: no canonical comment was found for this issue.");
+        var canonicalComment = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        if (canonicalComment is null)
+        {
+            return await EscalateWithoutCanonicalCommentAsync(
+                config, issueNumber, workingState, "Cannot revise: no canonical comment was found for this issue.", cancellationToken).ConfigureAwait(false);
+        }
         var existingContent = CanonicalCommentMarkdown.Parse(canonicalComment.Body);
+
+        var mergeRequest = await deps.Provider.FindMergeRequestAsync(config.Repository, currentState.Branch, currentState.TargetBranch, cancellationToken).ConfigureAwait(false);
+        if (mergeRequest is null)
+        {
+            return await EscalateAsync(
+                config, issueNumber, workingState, existingContent, "Cannot revise: no merge request was found for this workflow's branch.", cancellationToken).ConfigureAwait(false);
+        }
         var currentPlan = new PlanContext(existingContent.State.PlanRevision, existingContent.PlanText, existingContent.DecisionsAndRationale);
 
         var worktreePath = WorktreePath(config, currentState.WorkflowId);
@@ -43,7 +51,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             : [];
 
         var revisionOutcome = await OmpRunCollector
-            .RunToCompletionAsync(omp, new OmpRunRequest(currentState.OmpSessionId, worktreePath, ImplementationPromptBuilder.BuildRevisionPrompt(context, feedback), config.OmpAllowedEnvironment), cancellationToken)
+            .RunToCompletionAsync(omp, new OmpRunRequest(currentState.OmpSessionId, worktreePath, config.ApplyInstructions(ImplementationPromptBuilder.BuildRevisionPrompt(context, feedback)), config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
             .ConfigureAwait(false);
         if (!revisionOutcome.Succeeded)
         {
@@ -51,13 +59,44 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         }
 
         var result = ImplementationResult.Parse(revisionOutcome.Completed!.ResultJson);
+        await deps.Git.FetchAsync(config.Repository.Id, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+        var latestTargetCommit = await deps.Git
+            .ResolveBranchCommitAsync(config.Repository.Id, currentState.TargetBranch, cancellationToken)
+            .ConfigureAwait(false);
+        var merged = await deps.Git
+            .TryMergeAsync(config.Repository.Id, worktreePath, latestTargetCommit, config.GitIdentity, cancellationToken)
+            .ConfigureAwait(false);
+        if (!merged)
+        {
+            var conflictOutcome = await OmpRunCollector
+                .RunToCompletionAsync(
+                    omp,
+                    new OmpRunRequest(
+                        currentState.OmpSessionId,
+                        worktreePath,
+                        config.ApplyInstructions(ImplementationPromptBuilder.BuildConflictResolutionPrompt()),
+                        config.OmpAllowedEnvironment,
+                        config.OmpTimeout),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (!conflictOutcome.Succeeded)
+            {
+                return await FailAsync(
+                    config,
+                    issueNumber,
+                    workingState,
+                    "Failed to resolve conflicts while merging the latest target branch.",
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+
 
         if (deps.Git.WorktreeRequiresLfs(worktreePath))
         {
-            await deps.Git.UploadLfsObjectsAsync(worktreePath, currentState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+            await deps.Git.UploadLfsObjectsAsync(config.Repository.Id, worktreePath, currentState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
         }
 
-        await deps.Git.PushAsync(worktreePath, currentState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+        await deps.Git.PushAsync(config.Repository.Id, worktreePath, currentState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
 
         var publishedState = workingState with
         {
@@ -90,6 +129,57 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             new WorkflowNotification(WorkflowNotificationKind.RevisionFailed, config.Repository.Id, issueNumber, failedState.WorkflowId.ToString(), message),
             cancellationToken).ConfigureAwait(false);
         return new WorkflowOutcome(WorkflowOutcomeStatus.Failed, failedState, message);
+    }
+
+    /// <summary>Preserves state and escalates to a human instead of throwing an unhandled exception
+    /// when the workflow cannot safely progress (specification §25): the canonical comment exists
+    /// but a required linked resource (here, the merge request) does not.</summary>
+    private async Task<WorkflowOutcome> EscalateAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState workingState,
+        CanonicalCommentContent existingContent,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        var pausedState = workingState with
+        {
+            OperationalState = WorkflowOperationalState.Waiting,
+            WaitingReason = WaitingReason.CorruptState,
+            UpdatedAt = deps.Clock.UtcNow,
+        };
+        await UpsertCanonicalCommentAsync(
+            config,
+            issueNumber,
+            existingContent with { State = CanonicalStateSerializer.ToDocument(pausedState, existingContent.State.PullOrMergeRequest) },
+            cancellationToken).ConfigureAwait(false);
+        await TransitionLabelsAsync(config, issueNumber, pausedState.Phase, WorkflowOperationalState.Waiting, [], cancellationToken).ConfigureAwait(false);
+        await deps.Notifier.NotifyAsync(
+            new WorkflowNotification(WorkflowNotificationKind.HumanActionRequired, config.Repository.Id, issueNumber, pausedState.WorkflowId.ToString(), message),
+            cancellationToken).ConfigureAwait(false);
+        return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, pausedState, message);
+    }
+
+    /// <summary>Same as <see cref="EscalateAsync"/> but for the case where no canonical comment
+    /// exists to update; still transitions labels and notifies rather than throwing.</summary>
+    private async Task<WorkflowOutcome> EscalateWithoutCanonicalCommentAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState workingState,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        var pausedState = workingState with
+        {
+            OperationalState = WorkflowOperationalState.Waiting,
+            WaitingReason = WaitingReason.CorruptState,
+            UpdatedAt = deps.Clock.UtcNow,
+        };
+        await TransitionLabelsAsync(config, issueNumber, pausedState.Phase, WorkflowOperationalState.Waiting, [], cancellationToken).ConfigureAwait(false);
+        await deps.Notifier.NotifyAsync(
+            new WorkflowNotification(WorkflowNotificationKind.HumanActionRequired, config.Repository.Id, issueNumber, pausedState.WorkflowId.ToString(), message),
+            cancellationToken).ConfigureAwait(false);
+        return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, pausedState, message);
     }
 
     private async Task UpsertCanonicalCommentAsync(WorkflowRepositoryConfig config, long issueNumber, CanonicalCommentContent content, CancellationToken cancellationToken)

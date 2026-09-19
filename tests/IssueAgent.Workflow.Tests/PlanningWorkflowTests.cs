@@ -24,7 +24,7 @@ public sealed class PlanningWorkflowTests : IDisposable
             .EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """{"planText":"Add a guard clause before save.","decisions":["Guard clause chosen over try/catch for clarity."]}"""));
 
         var workflow = CreateWorkflow();
-        var config = CreateConfig();
+        var config = CreateConfig() with { SupplementalInstructions = ["Keep public APIs source-compatible."] };
 
         var outcome = await workflow.RunInitialPlanningAsync(config, 1, omp, CancellationToken.None);
 
@@ -44,6 +44,7 @@ public sealed class PlanningWorkflowTests : IDisposable
         Assert.Equal(WorkflowNotificationKind.PlanReady, notification.Kind);
 
         Assert.Single(git.CreatedWorktrees);
+        Assert.Contains("Keep public APIs source-compatible.", Assert.Single(omp.RunRequests).Prompt, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -128,6 +129,46 @@ public sealed class PlanningWorkflowTests : IDisposable
         var updated = Assert.Single(provider.UpdatedComments);
         Assert.Contains("Revised plan covering the null case.", updated.Body, StringComparison.Ordinal);
         Assert.DoesNotContain("agent:cmd:replan", provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
+    }
+
+    [Fact]
+    public async Task RunInitialPlanningAsyncScopesSubmoduleCredentialsByConfiguredHostOnly()
+    {
+        provider.AddIssue(Repository, 1, "Bug", "Description");
+        var omp = new FakeOmpClient()
+            .EnqueueSessionId("session-1")
+            .EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """{"planText":"Plan.","decisions":[]}"""));
+        var trustedAuthentication = new GitAuthentication { Mode = GitAuthenticationMode.Token, HttpsToken = "trusted-token" };
+        var config = CreateConfig() with
+        {
+            SubmoduleAuthenticationResolver = host => host == "git.trusted.example" ? trustedAuthentication : null,
+        };
+
+        await CreateWorkflow().RunInitialPlanningAsync(config, 1, omp, CancellationToken.None);
+
+        var resolver = git.CapturedSubmoduleAuthenticationResolver;
+        Assert.NotNull(resolver);
+        Assert.Same(trustedAuthentication, resolver!("git.trusted.example"));
+        Assert.Null(resolver("attacker.example"));
+    }
+
+    [Fact]
+    public async Task RunInitialPlanningAsyncNeverForwardsRepositoryCredentialsToUnconfiguredSubmoduleHosts()
+    {
+        provider.AddIssue(Repository, 1, "Bug", "Description");
+        var omp = new FakeOmpClient()
+            .EnqueueSessionId("session-1")
+            .EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """{"planText":"Plan.","decisions":[]}"""));
+        var config = CreateConfig() with
+        {
+            GitAuthentication = new GitAuthentication { Mode = GitAuthenticationMode.Token, HttpsToken = "repo-token" },
+        };
+
+        await CreateWorkflow().RunInitialPlanningAsync(config, 1, omp, CancellationToken.None);
+
+        var resolver = git.CapturedSubmoduleAuthenticationResolver;
+        Assert.NotNull(resolver);
+        Assert.Null(resolver!("any-unconfigured-host.example"));
     }
 
     private PlanningWorkflow CreateWorkflow()
