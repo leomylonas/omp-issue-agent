@@ -11,6 +11,8 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
 
     public List<(string WorktreeId, string BranchName, string BaseCommit)> CreatedWorktrees { get; } = [];
 
+    public Action? OnCreateWorktree { get; set; }
+
     public bool LfsRequired { get; set; }
 
     public bool MergeSucceeds { get; set; } = true;
@@ -39,6 +41,7 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
 
     public ValueTask CreateWorktreeAsync(string repositoryId, string worktreeId, string worktreePath, string branchName, string baseCommit, CancellationToken cancellationToken)
     {
+        OnCreateWorktree?.Invoke();
         Directory.CreateDirectory(worktreePath);
         CreatedWorktrees.Add((worktreeId, branchName, baseCommit));
         return ValueTask.CompletedTask;

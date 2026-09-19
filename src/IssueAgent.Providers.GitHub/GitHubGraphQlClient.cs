@@ -37,6 +37,25 @@ public sealed partial class GitHubGraphQlClient(HttpClient httpClient)
         }
         """;
 
+    private const string ThreadCommentsQuery = """
+        query($threadId: ID!, $after: String) {
+          node(id: $threadId) {
+            ... on PullRequestReviewThread {
+              comments(first: 100, after: $after) {
+                pageInfo { hasNextPage endCursor }
+                nodes {
+                  databaseId
+                  body
+                  createdAt
+                  updatedAt
+                  author { login }
+                }
+              }
+            }
+          }
+        }
+        """;
+
     public async IAsyncEnumerable<ProviderReviewThread> GetReviewThreadsAsync(
         string owner,
         string name,
@@ -77,7 +96,7 @@ public sealed partial class GitHubGraphQlClient(HttpClient httpClient)
                 yield return new ProviderReviewThread(
                     node.Id,
                     node.IsResolved,
-                    node.Comments.Nodes
+                    (await GetAllThreadCommentsAsync(node, cancellationToken).ConfigureAwait(false))
                         .Select(c => new ProviderComment(
                             c.DatabaseId ?? 0,
                             c.Author?.Login ?? "ghost",
@@ -95,6 +114,47 @@ public sealed partial class GitHubGraphQlClient(HttpClient httpClient)
     }
 
     private static bool IsBotLogin(string? login) => login is not null && login.EndsWith("[bot]", StringComparison.Ordinal);
+
+    private async Task<IReadOnlyList<GraphQlComment>> GetAllThreadCommentsAsync(
+        GraphQlReviewThread thread,
+        CancellationToken cancellationToken)
+    {
+        var comments = new List<GraphQlComment>(thread.Comments.Nodes);
+        var cursor = thread.Comments.PageInfo.HasNextPage ? thread.Comments.PageInfo.EndCursor : null;
+        var page = 0;
+        while (cursor is not null)
+        {
+            if (++page > MaxPages)
+            {
+                throw new InvalidOperationException(
+                    $"GitHub GraphQL review-thread comments for '{thread.Id}' exceeded the {MaxPages}-page pagination limit.");
+            }
+
+            var payload = new GraphQlThreadCommentsRequest(
+                ThreadCommentsQuery,
+                new GraphQlThreadCommentsVariables(thread.Id, cursor));
+            using var response = await ProviderRetryPolicy.SendAsync(
+                token => httpClient.PostAsJsonAsync("graphql", payload, GraphQlJsonContext.Default.GraphQlThreadCommentsRequest, token),
+                cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+
+            var result = await response.Content
+                .ReadFromJsonAsync(GraphQlJsonContext.Default.GraphQlThreadCommentsResponse, cancellationToken)
+                .ConfigureAwait(false)
+                ?? throw new InvalidOperationException("GitHub GraphQL review-thread comments response was empty.");
+            if (result.Errors is { Count: > 0 })
+            {
+                throw new InvalidOperationException($"GitHub GraphQL review-thread comments query failed: {string.Join("; ", result.Errors.Select(e => e.Message))}");
+            }
+
+            var connection = result.Data?.Node?.Comments
+                ?? throw new InvalidOperationException("GitHub GraphQL response did not contain a review-thread comment connection.");
+            comments.AddRange(connection.Nodes);
+            cursor = connection.PageInfo.HasNextPage ? connection.PageInfo.EndCursor : null;
+        }
+
+        return comments;
+    }
 
     private sealed record GraphQlRequest(string Query, GraphQlVariables Variables);
 
@@ -116,14 +176,26 @@ public sealed partial class GitHubGraphQlClient(HttpClient httpClient)
 
     private sealed record GraphQlReviewThread(string Id, bool IsResolved, GraphQlCommentConnection Comments);
 
-    private sealed record GraphQlCommentConnection(IReadOnlyList<GraphQlComment> Nodes);
+    private sealed record GraphQlCommentConnection(GraphQlPageInfo PageInfo, IReadOnlyList<GraphQlComment> Nodes);
 
     private sealed record GraphQlComment(long? DatabaseId, string Body, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, GraphQlAuthor? Author);
 
     private sealed record GraphQlAuthor(string Login);
 
+    private sealed record GraphQlThreadCommentsRequest(string Query, GraphQlThreadCommentsVariables Variables);
+
+    private sealed record GraphQlThreadCommentsVariables(string ThreadId, string? After);
+
+    private sealed record GraphQlThreadCommentsResponse(GraphQlThreadCommentsData? Data, IReadOnlyList<GraphQlError>? Errors);
+
+    private sealed record GraphQlThreadCommentsData(GraphQlThreadCommentNode? Node);
+
+    private sealed record GraphQlThreadCommentNode(GraphQlCommentConnection? Comments);
+
     [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true)]
     [JsonSerializable(typeof(GraphQlRequest))]
     [JsonSerializable(typeof(GraphQlResponse))]
+    [JsonSerializable(typeof(GraphQlThreadCommentsRequest))]
+    [JsonSerializable(typeof(GraphQlThreadCommentsResponse))]
     private sealed partial class GraphQlJsonContext : JsonSerializerContext;
 }

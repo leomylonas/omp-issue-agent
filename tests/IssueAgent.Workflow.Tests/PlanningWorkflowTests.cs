@@ -48,6 +48,27 @@ public sealed class PlanningWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunInitialPlanningAsyncCheckpointsWorkflowBeforeCreatingRetainedWorktree()
+    {
+        provider.AddIssue(Repository, 1, "Bug", "Description");
+        git.OnCreateWorktree = () =>
+        {
+            var checkpoint = Assert.Single(
+                provider.IssueComments[(Repository.Id, 1)],
+                comment => CanonicalCommentMarkdown.IsCanonicalComment(comment.Body));
+            var state = CanonicalCommentMarkdown.Parse(checkpoint.Body).State;
+            Assert.Equal("planning", state.Phase);
+            Assert.Equal("working", state.State);
+            Assert.Equal("abc123", state.BaseCommit);
+        };
+        var omp = new FakeOmpClient()
+            .EnqueueSessionId("session-1")
+            .EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """{"planText":"Plan.","decisions":[]}"""));
+
+        await CreateWorkflow().RunInitialPlanningAsync(CreateConfig(), 1, omp, CancellationToken.None);
+    }
+
+    [Fact]
     public async Task RunInitialPlanningAsyncMaterializesLfsWhenRequired()
     {
         provider.AddIssue(Repository, 1, "Add large asset", "Needs an LFS-tracked binary.");

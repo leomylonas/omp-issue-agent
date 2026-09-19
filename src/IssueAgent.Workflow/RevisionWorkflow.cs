@@ -20,9 +20,13 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(omp);
 
-        await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Revising, WorkflowOperationalState.Working, [WorkflowCommand.Revise], cancellationToken)
-            .ConfigureAwait(false);
-        var workingState = currentState with { Phase = WorkflowPhase.Revising, OperationalState = WorkflowOperationalState.Working, WaitingReason = null };
+        var workingState = currentState with
+        {
+            Phase = WorkflowPhase.Revising,
+            OperationalState = WorkflowOperationalState.Working,
+            WaitingReason = null,
+            UpdatedAt = deps.Clock.UtcNow,
+        };
 
         var canonicalComment = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
         if (canonicalComment is null)
@@ -31,7 +35,16 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 config, issueNumber, workingState, "Cannot revise: no canonical comment was found for this issue.", cancellationToken).ConfigureAwait(false);
         }
         var existingContent = CanonicalCommentMarkdown.Parse(canonicalComment.Body);
-
+        await UpsertCanonicalCommentAsync(
+            config,
+            issueNumber,
+            existingContent with
+            {
+                State = CanonicalStateSerializer.ToDocument(workingState, existingContent.State.PullOrMergeRequest),
+            },
+            cancellationToken).ConfigureAwait(false);
+        await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Revising, WorkflowOperationalState.Working, [WorkflowCommand.Revise], cancellationToken)
+            .ConfigureAwait(false);
         var mergeRequest = await deps.Provider.FindMergeRequestAsync(config.Repository, currentState.Branch, currentState.TargetBranch, cancellationToken).ConfigureAwait(false);
         if (mergeRequest is null)
         {

@@ -54,6 +54,70 @@ public sealed class ProviderRetryPolicyTests
         Assert.Equal(2, attempts);
         Assert.Equal(System.Net.HttpStatusCode.Created, response.StatusCode);
     }
+
+    [Fact]
+    public async Task SendAsyncRetriesTransientTransportFailuresForIdempotentRequests()
+    {
+        var attempts = 0;
+        var response = await ProviderRetryPolicy.SendAsync(
+            _ => ++attempts == 1
+                ? Task.FromException<HttpResponseMessage>(new HttpRequestException("connection reset"))
+                : Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)),
+            CancellationToken.None);
+
+        Assert.Equal(2, attempts);
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SendAsyncDoesNotRetryCallerCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var attempts = 0;
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ProviderRetryPolicy.SendAsync(
+            _ =>
+            {
+                attempts++;
+                throw new OperationCanceledException();
+            },
+            cancellation.Token));
+
+        Assert.Equal(0, attempts);
+    }
+
+    [Fact]
+    public async Task SendAsyncRetriesRequestTimeoutForIdempotentRequests()
+    {
+        var attempts = 0;
+        var response = await ProviderRetryPolicy.SendAsync(
+            _ => Task.FromResult(new HttpResponseMessage(++attempts == 1
+                ? System.Net.HttpStatusCode.RequestTimeout
+                : System.Net.HttpStatusCode.OK)),
+            CancellationToken.None);
+
+        Assert.Equal(2, attempts);
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SendAsyncDoesNotRetryForbiddenOnlyBecauseItIncludesAResetHeader()
+    {
+        var attempts = 0;
+        var response = await ProviderRetryPolicy.SendAsync(
+            _ =>
+            {
+                attempts++;
+                var forbidden = new HttpResponseMessage(System.Net.HttpStatusCode.Forbidden);
+                forbidden.Headers.Add("X-RateLimit-Reset", "99999999999");
+                return Task.FromResult(forbidden);
+            },
+            CancellationToken.None);
+
+        Assert.Equal(1, attempts);
+        Assert.Equal(System.Net.HttpStatusCode.Forbidden, response.StatusCode);
+    }
     [Fact]
     public async Task SendAsyncClampsAnExcessiveRetryAfterDelayInsteadOfThrowing()
     {

@@ -152,27 +152,20 @@ public sealed partial class WorkflowDispatcher(
             return;
         }
 
-        var workflowId = WorkflowId.New();
-        var issue = await runtime.Provider.GetIssueAsync(runtime.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
-        var baseCommit = await runtime.Dependencies.Git
-            .ResolveBranchCommitAsync(runtime.Repository.Id, runtime.Config.TargetBranchOverride, cancellationToken)
-            .ConfigureAwait(false);
-        var worktreePath = Path.Combine(runtime.Config.WorkflowsStoragePath, workflowId.ToString(), "worktree");
-        await runtime.Dependencies.Git.CreateWorktreeAsync(
-            runtime.Repository.Id,
-            workflowId.ToString(),
-            worktreePath,
-            BranchNaming.DeriveBranchName(issueNumber, issue.Title),
-            baseCommit,
-            cancellationToken).ConfigureAwait(false);
-
-        await using var omp = StartOmp(runtime, issueNumber, worktreePath);
+        Directory.CreateDirectory(runtime.Config.WorkflowsStoragePath);
+        // Planning owns the durable checkpoint and retained worktree. Start OMP from the
+        // workflow root until that checkpoint has made the worktree recoverable; every OMP run
+        // still receives the retained worktree as its explicit working directory.
+        await using var omp = StartOmp(
+            runtime,
+            issueNumber,
+            runtime.Config.WorkflowsStoragePath);
         var stopwatch = Stopwatch.StartNew();
         metrics.PlanCount.Add(1, runtime.Tags);
         try
         {
             await new PlanningWorkflow(runtime.Dependencies)
-                .RunInitialPlanningAsync(runtime.Config, issueNumber, omp, cancellationToken, workflowId)
+                .RunInitialPlanningAsync(runtime.Config, issueNumber, omp, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -311,6 +304,20 @@ public sealed partial class WorkflowDispatcher(
         }
 
         if (command is null) return;
+        if (command is not (WorkflowCommand.Cancel or WorkflowCommand.Implement or WorkflowCommand.Revise or WorkflowCommand.Continue or WorkflowCommand.Replan))
+        {
+            return;
+        }
+
+        await ConsumeCommandAsync(
+            runtime.Provider,
+            runtime.Repository,
+            issueNumber,
+            mergeRequest?.Number,
+            commandResolution.Sources,
+            command.Value,
+            cancellationToken).ConfigureAwait(false);
+
         if (command == WorkflowCommand.Cancel)
         {
             await new CancellationWorkflow(runtime.Dependencies)
@@ -318,21 +325,9 @@ public sealed partial class WorkflowDispatcher(
                 .ConfigureAwait(false);
             return;
         }
-        if (command is not (WorkflowCommand.Implement or WorkflowCommand.Revise or WorkflowCommand.Continue or WorkflowCommand.Replan))
-        {
-            return;
-        }
 
         if (command == WorkflowCommand.Continue)
         {
-            await ConsumeCommandAsync(
-                runtime.Provider,
-                runtime.Repository,
-                issueNumber,
-                mergeRequest?.Number,
-                commandResolution.Sources,
-                WorkflowCommand.Continue,
-                cancellationToken).ConfigureAwait(false);
             var durableState = CanonicalStateSerializer.ToWorkflowState(reconciled.Content!.State);
             command = await ContinueAsync(runtime, state, durableState, cancellationToken).ConfigureAwait(false);
             if (command is null)
@@ -413,20 +408,21 @@ public sealed partial class WorkflowDispatcher(
         var remoteHead = await runtime.Dependencies.Git
             .TryResolveRemoteBranchCommitAsync(runtime.Config.Repository.Id, state.Branch, cancellationToken)
             .ConfigureAwait(false);
-        if (remoteHead is not null)
+        if (!Directory.Exists(worktreePath))
         {
-            if (!Directory.Exists(worktreePath))
-            {
-                await runtime.Dependencies.Git.CreateWorktreeAsync(
-                    runtime.Config.Repository.Id, state.WorkflowId.ToString(), worktreePath, state.Branch, remoteHead, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            else if (!await runtime.Dependencies.Git.HasUncommittedChangesAsync(
-                runtime.Config.Repository.Id, worktreePath, cancellationToken).ConfigureAwait(false))
-            {
-                await runtime.Dependencies.Git.ResetWorktreeAsync(
-                    runtime.Config.Repository.Id, worktreePath, remoteHead, cancellationToken).ConfigureAwait(false);
-            }
+            await runtime.Dependencies.Git.CreateWorktreeAsync(
+                runtime.Config.Repository.Id,
+                state.WorkflowId.ToString(),
+                worktreePath,
+                state.Branch,
+                remoteHead ?? state.BaseCommit,
+                cancellationToken).ConfigureAwait(false);
+        }
+        else if (remoteHead is not null && !await runtime.Dependencies.Git.HasUncommittedChangesAsync(
+            runtime.Config.Repository.Id, worktreePath, cancellationToken).ConfigureAwait(false))
+        {
+            await runtime.Dependencies.Git.ResetWorktreeAsync(
+                runtime.Config.Repository.Id, worktreePath, remoteHead, cancellationToken).ConfigureAwait(false);
         }
 
         return WorkflowCommandRouting.ContinueRoute(state, durableState);
@@ -444,6 +440,10 @@ public sealed partial class WorkflowDispatcher(
         var commandLabel = command switch
         {
             WorkflowCommand.Continue => WorkflowCommandLabels.Continue,
+            WorkflowCommand.Implement => WorkflowCommandLabels.Implement,
+            WorkflowCommand.Revise => WorkflowCommandLabels.Revise,
+            WorkflowCommand.Replan => WorkflowCommandLabels.Replan,
+            WorkflowCommand.Cancel => WorkflowCommandLabels.Cancel,
             _ => throw new ArgumentOutOfRangeException(nameof(command)),
         };
         if (sources.HasFlag(WorkflowCommandSource.Issue))
@@ -493,11 +493,9 @@ public sealed partial class WorkflowDispatcher(
         var gitName = resolved.UsesProviderIdentityForName
             ? providerIdentity!.DisplayName
             : resolved.GitIdentityName;
-        var noreplyDomain = resolved.ProviderKind == ProviderKind.GitLab
-            ? "users.noreply.gitlab.com"
-            : "users.noreply.github.com";
         var gitEmail = resolved.UsesProviderIdentityForEmail
-            ? providerIdentity?.Email ?? $"{providerIdentity?.Login ?? "issue-agent"}@{noreplyDomain}"
+            ? providerIdentity?.Email ?? throw new InvalidOperationException(
+                $"Provider '{providerName}' did not report a commit email for the configured provider-derived Git identity.")
             : resolved.GitIdentityEmail;
         var gitIdentity = new GitIdentity(gitName, gitEmail);
         var config = new WorkflowRepositoryConfig(

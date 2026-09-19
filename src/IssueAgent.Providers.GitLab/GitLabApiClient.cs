@@ -195,7 +195,8 @@ public sealed record GitLabUser(
     [property: JsonPropertyName("id")] long Id,
     [property: JsonPropertyName("username")] string Username,
     [property: JsonPropertyName("name")] string Name,
-    [property: JsonPropertyName("email")] string? Email = null);
+    [property: JsonPropertyName("email")] string? Email = null,
+    [property: JsonPropertyName("commit_email")] string? CommitEmail = null);
 
 public sealed record GitLabAuthor(
     [property: JsonPropertyName("username")] string Username,

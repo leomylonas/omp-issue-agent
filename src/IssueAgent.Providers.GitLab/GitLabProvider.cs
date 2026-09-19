@@ -27,7 +27,7 @@ public sealed class GitLabProvider(
     public async ValueTask<ProviderIdentity> GetCurrentIdentityAsync(CancellationToken cancellationToken)
     {
         var user = await client.GetCurrentUserAsync(cancellationToken).ConfigureAwait(false);
-        return new ProviderIdentity(user.Username, user.Name, user.Email);
+        return new ProviderIdentity(user.Username, user.Name, user.CommitEmail ?? user.Email);
     }
 
     public async ValueTask<string> GetDefaultBranchAsync(RepositoryRef repository, CancellationToken cancellationToken)
@@ -247,9 +247,10 @@ public sealed class GitLabProvider(
     public bool IsTrustedAttachmentHost(Uri url)
     {
         ArgumentNullException.ThrowIfNull(url);
-        return trustedAttachmentHostSuffixes.Any(suffix =>
-            url.Host.Equals(suffix, StringComparison.OrdinalIgnoreCase) ||
-            url.Host.EndsWith("." + suffix, StringComparison.OrdinalIgnoreCase));
+        return url.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
+            trustedAttachmentHostSuffixes.Any(suffix =>
+                url.Host.Equals(suffix, StringComparison.OrdinalIgnoreCase) ||
+                url.Host.EndsWith("." + suffix, StringComparison.OrdinalIgnoreCase));
     }
 
     public async ValueTask<DownloadedAttachment> DownloadAttachmentAsync(

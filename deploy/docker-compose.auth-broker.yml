@@ -1,0 +1,41 @@
+services:
+  issue-agent:
+    environment:
+      IssueAgent__Omp__AuthBrokerUrl: http://omp-auth-broker:8081
+      IssueAgent__Omp__ExecutionSecrets__OMP_AUTH_BROKER_TOKEN__File: /run/secrets/omp_auth_broker_token
+    secrets:
+      - github_token
+      - omp_auth_broker_token
+  omp-auth-broker:
+    image: ${OMP_AUTH_BROKER_IMAGE:-issue-agent:local}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        install -Dm 600 /run/secrets/omp_auth_broker_token /data/.omp/auth-broker.token
+        exec /usr/local/bin/omp auth-broker serve --bind=0.0.0.0:8081
+    environment:
+      HOME: /data
+      PI_CODING_AGENT_DIR: /data/omp/agent
+      PI_CODING_AGENT_SESSION_DIR: /data/omp
+    secrets:
+      - omp_auth_broker_token
+    ports:
+      # Keep the broker endpoint on the host loopback only.
+      - "127.0.0.1:${OMP_AUTH_BROKER_PORT:-8081}:8081"
+    volumes:
+      - omp-auth-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+secrets:
+  omp_auth_broker_token:
+    file: ./secrets/omp-auth-broker-token
+
+volumes:
+  omp-auth-data:

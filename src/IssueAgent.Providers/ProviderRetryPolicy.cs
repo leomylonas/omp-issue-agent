@@ -13,9 +13,9 @@ public static class ProviderRetryPolicy
     /// <param name="isIdempotent">When <see langword="false"/> (a non-idempotent write such as a
     /// resource-creating POST), an ambiguous <c>5xx</c> is never retried — the request may have
     /// already been applied server-side, and retrying could duplicate the effect (specification
-    /// §17, §25, §27). A definitive rate-limit rejection (<c>429</c>, or <c>403</c> carrying
-    /// rate-limit headers) is always safe to retry regardless of verb: the provider rejected the
-    /// request before processing it.</param>
+    /// §17, §25, §27). A definitive rate-limit rejection (<c>429</c>, or <c>403</c> with exhausted
+    /// quota or <c>Retry-After</c>) is always safe to retry regardless of verb: the provider rejected
+    /// the request before processing it.</param>
     public static async Task<HttpResponseMessage> SendAsync(
         Func<CancellationToken, Task<HttpResponseMessage>> send,
         CancellationToken cancellationToken,
@@ -26,15 +26,26 @@ public static class ProviderRetryPolicy
         for (var attempt = 1; ; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var response = await send(cancellationToken).ConfigureAwait(false);
-            if (!IsRetryable(response, isIdempotent) || attempt == MaxAttempts)
+            try
             {
-                return response;
-            }
+                var response = await send(cancellationToken).ConfigureAwait(false);
+                if (!IsRetryable(response, isIdempotent) || attempt == MaxAttempts)
+                {
+                    return response;
+                }
 
-            var delay = GetRetryDelay(response, attempt);
-            response.Dispose();
-            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                var delay = GetRetryDelay(response, attempt);
+                response.Dispose();
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+            }
+            catch (HttpRequestException) when (isIdempotent && attempt < MaxAttempts)
+            {
+                await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (isIdempotent && !cancellationToken.IsCancellationRequested && attempt < MaxAttempts)
+            {
+                await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 
@@ -45,14 +56,14 @@ public static class ProviderRetryPolicy
             return true;
         }
 
-        return isIdempotent && (int)response.StatusCode >= 500;
+        return isIdempotent && (response.StatusCode == HttpStatusCode.RequestTimeout || (int)response.StatusCode >= 500);
     }
 
     private static bool IsDefinitiveRateLimitRejection(HttpResponseMessage response) =>
         response.StatusCode == HttpStatusCode.TooManyRequests ||
         (response.StatusCode == HttpStatusCode.Forbidden &&
-         (response.Headers.TryGetValues("X-RateLimit-Remaining", out var remaining) && remaining.Any(value => value == "0") ||
-          response.Headers.Contains("X-RateLimit-Reset") || response.Headers.Contains("RateLimit-Reset")));
+         ((response.Headers.TryGetValues("X-RateLimit-Remaining", out var remaining) && remaining.Any(value => value == "0")) ||
+          response.Headers.RetryAfter is not null));
 
     private static TimeSpan GetRetryDelay(HttpResponseMessage response, int attempt)
     {
@@ -80,6 +91,9 @@ public static class ProviderRetryPolicy
         var fallback = exponential + jitter;
         return fallback > MaxRetryDelay ? MaxRetryDelay : fallback;
     }
+
+    private static TimeSpan GetTransientRetryDelay(int attempt) =>
+        TimeSpan.FromMilliseconds(100 * Math.Pow(2, attempt - 1) + Random.Shared.Next(0, 100));
 
     private static TimeSpan? GetResetDelay(HttpResponseMessage response, string header, DateTimeOffset now)
     {

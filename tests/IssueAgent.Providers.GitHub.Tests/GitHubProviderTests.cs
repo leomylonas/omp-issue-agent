@@ -297,6 +297,18 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
+    public async Task GetIssueCommentsAsyncCancelsInFlightPaginatedRead()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7/comments").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200).WithDelay(TimeSpan.FromSeconds(5)).WithBody("[]"));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            CollectAsync(fixture.Provider.GetIssueCommentsAsync(Repository, 7, cancellation.Token)));
+    }
+
+    [Fact]
     public async Task EnsureLabelAsyncCreatesOnlyWhenMissing()
     {
         fixture.Server
@@ -371,12 +383,18 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
                             {
                               "id": "thread-1",
                               "isResolved": true,
-                              "comments": {"nodes": [{"databaseId": 501, "body": "fixed now", "createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-01T00:00:00Z", "author": {"login": "alice"}}]}
+                              "comments": {
+                                "pageInfo": {"hasNextPage": false, "endCursor": null},
+                                "nodes": [{"databaseId": 501, "body": "fixed now", "createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-01T00:00:00Z", "author": {"login": "alice"}}]
+                              }
                             },
                             {
                               "id": "thread-2",
                               "isResolved": false,
-                              "comments": {"nodes": [{"databaseId": 502, "body": "please address", "createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-01T00:00:00Z", "author": {"login": "bob"}}]}
+                              "comments": {
+                                "pageInfo": {"hasNextPage": false, "endCursor": null},
+                                "nodes": [{"databaseId": 502, "body": "please address", "createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-01T00:00:00Z", "author": {"login": "bob"}}]
+                              }
                             }
                           ]
                         }
@@ -390,6 +408,30 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
 
         Assert.True(threads.Single(t => t.Id == "thread-1").IsResolved);
         Assert.False(threads.Single(t => t.Id == "thread-2").IsResolved);
+    }
+
+    [Fact]
+    public async Task GetReviewThreadsAsyncPaginatesCommentsWithinAThread()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/graphql").UsingPost())
+            .InScenario("thread-comment-pagination")
+            .WillSetStateTo("next-comment-page")
+            .RespondWith(JsonResponse("""
+                {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"thread-1","isResolved":false,"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"comment-cursor"},"nodes":[{"databaseId":501,"body":"first","createdAt":"2024-01-01T00:00:00Z","updatedAt":"2024-01-01T00:00:00Z","author":{"login":"alice"}}]}}]}}}}}
+                """));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/graphql").UsingPost())
+            .InScenario("thread-comment-pagination")
+            .WhenStateIs("next-comment-page")
+            .RespondWith(JsonResponse("""
+                {"data":{"node":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"databaseId":502,"body":"second","createdAt":"2024-01-02T00:00:00Z","updatedAt":"2024-01-02T00:00:00Z","author":{"login":"bob"}}]}}}}
+                """));
+
+        var thread = Assert.Single(await CollectAsync(fixture.Provider.GetReviewThreadsAsync(Repository, 9, CancellationToken.None)));
+
+        Assert.Equal([501L, 502L], thread.Comments.Select(comment => comment.Id).ToArray());
+        Assert.Equal(2, fixture.Server.LogEntries.Count(entry => entry.RequestMessage!.Path == "/api/graphql"));
     }
 
     [Fact]
@@ -416,15 +458,16 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
-    public void IsTrustedAttachmentHostAcceptsConfiguredSuffixesOnly()
+    public void IsTrustedAttachmentHostRequiresHttpsForConfiguredSuffixes()
     {
         Assert.True(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://githubusercontent.example/foo.png")));
         Assert.True(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://raw.githubusercontent.example/foo.png")));
+        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("http://githubusercontent.example/foo.png")));
         Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://evil.example/foo.png")));
     }
 
     [Fact]
-    public async Task DownloadAttachmentAsyncSendsAuthorizationOnlyForTrustedHosts()
+    public async Task DownloadAttachmentAsyncNeverSendsAuthorizationToHttpConfiguredHost()
     {
         var serverUri = new Uri(fixture.Server.Url!);
         var provider = GitHubProviderFactory.Create(new GitHubProviderConfiguration(
@@ -433,21 +476,18 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
             .Given(Request.Create().WithPath("/files/report.pdf").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/pdf").WithBody("pdf-bytes"));
 
-        var trustedDestination = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var trustedAttachment = new ProviderAttachment(new Uri(fixture.Server.Url! + "/files/report.pdf"), "report.pdf", null, new AttachmentSource("issue-description", "7"), true);
-        await provider.DownloadAttachmentAsync(trustedAttachment, trustedDestination, 1024, CancellationToken.None);
-        var trustedRequest = fixture.Server.LogEntries.Single(e => e.RequestMessage!.Path == "/files/report.pdf");
-        Assert.True(trustedRequest.RequestMessage!.Headers!.ContainsKey("Authorization"));
+        var destination = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var attachment = new ProviderAttachment(
+            new Uri(fixture.Server.Url! + "/files/report.pdf"),
+            "report.pdf",
+            null,
+            new AttachmentSource("issue-description", "7"),
+            false,
+            System.Net.Dns.GetHostAddresses(serverUri.Host).ToHashSet());
+        await provider.DownloadAttachmentAsync(attachment, destination, 1024, CancellationToken.None);
 
-        // Same server, an untrusted hostname alias (127.0.0.1 vs "localhost"): the suffix list only
-        // trusts serverUri.Host, so a request to the loopback IP literal must never receive the token.
-        var untrustedHost = serverUri.Host == "127.0.0.1" ? "localhost" : "127.0.0.1";
-        var untrustedUri = new UriBuilder(serverUri) { Host = untrustedHost, Path = "/files/report.pdf" }.Uri;
-        var untrustedDestination = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var untrustedAttachment = new ProviderAttachment(untrustedUri, "report.pdf", null, new AttachmentSource("issue-description", "7"), false, System.Net.Dns.GetHostAddresses(untrustedHost).ToHashSet());
-        await provider.DownloadAttachmentAsync(untrustedAttachment, untrustedDestination, 1024, CancellationToken.None);
-        var untrustedRequest = fixture.Server.LogEntries.Last(e => e.RequestMessage!.Path == "/files/report.pdf");
-        Assert.False(untrustedRequest.RequestMessage!.Headers!.ContainsKey("Authorization"));
+        var request = fixture.Server.LogEntries.Single(e => e.RequestMessage!.Path == "/files/report.pdf");
+        Assert.False(request.RequestMessage!.Headers!.ContainsKey("Authorization"));
     }
 
     [Fact]

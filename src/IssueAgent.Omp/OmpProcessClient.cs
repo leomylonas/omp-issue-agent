@@ -4,8 +4,15 @@ using System.Text.Json.Nodes;
 namespace IssueAgent.Omp;
 
 /// <summary>OMP client over the pinned executable's typed NDJSON RPC protocol.</summary>
-public sealed class OmpProcessClient(NdjsonRpcTransport transport, TimeSpan shutdownGracePeriod) : IOmpClient
+public sealed class OmpProcessClient(
+    NdjsonRpcTransport transport,
+    TimeSpan shutdownGracePeriod,
+    string sessionDirectory,
+    TimeSpan? abortGracePeriod = null) : IOmpClient
 {
+    private readonly string sessionDirectory = NormalizeSessionDirectory(sessionDirectory);
+    private readonly TimeSpan abortGracePeriod = abortGracePeriod ?? TimeSpan.FromSeconds(5);
+    private readonly SemaphoreSlim dispatchGate = new(1, 1);
     private int cancellationRequested;
 
     public async ValueTask<OmpSession> CreateSessionAsync(string role, CancellationToken cancellationToken)
@@ -28,7 +35,7 @@ public sealed class OmpProcessClient(NdjsonRpcTransport transport, TimeSpan shut
         var state = RequireData(
             await transport.SendCommandAsync("get_state", null, cancellationToken).ConfigureAwait(false));
         var sessionId = RequireString(state, "sessionId");
-        return new OmpSession(sessionId, role, ExtractSessionFile(state, sessionId));
+        return new OmpSession(sessionId, role, RequireSessionFile(ExtractSessionFile(state, sessionId)));
     }
 
     public async ValueTask<OmpSession> ResumeSessionAsync(
@@ -36,16 +43,22 @@ public sealed class OmpProcessClient(NdjsonRpcTransport transport, TimeSpan shut
         string sessionFile,
         CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(sessionFile);
+        var persistedSessionFile = RequireSessionFile(sessionFile);
         var response = await transport.SendCommandAsync(
             "switch_session",
-            new JsonObject { ["sessionPath"] = sessionFile },
+            new JsonObject { ["sessionPath"] = persistedSessionFile },
             cancellationToken).ConfigureAwait(false);
         await RequireSuccessAsync(response).ConfigureAwait(false);
         var state = RequireData(
             await transport.SendCommandAsync("get_state", null, cancellationToken).ConfigureAwait(false));
-        var activeSessionId = state["sessionId"]?.GetValue<string>() ?? sessionId;
-        return new OmpSession(activeSessionId, string.Empty, ExtractSessionFile(state, sessionFile));
+        var activeSessionId = RequireString(state, "sessionId");
+        if (!string.Equals(activeSessionId, sessionId, StringComparison.Ordinal))
+        {
+            throw new OmpRpcException(
+                $"OMP resumed session '{activeSessionId}', but durable state requires '{sessionId}'.");
+        }
+
+        return new OmpSession(activeSessionId, string.Empty, RequireSessionFile(ExtractSessionFile(state, persistedSessionFile)));
     }
 
 
@@ -53,14 +66,8 @@ public sealed class OmpProcessClient(NdjsonRpcTransport transport, TimeSpan shut
         OmpRunRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        if (Interlocked.CompareExchange(ref cancellationRequested, 0, 0) != 0)
-        {
-            Interlocked.Exchange(ref cancellationRequested, 0);
-            yield return new OmpErrorEvent(request.SessionId, DateTimeOffset.UtcNow, "OMP run cancelled before prompt dispatch.", true);
-            yield break;
-        }
-
         var events = await RunToListAsync(request, cancellationToken).ConfigureAwait(false);
+
         foreach (var domainEvent in events)
         {
             yield return domainEvent;
@@ -82,11 +89,31 @@ public sealed class OmpProcessClient(NdjsonRpcTransport transport, TimeSpan shut
         var prompt = $"Work exclusively in the repository at '{request.WorkingDirectory}'.\n\n{request.Prompt}";
         try
         {
-            var response = await transport.SendCommandAsync(
-                "prompt",
-                new JsonObject { ["message"] = prompt },
-                runToken).ConfigureAwait(false);
-            await RequireSuccessAsync(response).ConfigureAwait(false);
+            await dispatchGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                if (Interlocked.CompareExchange(ref cancellationRequested, 0, 0) != 0)
+                {
+                    Interlocked.Exchange(ref cancellationRequested, 0);
+                    events.Add(new OmpErrorEvent(
+                        request.SessionId,
+                        DateTimeOffset.UtcNow,
+                        "OMP run cancelled before prompt dispatch.",
+                        true));
+                    return events;
+                }
+
+                var response = await transport.SendCommandAsync(
+                    "prompt",
+                    new JsonObject { ["message"] = prompt },
+                    runToken).ConfigureAwait(false);
+                await RequireSuccessAsync(response).ConfigureAwait(false);
+            }
+            finally
+            {
+                dispatchGate.Release();
+            }
+
             var assistantText = new System.Text.StringBuilder();
 
             await foreach (var frame in transport.Frames.WithCancellation(runToken).ConfigureAwait(false))
@@ -135,23 +162,31 @@ public sealed class OmpProcessClient(NdjsonRpcTransport transport, TimeSpan shut
     public async ValueTask CancelAsync(string sessionId, CancellationToken cancellationToken)
     {
         Interlocked.Exchange(ref cancellationRequested, 1);
-        await RequestAbortAsync(suppressErrors: false).ConfigureAwait(false);
+        await dispatchGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            await RequestAbortAsync(suppressErrors: false).ConfigureAwait(false);
+        }
+        finally
+        {
+            dispatchGate.Release();
+        }
     }
 
     private async Task RequestAbortAsync(bool suppressErrors)
     {
         // An already-cancelled caller token must not prevent the abort command from reaching OMP.
         // Its independent deadline also prevents shutdown/cancel paths from hanging on a dead child.
-        using var abortCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var abortCts = new CancellationTokenSource(abortGracePeriod);
         try
         {
             await RequireSuccessAsync(
                 await transport.SendCommandAsync("abort", null, abortCts.Token).ConfigureAwait(false))
                 .ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (abortCts.IsCancellationRequested)
+        catch (OperationCanceledException) when (abortCts.IsCancellationRequested && suppressErrors)
         {
-            // OMP did not acknowledge before the fixed abort deadline.
+            // The timeout path must report the original timeout even when OMP is already gone.
         }
         catch (Exception) when (suppressErrors)
         {
@@ -163,8 +198,30 @@ public sealed class OmpProcessClient(NdjsonRpcTransport transport, TimeSpan shut
     {
         await transport.ShutdownAsync(shutdownGracePeriod, CancellationToken.None).ConfigureAwait(false);
         await transport.DisposeAsync().ConfigureAwait(false);
+        dispatchGate.Dispose();
     }
 
+    private static string NormalizeSessionDirectory(string value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value);
+        return Path.TrimEndingDirectorySeparator(Path.GetFullPath(value));
+    }
+
+    private string RequireSessionFile(string value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value);
+        var path = Path.GetFullPath(value);
+        var relativePath = Path.GetRelativePath(sessionDirectory, path);
+        if (Path.IsPathRooted(relativePath) ||
+            string.Equals(relativePath, ".", StringComparison.Ordinal) ||
+            relativePath.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal) ||
+            string.Equals(relativePath, "..", StringComparison.Ordinal))
+        {
+            throw new OmpRpcException($"OMP session file '{value}' is outside the configured session directory.");
+        }
+
+        return path;
+    }
     private static OmpEvent? BuildEvent(string sessionId, JsonObject frame)
     {
         var type = frame["type"]?.GetValue<string>();
@@ -278,7 +335,7 @@ public sealed record OmpModel(string Provider, string ModelId)
     public static bool TryParse(string value, out OmpModel model)
     {
         var separator = value.IndexOf('/');
-        if (separator <= 0 || separator == value.Length - 1 || value.IndexOf('/', separator + 1) >= 0)
+        if (separator <= 0 || separator == value.Length - 1)
         {
             model = default!;
             return false;

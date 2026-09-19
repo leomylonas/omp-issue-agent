@@ -49,8 +49,11 @@ public sealed class RevisionWorkflowTests : IDisposable
         Assert.Contains("Please rename this variable.", request.Prompt, StringComparison.Ordinal);
         Assert.Contains("resolved: true", request.Prompt, StringComparison.Ordinal);
 
-        var updated = Assert.Single(provider.UpdatedComments);
-        Assert.Contains("Renamed the variable.", updated.Body, StringComparison.Ordinal);
+        var checkpoints = provider.UpdatedComments;
+        Assert.Equal(2, checkpoints.Count);
+        Assert.Contains("phase: revising", checkpoints[0].Body, StringComparison.Ordinal);
+        Assert.Contains("state: working", checkpoints[0].Body, StringComparison.Ordinal);
+        Assert.Contains("Renamed the variable.", checkpoints[1].Body, StringComparison.Ordinal);
         Assert.Contains(provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)], l => l == "agent:phase:review");
         Assert.DoesNotContain("agent:cmd:revise", provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
     }

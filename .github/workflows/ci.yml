@@ -43,6 +43,22 @@ jobs:
             "git-lfs-${GIT_LFS_VERSION}/git-lfs"
           sudo install --mode=0755 /tmp/git-lfs /usr/local/bin/git-lfs
           git lfs version
+      - name: Install pinned OMP smoke binary
+        env:
+          OMP_VERSION: 18.2.4
+          OMP_SHA256: 61b4cd50ceaea70baccae7b52a22034469130ea2985a0b2e9adc0f7b3a77a85f
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error \
+            --output /tmp/omp \
+            "https://github.com/can1357/oh-my-pi/releases/download/v${OMP_VERSION}/omp-linux-x64"
+          echo "${OMP_SHA256}  /tmp/omp" | sha256sum --check --strict
+          chmod 0755 /tmp/omp
+      - name: Smoke pinned OMP binary
+        env:
+          OMP_TEST_BINARY: /tmp/omp
+          OPENAI_API_KEY: ci-smoke
+        run: dotnet test tests/IssueAgent.Omp.Tests/IssueAgent.Omp.Tests.csproj --no-build --configuration Release --logger trx
       - name: Unit and provider-contract tests
         run: dotnet test IssueAgent.slnx --no-build --configuration Release --logger trx
       - name: Git and LFS integration tests
@@ -59,6 +75,7 @@ jobs:
             --set omp.authBroker.enabled=true \
             --set omp.authBroker.image.repository=ghcr.io/leomylonas/omp-issue-agent \
             --set omp.authBroker.image.tag=0.1.0 \
+            --set-file secret.stringData.OMP_AUTH_BROKER_TOKEN=.github/fixtures/omp-auth-broker-token \
             --set prometheusRule.enabled=true \
             --set grafana.dashboard.enabled=true >/tmp/issue-agent-broker.yaml
           docker run --rm --interactive ghcr.io/yannh/kubeconform:v0.7.0 \
@@ -83,10 +100,13 @@ jobs:
       - name: Validate Compose configuration
         env:
           GITHUB_TOKEN: ""
-        run: docker compose -f deploy/docker-compose.yml config
+        run: |
+          cp .github/fixtures/omp-auth-broker-token deploy/secrets/omp-auth-broker-token
+          trap 'rm -f deploy/secrets/omp-auth-broker-token' EXIT
+          docker compose -f deploy/docker-compose.yml config
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.auth-broker.yml config
       - name: Smoke Compose stack
         env:
-          ISSUE_AGENT_OMP_AUTH_BROKER_URL: ""
           GITHUB_TOKEN: ""
         run: |
           docker compose -f deploy/docker-compose.yml up --detach --build

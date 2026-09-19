@@ -1,4 +1,3 @@
-using System.Text.Json.Nodes;
 
 namespace IssueAgent.Omp.Tests;
 
@@ -11,11 +10,11 @@ public sealed class OmpProcessClientTests
     {
         await using var client = StartClient();
 
-        var session = await client.CreateSessionAsync("anthropic/claude-sonnet-5", CancellationToken.None);
+        var session = await client.CreateSessionAsync("openrouter/anthropic/claude-sonnet-5", CancellationToken.None);
 
         Assert.Equal("fake-session-1", session.SessionId);
         Assert.Equal("/tmp/fake-session-1.jsonl", session.SessionFile);
-        Assert.Equal("anthropic/claude-sonnet-5", session.Role);
+        Assert.Equal("openrouter/anthropic/claude-sonnet-5", session.Role);
     }
 
     [Fact]
@@ -23,10 +22,44 @@ public sealed class OmpProcessClientTests
     {
         await using var client = StartClient();
 
-        var session = await client.ResumeSessionAsync("existing-session", "/persisted/session.jsonl", CancellationToken.None);
+        var sessionFile = Path.Combine(Path.GetTempPath(), "persisted", "session.jsonl");
+        var session = await client.ResumeSessionAsync("existing-session", sessionFile, CancellationToken.None);
 
         Assert.Equal("existing-session", session.SessionId);
-        Assert.Equal("/persisted/session.jsonl", session.SessionFile);
+        Assert.Equal(sessionFile, session.SessionFile);
+    }
+
+    [Fact]
+    public async Task ResumeSessionAsyncRejectsAnUnexpectedActiveSessionIdentity()
+    {
+        await using var client = StartClient();
+
+        var exception = await Assert.ThrowsAsync<OmpRpcException>(
+            () => client.ResumeSessionAsync(
+                "existing-session",
+                Path.Combine(Path.GetTempPath(), "mismatch.jsonl"),
+                CancellationToken.None).AsTask());
+
+        Assert.Contains("durable state requires", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ResumeSessionAsyncRejectsSessionFilesOutsideConfiguredDirectory()
+    {
+        await using var client = StartClient();
+
+        var exception = await Assert.ThrowsAsync<OmpRpcException>(
+            () => client.ResumeSessionAsync("existing-session", "/untrusted/session.jsonl", CancellationToken.None).AsTask());
+
+        Assert.Contains("outside the configured session directory", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ModelSelectorAllowsSlashesInTheModelId()
+    {
+        Assert.True(OmpModel.TryParse("openrouter/anthropic/claude-sonnet-5", out var model));
+        Assert.Equal("openrouter", model.Provider);
+        Assert.Equal("anthropic/claude-sonnet-5", model.ModelId);
     }
 
     [Fact]
@@ -105,14 +138,31 @@ public sealed class OmpProcessClientTests
         await client.CancelAsync(session.SessionId, CancellationToken.None);
     }
 
-    private static OmpProcessClient StartClient()
+    [Fact]
+    public async Task CancelAsyncThrowsWhenAbortIsNotAcknowledgedBeforeItsDeadline()
+    {
+        await using var client = StartClient(TimeSpan.FromMilliseconds(50));
+        var session = await client.CreateSessionAsync("plan", CancellationToken.None);
+        var run = CollectAsync(client.RunAsync(
+            new OmpRunRequest(session.SessionId, "/tmp", "abort timeout hang", new Dictionary<string, string>()),
+            CancellationToken.None));
+        await Task.Delay(20, TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => client.CancelAsync(session.SessionId, CancellationToken.None).AsTask());
+
+        await Assert.ThrowsAnyAsync<Exception>(
+            () => run.WaitAsync(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken));
+    }
+
+    private static OmpProcessClient StartClient(TimeSpan? abortGracePeriod = null)
     {
         var transport = NdjsonRpcTransport.Start(
             "python3",
             [ScriptPath],
             AppContext.BaseDirectory,
             new Dictionary<string, string> { ["PATH"] = Environment.GetEnvironmentVariable("PATH") ?? string.Empty });
-        return new OmpProcessClient(transport, TimeSpan.FromSeconds(5));
+        return new OmpProcessClient(transport, TimeSpan.FromSeconds(5), Path.GetTempPath(), abortGracePeriod);
     }
 
     private static async Task<List<OmpEvent>> CollectAsync(IAsyncEnumerable<OmpEvent> source)
@@ -137,29 +187,27 @@ public sealed class OmpProcessClientTests
 
         var sessionDirectory = Path.Combine(Path.GetTempPath(), "issue-agent-omp-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(sessionDirectory);
-        await using var transport = NdjsonRpcTransport.Start(
+        var allowedEnvironment = new Dictionary<string, string>
+        {
+            ["PATH"] = Environment.GetEnvironmentVariable("PATH") ?? string.Empty,
+            ["HOME"] = Environment.GetEnvironmentVariable("HOME") ?? sessionDirectory,
+            ["OPENAI_API_KEY"] = Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? string.Empty,
+        };
+        var transport = NdjsonRpcTransport.Start(
             executable,
             ["--mode", "rpc", "--session-dir", sessionDirectory, "--no-tools"],
             AppContext.BaseDirectory,
-            new Dictionary<string, string>
-            {
-                ["PATH"] = Environment.GetEnvironmentVariable("PATH") ?? string.Empty,
-                ["HOME"] = Environment.GetEnvironmentVariable("HOME") ?? sessionDirectory,
-            });
+            allowedEnvironment);
+        await using var client = new OmpProcessClient(transport, TimeSpan.FromSeconds(5), sessionDirectory);
 
-        var created = await transport.SendCommandAsync("new_session", null, CancellationToken.None);
-        Assert.True(created["success"]?.GetValue<bool>());
-        var stateResponse = await transport.SendCommandAsync("get_state", null, CancellationToken.None);
-        Assert.True(stateResponse["data"]?["sessionId"]?.GetValue<string>() is { Length: > 0 });
-        var sessionFile = stateResponse["data"]?["sessionFile"]?.GetValue<string>()
-            ?? stateResponse["data"]?["sessionPath"]?.GetValue<string>();
-        Assert.True(sessionFile is { Length: > 0 });
-        var resumed = await transport.SendCommandAsync(
-            "switch_session",
-            new JsonObject { ["sessionPath"] = sessionFile },
+        var created = await client.CreateSessionAsync("openai/gpt-4.1", CancellationToken.None);
+        Assert.NotEmpty(created.SessionId);
+        Assert.NotNull(created.SessionFile);
+        var resumed = await client.ResumeSessionAsync(
+            created.SessionId,
+            created.SessionFile!,
             CancellationToken.None);
-        Assert.True(resumed["success"]?.GetValue<bool>());
-        var aborted = await transport.SendCommandAsync("abort", null, CancellationToken.None);
-        Assert.True(aborted["success"]?.GetValue<bool>());
+        Assert.Equal(created.SessionId, resumed.SessionId);
+        await client.CancelAsync(resumed.SessionId, CancellationToken.None);
     }
 }

@@ -32,6 +32,10 @@ public static class WorkflowCommandRouting
 
         var issueCommand = issue.SingleCommand;
         var mergeRequestCommand = mergeRequest?.SingleCommand;
+        if (mergeRequestCommand is not (WorkflowCommand.Continue or WorkflowCommand.Revise or WorkflowCommand.Cancel))
+        {
+            mergeRequestCommand = null;
+        }
         if (issueCommand is not null && mergeRequestCommand is not null && issueCommand != mergeRequestCommand)
         {
             return new WorkflowCommandResolution(null, WorkflowCommandSource.None, IsAmbiguous: true);
@@ -51,6 +55,9 @@ public static class WorkflowCommandRouting
         return state.Phase switch
         {
             WorkflowPhase.Review => null,
+            WorkflowPhase.Planning when durableState.Phase == WorkflowPhase.Planning &&
+                durableState.OperationalState == WorkflowOperationalState.Working => WorkflowCommand.Replan,
+            WorkflowPhase.Planning => null,
             WorkflowPhase.Revising when durableState.Phase == WorkflowPhase.Revising &&
                 durableState.OperationalState == WorkflowOperationalState.Working => WorkflowCommand.Revise,
             WorkflowPhase.Revising => null,

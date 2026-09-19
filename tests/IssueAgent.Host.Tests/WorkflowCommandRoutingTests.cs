@@ -21,6 +21,21 @@ public sealed class WorkflowCommandRoutingTests
     }
 
     [Fact]
+    public void ResolveIgnoresImplementAndReplanLabelsOnMergeRequests()
+    {
+        var issue = LabelProtocol.Analyze([]);
+
+        foreach (var unsupportedCommand in new[] { WorkflowCommandLabels.Implement, WorkflowCommandLabels.Replan })
+        {
+            var result = WorkflowCommandRouting.Resolve(issue, LabelProtocol.Analyze([unsupportedCommand]));
+
+            Assert.False(result.IsAmbiguous);
+            Assert.Null(result.Command);
+            Assert.Equal(WorkflowCommandSource.None, result.Sources);
+        }
+    }
+
+    [Fact]
     public void ContinueRouteAdoptsPublishedReviewWithoutStartingRevision()
     {
         var review = CreateState(WorkflowPhase.Review, WorkflowOperationalState.Waiting);
@@ -38,6 +53,16 @@ public sealed class WorkflowCommandRoutingTests
 
         Assert.Null(WorkflowCommandRouting.ContinueRoute(pausedRevision, pausedRevision));
         Assert.Equal(WorkflowCommand.Revise, WorkflowCommandRouting.ContinueRoute(pausedRevision, interruptedRevision));
+    }
+
+    [Fact]
+    public void ContinueRouteResumesInterruptedPlanningAsReplan()
+    {
+        var pausedPlanning = CreateState(WorkflowPhase.Planning, WorkflowOperationalState.Waiting);
+        var interruptedPlanning = CreateState(WorkflowPhase.Planning, WorkflowOperationalState.Working);
+
+        Assert.Null(WorkflowCommandRouting.ContinueRoute(pausedPlanning, pausedPlanning));
+        Assert.Equal(WorkflowCommand.Replan, WorkflowCommandRouting.ContinueRoute(pausedPlanning, interruptedPlanning));
     }
 
     private static WorkflowState CreateState(WorkflowPhase phase, WorkflowOperationalState operationalState) => new(

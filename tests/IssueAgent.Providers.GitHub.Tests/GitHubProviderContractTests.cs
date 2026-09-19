@@ -35,7 +35,7 @@ public sealed class GitHubProviderContractTests : ProviderContractTests, IClassF
 
     protected override void StubRetryableIssueResponse(string successBody)
     {
-        var resetAt = DateTimeOffset.UtcNow.AddSeconds(1).ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var resetAt = DateTimeOffset.UtcNow.AddSeconds(-1).ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
         fixture.Server
             .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7").UsingGet())
             .InScenario("github-retry")

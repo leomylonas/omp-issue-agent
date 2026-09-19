@@ -53,16 +53,8 @@ public sealed class GitHubProvider(
         DateTimeOffset startDate,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var request = new RepositoryIssueRequest
-        {
-            Assignee = identity,
-            State = ItemStateFilter.Open,
-            SortProperty = IssueSort.Created,
-            SortDirection = SortDirection.Ascending,
-        };
-
-        var issues = await ExecuteWithRetryAsync(
-            () => client.Issue.GetAllForRepository(repository.OwnerOrNamespace, repository.Name, request),
+        var issues = await GetAllReadPagesAsync<Issue>(
+            new Uri($"repos/{repository.OwnerOrNamespace}/{repository.Name}/issues?assignee={Uri.EscapeDataString(identity)}&state=open&sort=created&direction=asc&per_page=100", UriKind.Relative),
             cancellationToken).ConfigureAwait(false);
 
         foreach (var issue in issues)
@@ -88,14 +80,8 @@ public sealed class GitHubProvider(
         RepositoryRef repository,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var request = new RepositoryIssueRequest
-        {
-            State = ItemStateFilter.All,
-            SortProperty = IssueSort.Updated,
-            SortDirection = SortDirection.Ascending,
-        };
-        var issues = await ExecuteWithRetryAsync(
-            () => client.Issue.GetAllForRepository(repository.OwnerOrNamespace, repository.Name, request),
+        var issues = await GetAllReadPagesAsync<Issue>(
+            new Uri($"repos/{repository.OwnerOrNamespace}/{repository.Name}/issues?state=all&sort=updated&direction=asc&per_page=100", UriKind.Relative),
             cancellationToken).ConfigureAwait(false);
         foreach (var issue in issues)
         {
@@ -143,8 +129,8 @@ public sealed class GitHubProvider(
         long issueNumber,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var comments = await ExecuteWithRetryAsync(
-            () => client.Issue.Comment.GetAllForIssue(repository.OwnerOrNamespace, repository.Name, checked((int)issueNumber)),
+        var comments = await GetAllReadPagesAsync<IssueComment>(
+            new Uri($"repos/{repository.OwnerOrNamespace}/{repository.Name}/issues/{checked((int)issueNumber)}/comments?per_page=100", UriKind.Relative),
             cancellationToken).ConfigureAwait(false);
 
         foreach (var comment in comments)
@@ -196,8 +182,8 @@ public sealed class GitHubProvider(
         ProviderWorkItemReference workItem,
         CancellationToken cancellationToken)
     {
-        var labels = await ExecuteWithRetryAsync(
-            () => client.Issue.Labels.GetAllForIssue(workItem.Repository.OwnerOrNamespace, workItem.Repository.Name, checked((int)workItem.Number)),
+        var labels = await GetAllReadPagesAsync<Label>(
+            new Uri($"repos/{workItem.Repository.OwnerOrNamespace}/{workItem.Repository.Name}/issues/{checked((int)workItem.Number)}/labels?per_page=100", UriKind.Relative),
             cancellationToken).ConfigureAwait(false);
         return labels.Select(l => l.Name).ToHashSet(StringComparer.Ordinal);
     }
@@ -240,8 +226,12 @@ public sealed class GitHubProvider(
     {
         try
         {
-            await ExecuteWithRetryAsync(
-                () => client.Issue.Labels.Get(repository.OwnerOrNamespace, repository.Name, label.Name),
+            await ExecuteReadWithCancellationAsync(
+                token => client.Connection.Get<Label>(
+                    new Uri($"repos/{repository.OwnerOrNamespace}/{repository.Name}/labels/{Uri.EscapeDataString(label.Name)}", UriKind.Relative),
+                    null,
+                    null,
+                    token),
                 cancellationToken).ConfigureAwait(false);
         }
         catch (NotFoundException)
@@ -259,15 +249,8 @@ public sealed class GitHubProvider(
         string targetBranch,
         CancellationToken cancellationToken)
     {
-        var request = new PullRequestRequest
-        {
-            Head = $"{repository.OwnerOrNamespace}:{sourceBranch}",
-            Base = targetBranch,
-            State = ItemStateFilter.All,
-        };
-
-        var pullRequests = await ExecuteWithRetryAsync(
-            () => client.PullRequest.GetAllForRepository(repository.OwnerOrNamespace, repository.Name, request),
+        var pullRequests = await GetAllReadPagesAsync<PullRequest>(
+            new Uri($"repos/{repository.OwnerOrNamespace}/{repository.Name}/pulls?head={Uri.EscapeDataString($"{repository.OwnerOrNamespace}:{sourceBranch}")}&base={Uri.EscapeDataString(targetBranch)}&state=all&per_page=100", UriKind.Relative),
             cancellationToken).ConfigureAwait(false);
 
         var match = pullRequests.Count > 0 ? pullRequests[0] : null;
@@ -352,9 +335,10 @@ public sealed class GitHubProvider(
     public bool IsTrustedAttachmentHost(Uri url)
     {
         ArgumentNullException.ThrowIfNull(url);
-        return trustedAttachmentHostSuffixes.Any(suffix =>
-            url.Host.Equals(suffix, StringComparison.OrdinalIgnoreCase) ||
-            url.Host.EndsWith("." + suffix, StringComparison.OrdinalIgnoreCase));
+        return url.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
+            trustedAttachmentHostSuffixes.Any(suffix =>
+                url.Host.Equals(suffix, StringComparison.OrdinalIgnoreCase) ||
+                url.Host.EndsWith("." + suffix, StringComparison.OrdinalIgnoreCase));
     }
 
     public async ValueTask<DownloadedAttachment> DownloadAttachmentAsync(
@@ -390,7 +374,6 @@ public sealed class GitHubProvider(
             cancellationToken).ConfigureAwait(false);
         return new DownloadedAttachment(destinationPath, Path.GetFileName(destinationPath), totalRead);
     }
-
     private static async Task<T> ExecuteReadWithCancellationAsync<T>(
         Func<CancellationToken, Task<IApiResponse<T>>> execute,
         CancellationToken cancellationToken)
@@ -399,6 +382,44 @@ public sealed class GitHubProvider(
             () => execute(cancellationToken),
             cancellationToken).ConfigureAwait(false);
         return response.Body;
+    }
+
+    private async Task<IReadOnlyList<T>> GetAllReadPagesAsync<T>(Uri initialUri, CancellationToken cancellationToken)
+    {
+        var results = new List<T>();
+        var nextUri = initialUri;
+        do
+        {
+            var response = await ExecuteWithRetryAsync(
+                () => client.Connection.Get<IReadOnlyList<T>>(nextUri, null, null, cancellationToken),
+                cancellationToken).ConfigureAwait(false);
+            results.AddRange(response.Body);
+            nextUri = GetNextPageUri(response.HttpResponse.Headers, client.Connection.BaseAddress);
+        }
+        while (nextUri is not null);
+
+        return results;
+    }
+
+    private static Uri? GetNextPageUri(IReadOnlyDictionary<string, string> headers, Uri baseAddress)
+    {
+        if (!headers.TryGetValue("Link", out var links))
+        {
+            return null;
+        }
+
+        var next = links.Split(',', StringSplitOptions.TrimEntries)
+            .Select(link => link.Split(';', StringSplitOptions.TrimEntries))
+            .Where(parts => parts.Length > 1 && parts.Skip(1).Any(part => part == "rel=\"next\""))
+            .Select(parts => parts[0].Trim('<', '>'))
+            .FirstOrDefault();
+        if (next is null || !Uri.TryCreate(baseAddress, next, out var nextUri) ||
+            Uri.Compare(nextUri, baseAddress, UriComponents.SchemeAndServer, UriFormat.Unescaped, StringComparison.OrdinalIgnoreCase) != 0)
+        {
+            return null;
+        }
+
+        return nextUri;
     }
 
     private static ProviderComment ToProviderComment(IssueComment comment, long issueNumber) => new(
@@ -446,20 +467,32 @@ public sealed class GitHubProvider(
             catch (RateLimitExceededException exception) when (attempt < 3)
             {
                 var delay = exception.GetRetryAfterTimeSpan();
-                await Task.Delay(delay > MaxRetryDelay ? MaxRetryDelay : delay, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(ClampRetryDelay(delay), cancellationToken).ConfigureAwait(false);
             }
             catch (SecondaryRateLimitExceededException exception) when (attempt < 3)
             {
-                var delay = GetSecondaryRetryAfter(exception) ?? GetSecondaryFallbackDelay(attempt);
-                await Task.Delay(delay > MaxRetryDelay ? MaxRetryDelay : delay, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(ClampRetryDelay(GetSecondaryRetryAfter(exception) ?? GetSecondaryFallbackDelay(attempt)), cancellationToken).ConfigureAwait(false);
             }
             catch (ApiException exception) when (isIdempotent && (int)exception.StatusCode >= 500 && attempt < 3)
             {
-                var delay = TimeSpan.FromMilliseconds(100 * Math.Pow(2, attempt - 1) + Random.Shared.Next(0, 100));
-                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+            }
+            catch (HttpRequestException) when (isIdempotent && attempt < 3)
+            {
+                await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (isIdempotent && !cancellationToken.IsCancellationRequested && attempt < 3)
+            {
+                await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
             }
         }
     }
+
+    private static TimeSpan ClampRetryDelay(TimeSpan delay) =>
+        delay <= TimeSpan.Zero ? TimeSpan.Zero : delay > MaxRetryDelay ? MaxRetryDelay : delay;
+
+    private static TimeSpan GetTransientRetryDelay(int attempt) =>
+        TimeSpan.FromMilliseconds(100 * Math.Pow(2, attempt - 1) + Random.Shared.Next(0, 100));
 
     private static TimeSpan? GetSecondaryRetryAfter(SecondaryRateLimitExceededException exception)
     {
@@ -468,19 +501,12 @@ public sealed class GitHubProvider(
         {
             if (double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var seconds))
             {
-                if (seconds <= 0)
-                {
-                    return TimeSpan.Zero;
-                }
-                return seconds >= MaxRetryDelay.TotalSeconds
-                    ? MaxRetryDelay
-                    : TimeSpan.FromSeconds(seconds);
+                return TimeSpan.FromSeconds(seconds);
             }
 
             if (DateTimeOffset.TryParse(value, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var date))
             {
-                var now = DateTimeOffset.UtcNow;
-                return date <= now ? TimeSpan.Zero : date >= now.Add(MaxRetryDelay) ? MaxRetryDelay : date - now;
+                return date - DateTimeOffset.UtcNow;
             }
         }
 

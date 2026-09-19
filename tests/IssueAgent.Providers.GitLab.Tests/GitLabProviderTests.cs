@@ -17,16 +17,17 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     }
 
     [Fact]
-    public async Task GetCurrentIdentityAsyncReturnsAuthenticatedUsername()
+    public async Task GetCurrentIdentityAsyncPrefersGitLabsCommitEmail()
     {
         fixture.Server
             .Given(Request.Create().WithPath("/api/v4/user").UsingGet())
-            .RespondWith(JsonResponse("""{"id":1,"username":"issue-agent-bot","name":"IssueAgent Bot"}"""));
+            .RespondWith(JsonResponse("""{"id":1,"username":"issue-agent-bot","name":"IssueAgent Bot","email":"profile@example.com","commit_email":"12345-issue-agent-bot@users.noreply.gitlab.com"}"""));
 
         var identity = await fixture.Provider.GetCurrentIdentityAsync(CancellationToken.None);
 
         Assert.Equal("issue-agent-bot", identity.Login);
         Assert.Equal("IssueAgent Bot", identity.DisplayName);
+        Assert.Equal("12345-issue-agent-bot@users.noreply.gitlab.com", identity.Email);
     }
 
     [Fact]
@@ -373,14 +374,15 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     }
 
     [Fact]
-    public void IsTrustedAttachmentHostAcceptsConfiguredSuffixOnly()
+    public void IsTrustedAttachmentHostRequiresHttpsForConfiguredSuffix()
     {
         Assert.True(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://gitlab.example/uploads/1/file.png")));
+        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("http://gitlab.example/uploads/1/file.png")));
         Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://evil.example/file.png")));
     }
 
     [Fact]
-    public async Task DownloadAttachmentAsyncSendsAuthorizationOnlyForTrustedHosts()
+    public async Task DownloadAttachmentAsyncNeverSendsAuthorizationToHttpConfiguredHost()
     {
         var serverUri = new Uri(fixture.Server.Url!);
         var provider = GitLabProviderFactory.Create(new GitLabProviderConfiguration(
@@ -389,21 +391,18 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
             .Given(Request.Create().WithPath("/uploads/report.pdf").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/pdf").WithBody("pdf-bytes"));
 
-        var trustedDestination = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var trustedAttachment = new ProviderAttachment(new Uri(fixture.Server.Url! + "/uploads/report.pdf"), "report.pdf", null, new AttachmentSource("issue-description", "7"), true);
-        await provider.DownloadAttachmentAsync(trustedAttachment, trustedDestination, 1024, CancellationToken.None);
-        var trustedRequest = fixture.Server.LogEntries.Single(e => e.RequestMessage!.Path == "/uploads/report.pdf");
-        Assert.True(trustedRequest.RequestMessage!.Headers!.ContainsKey("Authorization"));
+        var destination = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var attachment = new ProviderAttachment(
+            new Uri(fixture.Server.Url! + "/uploads/report.pdf"),
+            "report.pdf",
+            null,
+            new AttachmentSource("issue-description", "7"),
+            false,
+            System.Net.Dns.GetHostAddresses(serverUri.Host).ToHashSet());
+        await provider.DownloadAttachmentAsync(attachment, destination, 1024, CancellationToken.None);
 
-        // Same server, an untrusted hostname alias (127.0.0.1 vs "localhost"): the suffix list only
-        // trusts serverUri.Host, so a request to the loopback IP literal must never receive the token.
-        var untrustedHost = serverUri.Host == "127.0.0.1" ? "localhost" : "127.0.0.1";
-        var untrustedUri = new UriBuilder(serverUri) { Host = untrustedHost, Path = "/uploads/report.pdf" }.Uri;
-        var untrustedDestination = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var untrustedAttachment = new ProviderAttachment(untrustedUri, "report.pdf", null, new AttachmentSource("issue-description", "7"), false, System.Net.Dns.GetHostAddresses(untrustedHost).ToHashSet());
-        await provider.DownloadAttachmentAsync(untrustedAttachment, untrustedDestination, 1024, CancellationToken.None);
-        var untrustedRequest = fixture.Server.LogEntries.Last(e => e.RequestMessage!.Path == "/uploads/report.pdf");
-        Assert.False(untrustedRequest.RequestMessage!.Headers!.ContainsKey("Authorization"));
+        var request = fixture.Server.LogEntries.Single(e => e.RequestMessage!.Path == "/uploads/report.pdf");
+        Assert.False(request.RequestMessage!.Headers!.ContainsKey("Authorization"));
     }
 
     [Fact]

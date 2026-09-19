@@ -30,6 +30,7 @@ def main():
     })
     session_id = "fake-session-1"
     session_file = "/tmp/fake-session-1.jsonl"
+    hang_abort = False
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -44,12 +45,13 @@ def main():
             response(request_id, command, {"provider": request.get("provider"), "id": request.get("modelId")})
         elif command == "switch_session":
             session_file = request.get("sessionPath", session_file)
-            session_id = "existing-session"
+            session_id = "mismatched-session" if "mismatch" in session_file else "existing-session"
             response(request_id, command, {"cancelled": False})
         elif command == "get_state":
             response(request_id, command, {"sessionId": session_id, "sessionFile": session_file})
         elif command == "prompt":
             response(request_id, command, {"agentInvoked": True})
+            hang_abort = "abort timeout" in request.get("message", "")
             if "hang" in request.get("message", ""):
                 continue
             send({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": '{"summary":"done"}'}})
@@ -71,7 +73,8 @@ def main():
                 "isTerminal": True,
             })
         elif command == "abort":
-            response(request_id, command, {"cancelled": True})
+            if not hang_abort:
+                response(request_id, command, {"cancelled": True})
         else:
             response(request_id, command, error=f"unknown command {command}")
 

@@ -3,6 +3,17 @@
 {{- $brokerTag := default (default .Chart.AppVersion .Values.image.tag) .Values.omp.authBroker.image.tag }}
 {{- $brokerTokenSecretName := default (printf "%s-secret" (include "issue-agent.fullname" .)) .Values.secret.existingSecret }}
 {{- $brokerTokenSecretKey := .Values.omp.authBroker.tokenSecretKey }}
+{{- $secretChecksum := .Values.secret.stringData | toYaml | sha256sum }}
+{{- if .Values.secret.existingSecret }}
+{{- $secret := lookup "v1" "Secret" .Release.Namespace .Values.secret.existingSecret }}
+{{- if $secret }}
+{{- $secretChecksum = $secret.data | toYaml | sha256sum }}
+{{- else if .Values.secret.existingSecretChecksum }}
+{{- $secretChecksum = .Values.secret.existingSecretChecksum }}
+{{- else }}
+{{- fail "secret.existingSecretChecksum is required when the existing Secret cannot be looked up" }}
+{{- end }}
+{{- end }}
 {{- if or (empty $brokerRepository) (empty $brokerTag) }}
 {{- fail "a broker image repository and tag are required when the Auth Broker is enabled" }}
 {{- end }}
@@ -13,6 +24,9 @@ metadata:
   labels:
     {{- include "issue-agent.labels" . | nindent 4 }}
 spec:
+  # A broker owns one persistent auth store; avoid concurrent pods sharing its PVC during token rotation.
+  strategy:
+    type: Recreate
   replicas: 1
   selector:
     matchLabels:
@@ -20,6 +34,8 @@ spec:
       {{- include "issue-agent.selectorLabels" . | nindent 6 }}
   template:
     metadata:
+      annotations:
+        checksum/secret: {{ $secretChecksum }}
       labels:
         app.kubernetes.io/component: auth-broker
         {{- include "issue-agent.selectorLabels" . | nindent 8 }}
