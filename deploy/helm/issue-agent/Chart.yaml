@@ -1,0 +1,6 @@
+apiVersion: v2
+name: issue-agent
+description: IssueAgent workflow worker
+version: 0.1.0
+appVersion: "0.1.0"
+type: application

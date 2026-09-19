@@ -1,0 +1,20 @@
+{{- define "issue-agent.configmap.data" -}}
+IssueAgent__PollInterval: {{ .Values.config.pollInterval | quote }}
+IssueAgent__Concurrency__Agent: {{ .Values.config.concurrencyAgent | quote }}
+IssueAgent__Concurrency__Polling: {{ .Values.config.concurrencyPolling | quote }}
+IssueAgent__Workspace__RootPath: /data
+IssueAgent__Omp__ExecutablePath: {{ .Values.config.ompExecutablePath | quote }}
+{{- range $key, $value := .Values.config.extra }}
+{{ $key }}: {{ $value | quote }}
+{{- end }}
+{{- end -}}
+{{- if not .Values.config.existingConfigMap }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "issue-agent.fullname" . }}-config
+  labels:
+    {{- include "issue-agent.labels" . | nindent 4 }}
+data:
+  {{- include "issue-agent.configmap.data" . | nindent 2 }}
+{{- end }}

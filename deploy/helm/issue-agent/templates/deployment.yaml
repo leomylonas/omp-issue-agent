@@ -1,0 +1,111 @@
+{{- $ompConfigChecksum := .Values.omp.config.existingConfigMap | sha256sum }}
+{{- if .Values.omp.config.existingConfigMap }}
+{{- $ompConfig := lookup "v1" "ConfigMap" .Release.Namespace .Values.omp.config.existingConfigMap }}
+{{- if $ompConfig }}
+{{- $ompConfigChecksum = $ompConfig.data | toYaml | sha256sum }}
+{{- end }}
+{{- end }}
+{{- $configChecksum := include "issue-agent.configmap.data" . | sha256sum }}
+{{- if .Values.config.existingConfigMap }}
+{{- $configChecksum = .Values.config.existingConfigMap | sha256sum }}
+{{- $cfg := lookup "v1" "ConfigMap" .Release.Namespace .Values.config.existingConfigMap }}
+{{- if $cfg }}
+{{- $configChecksum = $cfg.data | toYaml | sha256sum }}
+{{- end }}
+{{- end }}
+{{- $secretChecksum := .Values.secret.stringData | toYaml | sha256sum }}
+{{- if .Values.secret.existingSecret }}
+{{- $secretChecksum = .Values.secret.existingSecret | sha256sum }}
+{{- $sec := lookup "v1" "Secret" .Release.Namespace .Values.secret.existingSecret }}
+{{- if $sec }}
+{{- $secretChecksum = $sec.data | toYaml | sha256sum }}
+{{- end }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "issue-agent.fullname" . }}
+  labels:
+    {{- include "issue-agent.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "issue-agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "issue-agent.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ $configChecksum }}
+        checksum/omp-config: {{ $ompConfigChecksum }}
+        checksum/secret: {{ $secretChecksum }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: issue-agent
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: {{ default (printf "%s-config" (include "issue-agent.fullname" .)) .Values.config.existingConfigMap }}
+            {{- if or .Values.secret.existingSecret .Values.secret.stringData }}
+            - secretRef:
+                name: {{ default (printf "%s-secret" (include "issue-agent.fullname" .)) .Values.secret.existingSecret }}
+            {{- end }}
+          env:
+            - name: ASPNETCORE_URLS
+              value: http://+:8080
+            - name: OpenTelemetry__TraceSamplingRatio
+              value: {{ .Values.config.traceSamplingRatio | quote }}
+            {{- if .Values.config.otlpEndpoint }}
+            - name: OpenTelemetry__OtlpEndpoint
+              value: {{ .Values.config.otlpEndpoint | quote }}
+            {{- end }}
+            {{- if .Values.omp.config.existingConfigMap }}
+            - name: OMP_CONFIG_DIR
+              value: {{ .Values.omp.config.mountPath | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: workspace
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.omp.config.existingConfigMap }}
+            - name: omp-config
+              mountPath: {{ .Values.omp.config.mountPath }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: {{ default (include "issue-agent.fullname" .) .Values.workspace.existingClaim }}
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.omp.config.existingConfigMap }}
+        - name: omp-config
+          configMap:
+            name: {{ .Values.omp.config.existingConfigMap }}
+        {{- end }}

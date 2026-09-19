@@ -1,0 +1,77 @@
+{{- if .Values.omp.authBroker.enabled }}
+{{- if or (empty .Values.omp.authBroker.image.repository) (empty .Values.omp.authBroker.image.tag) }}
+{{- fail "omp.authBroker.image.repository and tag are required when the Auth Broker is enabled" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "issue-agent.fullname" . }}-auth-broker
+  labels:
+    {{- include "issue-agent.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: auth-broker
+      {{- include "issue-agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: auth-broker
+        {{- include "issue-agent.selectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: auth-broker
+          image: "{{ .Values.omp.authBroker.image.repository }}:{{ .Values.omp.authBroker.image.tag }}"
+          ports:
+            - name: http
+              containerPort: 8081
+          env:
+            - name: OMP_BROKER_LISTEN
+              value: http://+:8081
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: broker-data
+              mountPath: /data
+      volumes:
+        - name: broker-data
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-auth-broker" (include "issue-agent.fullname" .)) .Values.omp.authBroker.existingClaim }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "issue-agent.fullname" . }}-auth-broker
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/component: auth-broker
+    {{- include "issue-agent.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http
+{{- if not .Values.omp.authBroker.existingClaim }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "issue-agent.fullname" . }}-auth-broker
+spec:
+  accessModes: {{- toYaml .Values.omp.authBroker.storage.accessModes | nindent 4 }}
+  {{- if .Values.omp.authBroker.storage.storageClassName }}
+  storageClassName: {{ .Values.omp.authBroker.storage.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.omp.authBroker.storage.size }}
+{{- end }}
+{{- end }}

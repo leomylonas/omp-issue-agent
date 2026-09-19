@@ -1,0 +1,63 @@
+image:
+  repository: ghcr.io/example/issue-agent
+  tag: ""
+  pullPolicy: IfNotPresent
+
+workspace:
+  size: 8Gi
+  accessModes: [ReadWriteOnce]
+  storageClassName: ""
+  existingClaim: ""
+
+omp:
+  config:
+    existingConfigMap: ""
+    mountPath: /etc/omp
+  authBroker:
+    enabled: false
+    image:
+      repository: ""
+      tag: ""
+    existingClaim: ""
+    storage:
+      size: 1Gi
+      accessModes: [ReadWriteOnce]
+      storageClassName: ""
+secret:
+  existingSecret: ""
+  stringData: {}
+
+grafana:
+  dashboard:
+    enabled: false
+    additionalLabels: {}
+
+terminationGracePeriodSeconds: 25
+
+service:
+  type: ClusterIP
+  port: 8080
+
+resources: {}
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  jobLabel: app.kubernetes.io/name
+  additionalLabels: {}
+
+prometheusRule:
+  enabled: false
+  additionalLabels: {}
+  pollingStalledFor: 15m
+  longRunningOperationThresholdSeconds: 1800
+
+config:
+  existingConfigMap: ""
+  pollInterval: "00:01:00"
+  concurrencyAgent: 3
+  concurrencyPolling: 10
+  ompExecutablePath: /usr/local/bin/omp
+  traceSamplingRatio: "1.0"
+  otlpEndpoint: ""
+  extra: {}

@@ -1,0 +1,28 @@
+{{- if .Values.grafana.dashboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "issue-agent.fullname" . }}-dashboard
+  labels:
+    {{- include "issue-agent.labels" . | nindent 4 }}
+    {{- with .Values.grafana.dashboard.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  issue-agent.json: |-
+    {
+      "title": "IssueAgent",
+      "schemaVersion": 39,
+      "refresh": "30s",
+      "panels": [
+        {"type":"stat","title":"Polls","targets":[{"expr":"rate(issueagent_poll_count_total[5m])"}]},
+        {"type":"timeseries","title":"Poll Duration","targets":[{"expr":"histogram_quantile(0.95, sum(rate(issueagent_poll_duration_seconds_bucket[5m])) by (le))"}]},
+        {"type":"stat","title":"Issues Discovered","targets":[{"expr":"increase(issueagent_issues_discovered_total[1h])"}]},
+        {"type":"stat","title":"Provider Errors","targets":[{"expr":"rate(issueagent_provider_errors_total[5m])"}]},
+        {"type":"stat","title":"OMP Errors","targets":[{"expr":"rate(issueagent_omp_errors_total[5m])"}]},
+        {"type":"stat","title":"Git/LFS Errors","targets":[{"expr":"rate(issueagent_git_errors_total[5m]) + rate(issueagent_lfs_errors_total[5m])"}]},
+        {"type":"timeseries","title":"Active Operations","targets":[{"expr":"issueagent_operations_active"}]},
+        {"type":"stat","title":"Notification Failures","targets":[{"expr":"rate(issueagent_notifications_failures_total[5m])"}]}
+      ]
+    }
+{{- end }}

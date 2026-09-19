@@ -1,0 +1,52 @@
+services:
+  issue-agent:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: issue-agent:local
+    env_file:
+      - ./issue-agent.env
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      IssueAgent__Workspace__RootPath: /data
+      IssueAgent__Omp__ExecutablePath: /usr/local/bin/omp
+      IssueAgent__Omp__AuthBrokerUrl: ${ISSUE_AGENT_OMP_AUTH_BROKER_URL:-}
+    secrets:
+      - github_token
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - issue-agent-data:/data
+      - ./omp:/etc/omp:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  omp-auth-broker:
+    image: ${OMP_AUTH_BROKER_IMAGE:-ghcr.io/example/omp-auth-broker:0.1.0}
+    profiles: ["auth-broker"]
+    environment:
+      OMP_BROKER_LISTEN: http://0.0.0.0:8081
+    volumes:
+      - omp-auth-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+secrets:
+  github_token:
+    file: ./secrets/github-token
+
+volumes:
+  issue-agent-data:
+  omp-auth-data:
