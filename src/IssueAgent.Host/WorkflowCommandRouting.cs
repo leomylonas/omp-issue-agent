@@ -25,17 +25,16 @@ public static class WorkflowCommandRouting
     {
         ArgumentNullException.ThrowIfNull(issue);
 
-        if (issue.HasConflictingCommands || mergeRequest?.HasConflictingCommands == true)
+        var mergeRequestCommands = mergeRequest?.Commands
+            .Where(command => command is WorkflowCommand.Continue or WorkflowCommand.Revise or WorkflowCommand.Cancel)
+            .ToArray() ?? [];
+        WorkflowCommand? mergeRequestCommand = mergeRequestCommands.Length == 1 ? mergeRequestCommands[0] : null;
+
+        if (issue.HasConflictingCommands || mergeRequestCommands.Length > 1)
         {
             return new WorkflowCommandResolution(null, WorkflowCommandSource.None, IsAmbiguous: true);
         }
-
         var issueCommand = issue.SingleCommand;
-        var mergeRequestCommand = mergeRequest?.SingleCommand;
-        if (mergeRequestCommand is not (WorkflowCommand.Continue or WorkflowCommand.Revise or WorkflowCommand.Cancel))
-        {
-            mergeRequestCommand = null;
-        }
         if (issueCommand is not null && mergeRequestCommand is not null && issueCommand != mergeRequestCommand)
         {
             return new WorkflowCommandResolution(null, WorkflowCommandSource.None, IsAmbiguous: true);
@@ -55,9 +54,11 @@ public static class WorkflowCommandRouting
         return state.Phase switch
         {
             WorkflowPhase.Review => null,
+            WorkflowPhase.Planning when state.InterruptedPhase == WorkflowPhase.Planning => WorkflowCommand.Replan,
             WorkflowPhase.Planning when durableState.Phase == WorkflowPhase.Planning &&
                 durableState.OperationalState == WorkflowOperationalState.Working => WorkflowCommand.Replan,
             WorkflowPhase.Planning => null,
+            WorkflowPhase.Revising when state.InterruptedPhase == WorkflowPhase.Revising => WorkflowCommand.Revise,
             WorkflowPhase.Revising when durableState.Phase == WorkflowPhase.Revising &&
                 durableState.OperationalState == WorkflowOperationalState.Working => WorkflowCommand.Revise,
             WorkflowPhase.Revising => null,

@@ -162,7 +162,7 @@ public sealed class OmpProcessClient(
     public async ValueTask CancelAsync(string sessionId, CancellationToken cancellationToken)
     {
         Interlocked.Exchange(ref cancellationRequested, 1);
-        await dispatchGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        await dispatchGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             await RequestAbortAsync(suppressErrors: false).ConfigureAwait(false);
@@ -175,8 +175,8 @@ public sealed class OmpProcessClient(
 
     private async Task RequestAbortAsync(bool suppressErrors)
     {
-        // An already-cancelled caller token must not prevent the abort command from reaching OMP.
-        // Its independent deadline also prevents shutdown/cancel paths from hanging on a dead child.
+        // Once cancellation owns the gate, its abort uses an independent deadline so shutdown
+        // remains bounded even if the caller token is cancelled after acquiring the gate.
         using var abortCts = new CancellationTokenSource(abortGracePeriod);
         try
         {

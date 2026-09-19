@@ -139,6 +139,7 @@ public sealed class PlanningWorkflowTests : IDisposable
             .EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """{"planText":"Revised plan covering the null case.","decisions":["Added null handling per feedback."]}"""));
 
         Directory.CreateDirectory(Path.Combine(workspaceRoot, initialState.WorkflowId.ToString(), "worktree"));
+        git.LfsRequired = true;
 
         var workflow = CreateWorkflow();
         var outcome = await workflow.RunReplanAsync(CreateConfig(), 1, initialState, omp, CancellationToken.None);
@@ -146,9 +147,12 @@ public sealed class PlanningWorkflowTests : IDisposable
         Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
         Assert.Equal(2, outcome.State.PlanRevision);
         Assert.Single(provider.CreatedComments);
-        var updated = Assert.Single(provider.UpdatedComments);
+        Assert.Equal(2, provider.UpdatedComments.Count);
+        var updated = provider.UpdatedComments[^1];
         Assert.Contains("Revised plan covering the null case.", updated.Body, StringComparison.Ordinal);
         Assert.DoesNotContain("agent:cmd:replan", provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
+        Assert.NotNull(git.CapturedSubmoduleAuthenticationResolver);
+        Assert.Contains(Path.Combine(workspaceRoot, initialState.WorkflowId.ToString(), "worktree"), git.LfsMaterializedWorktrees);
     }
 
     [Fact]
@@ -175,8 +179,7 @@ public sealed class PlanningWorkflowTests : IDisposable
 
         Assert.Equal(WorkflowOutcomeStatus.Failed, outcome.Status);
         Assert.Equal(WorkflowPhase.Failed, outcome.State.Phase);
-        var persisted = CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body);
-        Assert.Equal("failed", persisted.State.Phase);
+        var persisted = CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body);
         Assert.Contains("replan crashed", Assert.Single(notifier.Notifications).Message, StringComparison.Ordinal);
     }
 

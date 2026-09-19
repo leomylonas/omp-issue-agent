@@ -130,6 +130,32 @@ public sealed class OmpProcessClientTests
     }
 
     [Fact]
+    public async Task CancelAsyncHonorsCancellationWhilePromptDispatchOwnsGate()
+    {
+        await using var client = StartClient();
+        var session = await client.CreateSessionAsync("plan", CancellationToken.None);
+        using var runCts = new CancellationTokenSource();
+        var run = CollectAsync(client.RunAsync(
+            new OmpRunRequest(session.SessionId, "/tmp", "prompt dispatch hang", new Dictionary<string, string>()),
+            runCts.Token));
+        await Task.Delay(20, TestContext.Current.CancellationToken);
+        using var cancelCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+        var cancel = client.CancelAsync(session.SessionId, cancelCts.Token).AsTask();
+
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => cancel.WaitAsync(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            runCts.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => run.WaitAsync(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken));
+        }
+    }
+
+    [Fact]
     public async Task CancelAsyncSendsRequestAndReceivesAcknowledgement()
     {
         await using var client = StartClient();

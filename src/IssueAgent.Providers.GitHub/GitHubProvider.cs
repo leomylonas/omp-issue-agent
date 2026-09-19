@@ -387,9 +387,16 @@ public sealed class GitHubProvider(
     private async Task<IReadOnlyList<T>> GetAllReadPagesAsync<T>(Uri initialUri, CancellationToken cancellationToken)
     {
         var results = new List<T>();
+        var visitedPageUris = new HashSet<string>(StringComparer.Ordinal);
         var nextUri = initialUri;
         do
         {
+            var pageUri = nextUri.IsAbsoluteUri ? nextUri : new Uri(client.Connection.BaseAddress, nextUri);
+            if (!visitedPageUris.Add(pageUri.AbsoluteUri))
+            {
+                throw new InvalidOperationException($"GitHub REST pagination repeated page URI '{pageUri}'.");
+            }
+
             var response = await ExecuteWithRetryAsync(
                 () => client.Connection.Get<IReadOnlyList<T>>(nextUri, null, null, cancellationToken),
                 cancellationToken).ConfigureAwait(false);
@@ -499,7 +506,10 @@ public sealed class GitHubProvider(
         if (exception.HttpResponse?.Headers is { } headers &&
             headers.TryGetValue("Retry-After", out var value))
         {
-            if (double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var seconds))
+            if (double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var seconds) &&
+                double.IsFinite(seconds) &&
+                seconds >= TimeSpan.MinValue.TotalSeconds &&
+                seconds <= TimeSpan.MaxValue.TotalSeconds)
             {
                 return TimeSpan.FromSeconds(seconds);
             }

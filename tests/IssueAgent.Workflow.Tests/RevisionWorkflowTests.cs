@@ -55,6 +55,7 @@ public sealed class RevisionWorkflowTests : IDisposable
         Assert.Contains("state: working", checkpoints[0].Body, StringComparison.Ordinal);
         Assert.Contains("Renamed the variable.", checkpoints[1].Body, StringComparison.Ordinal);
         Assert.Contains(provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)], l => l == "agent:phase:review");
+        Assert.Equal(clock.UtcNow, CanonicalCommentMarkdown.Parse(checkpoints[1].Body).State.ReviewFeedbackCutoff);
         Assert.DoesNotContain("agent:cmd:revise", provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
     }
 
@@ -87,7 +88,8 @@ public sealed class RevisionWorkflowTests : IDisposable
         var workflowId = WorkflowId.New();
         var state = new WorkflowState(
             workflowId, WorkflowPhase.Review, WorkflowOperationalState.Waiting, WaitingReason.ReviewRequested,
-            1, 1, "session-1", "agent/issue-1-bug", "main", "abc123", clock.UtcNow.AddHours(-1));
+            1, 1, "session-1", "agent/issue-1-bug", "main", "abc123", clock.UtcNow,
+            ReviewFeedbackCutoff: clock.UtcNow.AddHours(-1));
         var document = CanonicalStateSerializer.ToDocument(state, "github/octo/widgets#1");
         var content = new CanonicalCommentContent("Plan text.", ["Decision."], "Initial implementation summary.", document);
         await provider.CreateIssueCommentAsync(Repository, 1, CanonicalCommentMarkdown.Render(content), CancellationToken.None);

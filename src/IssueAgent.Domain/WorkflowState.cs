@@ -94,7 +94,9 @@ public sealed record WorkflowState(
     string BaseCommit,
     DateTimeOffset UpdatedAt,
     string? PlanInputHash = null,
-    string? OmpSessionFile = null)
+    string? OmpSessionFile = null,
+    WorkflowPhase? InterruptedPhase = null,
+    DateTimeOffset? ReviewFeedbackCutoff = null)
 {
     public void EnsureValid()
     {

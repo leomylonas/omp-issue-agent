@@ -47,6 +47,19 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task InterruptedPlanningRecordsItsOriginalPhaseBeforeWaiting()
+    {
+        var (state, canonical) = SeedWorkflow(WorkflowPhase.Planning, WorkflowOperationalState.Working, waitingReason: null);
+
+        var result = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
+
+        Assert.Equal(ReconciliationDisposition.Waiting, result.Disposition);
+        var persisted = CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body);
+        Assert.Equal("planning", persisted.State.InterruptedPhase);
+        Assert.Equal(WorkflowOperationalState.Waiting, CanonicalStateSerializer.ToWorkflowState(persisted.State).OperationalState);
+    }
+
+    [Fact]
     public async Task DivergedRemoteBranchIsPausedAndLocalStateIsPreserved()
     {
         git.BranchCommitToReturn = "local-sha";

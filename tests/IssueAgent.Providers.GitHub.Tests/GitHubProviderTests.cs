@@ -97,6 +97,27 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
+    public async Task DiscoverAssignedOpenIssuesAsyncRejectsRepeatedPaginationLinks()
+    {
+        var repeatedPageUrl = $"{fixture.Server.Url}/api/v3/repos/octo/widgets/issues?assignee=issue-agent-bot&state=open&sort=created&direction=asc&per_page=100";
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues").UsingGet())
+            .RespondWith(Response.Create()
+                .WithStatusCode(200)
+                .WithHeader("Content-Type", "application/json")
+                .WithHeader("Link", $"<{repeatedPageUrl}>; rel=\"next\"")
+                .WithBody("""
+                    [{"number":20,"title":"First page issue","created_at":"2024-06-02T00:00:00Z","assignees":[{"login":"issue-agent-bot"}]}]
+                    """));
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => CollectAsync(fixture.Provider.DiscoverAssignedOpenIssuesAsync(
+            Repository, "issue-agent-bot", DateTimeOffset.MinValue, CancellationToken.None)));
+
+        Assert.Contains("repeated page URI", exception.Message);
+        Assert.Single(fixture.Server.LogEntries);
+    }
+
+    [Fact]
     public async Task DiscoverManagedIssuesAsyncIncludesClosedLabeledIssuesOnly()
     {
         fixture.Server
@@ -152,6 +173,24 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
         var issue = await fixture.Provider.GetIssueAsync(Repository, 7, CancellationToken.None);
 
         Assert.Equal("Recovered", issue.Title);
+    }
+
+    [Theory]
+    [InlineData("NaN")]
+    [InlineData("Infinity")]
+    [InlineData("1e300")]
+    public async Task GetIssueAsyncFallsBackWhenSecondaryRetryAfterIsNotFiniteOrRepresentable(string retryAfter)
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7").UsingGet())
+            .RespondWith(Response.Create()
+                .WithStatusCode(403)
+                .WithHeader("Retry-After", retryAfter)
+                .WithBody("""{"message":"secondary rate limit"}"""));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            fixture.Provider.GetIssueAsync(Repository, 7, cancellation.Token).AsTask());
     }
 
     [Fact]
@@ -432,6 +471,21 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
 
         Assert.Equal([501L, 502L], thread.Comments.Select(comment => comment.Id).ToArray());
         Assert.Equal(2, fixture.Server.LogEntries.Count(entry => entry.RequestMessage!.Path == "/api/graphql"));
+    }
+
+    [Fact]
+    public async Task GetReviewThreadsAsyncRequestsInitialThreadCommentPaginationInfo()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/graphql").UsingPost())
+            .RespondWith(JsonResponse("""
+                {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}
+                """));
+
+        _ = await CollectAsync(fixture.Provider.GetReviewThreadsAsync(Repository, 9, CancellationToken.None));
+
+        var request = Assert.Single(fixture.Server.LogEntries).RequestMessage!;
+        Assert.Contains("pageInfo { hasNextPage endCursor }", request.Body!);
     }
 
     [Fact]

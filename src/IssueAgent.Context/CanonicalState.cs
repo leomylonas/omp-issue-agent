@@ -18,6 +18,7 @@ public sealed record CanonicalStateDocument
     public required string Phase { get; init; }
     public required string State { get; init; }
     public string? WaitingReason { get; init; }
+    public string? InterruptedPhase { get; init; }
     public required int PlanRevision { get; init; }
     public int? ApprovedPlanRevision { get; init; }
     public string? PlanInputHash { get; init; }
@@ -28,6 +29,7 @@ public sealed record CanonicalStateDocument
     public required string BaseCommit { get; init; }
     public string? PullOrMergeRequest { get; init; }
     public required DateTimeOffset UpdatedAt { get; init; }
+    public DateTimeOffset? ReviewFeedbackCutoff { get; init; }
 }
 
 /// <summary>Serializes <see cref="DateTimeOffset"/> as a round-trippable ISO-8601 scalar instead of
@@ -77,11 +79,13 @@ public static partial class CanonicalStateSerializer
         PlanInputHash = state.PlanInputHash,
         OmpSessionId = state.OmpSessionId,
         OmpSessionFile = state.OmpSessionFile,
+        InterruptedPhase = state.InterruptedPhase is { } interruptedPhase ? ToKebabCase(interruptedPhase.ToString()) : null,
         Branch = state.Branch,
         TargetBranch = state.TargetBranch,
         BaseCommit = state.BaseCommit,
         PullOrMergeRequest = pullOrMergeRequest,
         UpdatedAt = state.UpdatedAt,
+        ReviewFeedbackCutoff = state.ReviewFeedbackCutoff,
     };
 
     public static WorkflowState ToWorkflowState(CanonicalStateDocument document)
@@ -113,7 +117,9 @@ public static partial class CanonicalStateSerializer
             baseCommit,
             document.UpdatedAt,
             document.PlanInputHash,
-            document.OmpSessionFile);
+            document.OmpSessionFile,
+            document.InterruptedPhase is { } interruptedPhase ? ParseEnum<WorkflowPhase>(interruptedPhase, "interruptedPhase") : null,
+            document.ReviewFeedbackCutoff);
     }
 
     [GeneratedRegex(@"^[A-Za-z0-9]([A-Za-z0-9._/-]*[A-Za-z0-9])?$")]

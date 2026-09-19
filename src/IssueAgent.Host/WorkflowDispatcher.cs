@@ -153,19 +153,27 @@ public sealed partial class WorkflowDispatcher(
         }
 
         Directory.CreateDirectory(runtime.Config.WorkflowsStoragePath);
-        // Planning owns the durable checkpoint and retained worktree. Start OMP from the
-        // workflow root until that checkpoint has made the worktree recoverable; every OMP run
-        // still receives the retained worktree as its explicit working directory.
-        await using var omp = StartOmp(
-            runtime,
-            issueNumber,
-            runtime.Config.WorkflowsStoragePath);
+        var workflowId = WorkflowId.New();
+        var issue = await runtime.Provider.GetIssueAsync(runtime.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var baseCommit = await runtime.Dependencies.Git
+            .ResolveBranchCommitAsync(runtime.Repository.Id, runtime.Config.TargetBranchOverride, cancellationToken)
+            .ConfigureAwait(false);
+        var worktreePath = Path.Combine(runtime.Config.WorkflowsStoragePath, workflowId.ToString(), "worktree");
+        await runtime.Dependencies.Git.CreateWorktreeAsync(
+            runtime.Repository.Id,
+            workflowId.ToString(),
+            worktreePath,
+            BranchNaming.DeriveBranchName(issueNumber, issue.Title),
+            baseCommit,
+            cancellationToken).ConfigureAwait(false);
+
+        await using var omp = StartOmp(runtime, issueNumber, worktreePath);
         var stopwatch = Stopwatch.StartNew();
         metrics.PlanCount.Add(1, runtime.Tags);
         try
         {
             await new PlanningWorkflow(runtime.Dependencies)
-                .RunInitialPlanningAsync(runtime.Config, issueNumber, omp, cancellationToken)
+                .RunInitialPlanningAsync(runtime.Config, issueNumber, omp, cancellationToken, workflowId)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -302,38 +310,55 @@ public sealed partial class WorkflowDispatcher(
         {
             return;
         }
-
         if (command is null) return;
         if (command is not (WorkflowCommand.Cancel or WorkflowCommand.Implement or WorkflowCommand.Revise or WorkflowCommand.Continue or WorkflowCommand.Replan))
         {
             return;
         }
-
-        await ConsumeCommandAsync(
-            runtime.Provider,
-            runtime.Repository,
-            issueNumber,
-            mergeRequest?.Number,
-            commandResolution.Sources,
-            command.Value,
-            cancellationToken).ConfigureAwait(false);
-
         if (command == WorkflowCommand.Cancel)
         {
             await new CancellationWorkflow(runtime.Dependencies)
                 .RunAsync(runtime.Config, issueNumber, state, reconciled.Content!, omp: null, cancellationToken)
                 .ConfigureAwait(false);
+            if (commandResolution.Sources.HasFlag(WorkflowCommandSource.MergeRequest))
+            {
+                await ConsumeCommandAsync(
+                    runtime.Provider,
+                    runtime.Repository,
+                    issueNumber,
+                    mergeRequest?.Number,
+                    WorkflowCommandSource.MergeRequest,
+                    WorkflowCommand.Cancel,
+                    cancellationToken).ConfigureAwait(false);
+            }
             return;
         }
+
 
         if (command == WorkflowCommand.Continue)
         {
             var durableState = CanonicalStateSerializer.ToWorkflowState(reconciled.Content!.State);
-            command = await ContinueAsync(runtime, state, durableState, cancellationToken).ConfigureAwait(false);
+            command = WorkflowCommandRouting.ContinueRoute(state, durableState);
             if (command is null)
             {
+                await ConsumeCommandAsync(
+                    runtime.Provider, runtime.Repository, issueNumber, mergeRequest?.Number,
+                    commandResolution.Sources, WorkflowCommand.Continue, cancellationToken).ConfigureAwait(false);
                 return;
             }
+
+            await PersistContinueAcceptanceAsync(
+                runtime,
+                issueNumber,
+                canonical,
+                reconciled.Content!,
+                state,
+                command.Value,
+                cancellationToken).ConfigureAwait(false);
+            await ConsumeCommandAsync(
+                runtime.Provider, runtime.Repository, issueNumber, mergeRequest?.Number,
+                commandResolution.Sources, WorkflowCommand.Continue, cancellationToken).ConfigureAwait(false);
+            await ContinueAsync(runtime, state, durableState, cancellationToken).ConfigureAwait(false);
         }
 
         await using var omp = StartOmp(runtime, issueNumber, Path.Combine(runtime.Config.WorkflowsStoragePath, state.WorkflowId.ToString(), "worktree"));
@@ -426,6 +451,40 @@ public sealed partial class WorkflowDispatcher(
         }
 
         return WorkflowCommandRouting.ContinueRoute(state, durableState);
+    }
+
+    private static async Task PersistContinueAcceptanceAsync(
+        Runtime runtime,
+        long issueNumber,
+        ProviderComment canonicalComment,
+        CanonicalCommentContent content,
+        WorkflowState state,
+        WorkflowCommand routedCommand,
+        CancellationToken cancellationToken)
+    {
+        var acceptedState = state with
+        {
+            Phase = routedCommand switch
+            {
+                WorkflowCommand.Replan => WorkflowPhase.Planning,
+                WorkflowCommand.Revise => WorkflowPhase.Revising,
+                _ => state.Phase,
+            },
+            OperationalState = WorkflowOperationalState.Working,
+            WaitingReason = null,
+            InterruptedPhase = null,
+            UpdatedAt = runtime.Dependencies.Clock.UtcNow,
+        };
+        var updated = content with
+        {
+            State = CanonicalStateSerializer.ToDocument(acceptedState, content.State.PullOrMergeRequest),
+        };
+        await runtime.Provider.UpdateIssueCommentAsync(
+            runtime.Repository,
+            issueNumber,
+            canonicalComment.Id,
+            CanonicalCommentMarkdown.Render(updated),
+            cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task ConsumeCommandAsync(

@@ -185,6 +185,9 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
         {
             OperationalState = WorkflowOperationalState.Waiting,
             WaitingReason = reason,
+            InterruptedPhase = state.OperationalState == WorkflowOperationalState.Working
+                ? state.Phase
+                : state.InterruptedPhase,
             UpdatedAt = alreadyRecorded ? state.UpdatedAt : dependencies.Clock.UtcNow,
         };
 

@@ -28,13 +28,10 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(omp);
 
-        await TransitionLabelsAsync(config, issueNumber, currentState.Phase, currentState.OperationalState, [WorkflowCommand.Implement], cancellationToken)
-            .ConfigureAwait(false);
-
         if (mode == WorkflowMode.PlanOnly)
         {
             var restoredState = currentState with { WaitingReason = WaitingReason.PlanApproval, UpdatedAt = deps.Clock.UtcNow };
-            await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Planned, WorkflowOperationalState.Waiting, [], cancellationToken).ConfigureAwait(false);
+            await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Planned, WorkflowOperationalState.Waiting, [WorkflowCommand.Implement], cancellationToken).ConfigureAwait(false);
             await NotifyAsync(config, issueNumber, restoredState, WorkflowNotificationKind.HumanActionRequired,
                 "This deployment is configured plan-only; implementation was not started. Approve manually or reconfigure to full mode.", cancellationToken)
                 .ConfigureAwait(false);
@@ -67,7 +64,8 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                 existingContent.ImplementationResult ?? string.Empty,
                 WaitingReason.ReplanRequired,
                 "The issue title or description changed since the approved plan, or the plan input hash is missing. Replan before implementing.",
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                commandsToConsume: [WorkflowCommand.Implement]).ConfigureAwait(false);
         }
 
         if (currentState.Phase == WorkflowPhase.Implementing)
@@ -107,7 +105,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             State = CanonicalStateSerializer.ToDocument(workingState, existingContent.State.PullOrMergeRequest),
         };
         await UpsertCanonicalCommentAsync(config, issueNumber, workingContent, cancellationToken).ConfigureAwait(false);
-        await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Implementing, WorkflowOperationalState.Working, [], cancellationToken).ConfigureAwait(false);
+        await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Implementing, WorkflowOperationalState.Working, [WorkflowCommand.Implement], cancellationToken).ConfigureAwait(false);
 
         var worktreePath = WorktreePath(config, currentState.WorkflowId);
         await deps.Git.ResetWorktreeAsync(config.Repository.Id, worktreePath, currentState.BaseCommit, cancellationToken).ConfigureAwait(false);
@@ -160,7 +158,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                 cancellationToken).ConfigureAwait(false);
         }
 
-        var workingState = currentState with { OperationalState = WorkflowOperationalState.Working, WaitingReason = null };
+        var workingState = currentState with { OperationalState = WorkflowOperationalState.Working, WaitingReason = null, InterruptedPhase = null };
         var workingContent = existingContent with
         {
             State = CanonicalStateSerializer.ToDocument(workingState, existingContent.State.PullOrMergeRequest),
@@ -329,12 +327,15 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         string implementationResult,
         CancellationToken cancellationToken)
     {
+        var publishedAt = deps.Clock.UtcNow;
         var publishedState = state with
         {
             Phase = WorkflowPhase.Review,
             OperationalState = WorkflowOperationalState.Waiting,
             WaitingReason = WaitingReason.ReviewRequested,
-            UpdatedAt = deps.Clock.UtcNow,
+            InterruptedPhase = null,
+            UpdatedAt = publishedAt,
+            ReviewFeedbackCutoff = publishedAt,
         };
         var content = existingContent with
         {
@@ -418,7 +419,8 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         string implementationResult,
         WaitingReason reason,
         string message,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyCollection<WorkflowCommand>? commandsToConsume = null)
     {
         var pausedState = workingState with
         {
@@ -435,7 +437,13 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                 State = CanonicalStateSerializer.ToDocument(pausedState, existingContent.State.PullOrMergeRequest),
             },
             cancellationToken).ConfigureAwait(false);
-        await TransitionLabelsAsync(config, issueNumber, pausedState.Phase, WorkflowOperationalState.Waiting, [], cancellationToken).ConfigureAwait(false);
+        await TransitionLabelsAsync(
+            config,
+            issueNumber,
+            pausedState.Phase,
+            WorkflowOperationalState.Waiting,
+            commandsToConsume ?? [],
+            cancellationToken).ConfigureAwait(false);
         await NotifyAsync(config, issueNumber, pausedState, WorkflowNotificationKind.HumanActionRequired, message, cancellationToken).ConfigureAwait(false);
         return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, pausedState, message);
     }

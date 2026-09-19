@@ -119,12 +119,9 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             Phase = WorkflowPhase.Planning,
             OperationalState = WorkflowOperationalState.Working,
             WaitingReason = null,
+            InterruptedPhase = null,
+            UpdatedAt = deps.Clock.UtcNow,
         };
-        await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Planning, WorkflowOperationalState.Working, [WorkflowCommand.Replan], cancellationToken)
-            .ConfigureAwait(false);
-
-        var worktreePath = WorktreePath(config, currentState.WorkflowId);
-        var attachmentsPath = AttachmentsPath(config, currentState.WorkflowId);
 
         var canonicalComment = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
         if (canonicalComment is null)
@@ -134,6 +131,20 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
                 "Cannot replan: no canonical comment was found for this issue.", cancellationToken).ConfigureAwait(false);
         }
         var existingContent = CanonicalCommentMarkdown.Parse(canonicalComment.Body);
+        await UpsertCanonicalCommentAsync(
+            config,
+            issueNumber,
+            existingContent with
+            {
+                State = CanonicalStateSerializer.ToDocument(workingState, existingContent.State.PullOrMergeRequest),
+            },
+            cancellationToken).ConfigureAwait(false);
+        await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Planning, WorkflowOperationalState.Working, [WorkflowCommand.Replan], cancellationToken)
+            .ConfigureAwait(false);
+
+        var worktreePath = WorktreePath(config, currentState.WorkflowId);
+        var attachmentsPath = AttachmentsPath(config, currentState.WorkflowId);
+        await PrepareWorktreeContentAsync(config, worktreePath, cancellationToken).ConfigureAwait(false);
         var currentPlan = new PlanContext(existingContent.State.PlanRevision, existingContent.PlanText, existingContent.DecisionsAndRationale);
 
         var planningInput = await CaptureInputSnapshotAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);

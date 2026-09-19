@@ -50,6 +50,8 @@ def main():
         elif command == "get_state":
             response(request_id, command, {"sessionId": session_id, "sessionFile": session_file})
         elif command == "prompt":
+            if "prompt dispatch hang" in request.get("message", ""):
+                continue
             response(request_id, command, {"agentInvoked": True})
             hang_abort = "abort timeout" in request.get("message", "")
             if "hang" in request.get("message", ""):

@@ -25,6 +25,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             Phase = WorkflowPhase.Revising,
             OperationalState = WorkflowOperationalState.Working,
             WaitingReason = null,
+            InterruptedPhase = null,
             UpdatedAt = deps.Clock.UtcNow,
         };
 
@@ -61,8 +62,9 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             .BuildAsync(config.Repository, issueNumber, workingState, currentPlan, mergeRequest, attachmentsPath, cancellationToken)
             .ConfigureAwait(false);
 
+        var reviewFeedbackCutoff = existingContent.State.ReviewFeedbackCutoff ?? existingContent.State.UpdatedAt;
         var feedback = context.PullOrMergeRequest is { } mrContext
-            ? mrContext.Comments.Concat(mrContext.ReviewThreads).Where(c => c.CreatedAt > existingContent.State.UpdatedAt).ToList()
+            ? mrContext.Comments.Concat(mrContext.ReviewThreads).Where(c => c.CreatedAt > reviewFeedbackCutoff).ToList()
             : [];
         var revisionOutcome = await OmpRunCollector
             .RunToCompletionAsync(omp, new OmpRunRequest(currentState.OmpSessionId, worktreePath, config.ApplyInstructions(ImplementationPromptBuilder.BuildRevisionPrompt(context, feedback)), config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
@@ -123,12 +125,15 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         }
         await deps.Git.PushAsync(config.Repository.Id, worktreePath, currentState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
 
+        var publishedAt = deps.Clock.UtcNow;
         var publishedState = workingState with
         {
             Phase = WorkflowPhase.Review,
             OperationalState = WorkflowOperationalState.Waiting,
             WaitingReason = WaitingReason.ReviewRequested,
-            UpdatedAt = deps.Clock.UtcNow,
+            InterruptedPhase = null,
+            UpdatedAt = publishedAt,
+            ReviewFeedbackCutoff = publishedAt,
         };
 
         var content = new CanonicalCommentContent(

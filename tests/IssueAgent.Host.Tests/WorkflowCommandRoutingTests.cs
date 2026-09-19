@@ -36,6 +36,19 @@ public sealed class WorkflowCommandRoutingTests
     }
 
     [Fact]
+    public void ResolveFiltersUnsupportedMergeRequestCommandsBeforeCheckingAmbiguity()
+    {
+        var issue = LabelProtocol.Analyze([]);
+        var mergeRequest = LabelProtocol.Analyze([WorkflowCommandLabels.Replan, WorkflowCommandLabels.Revise]);
+
+        var result = WorkflowCommandRouting.Resolve(issue, mergeRequest);
+
+        Assert.False(result.IsAmbiguous);
+        Assert.Equal(WorkflowCommand.Revise, result.Command);
+        Assert.Equal(WorkflowCommandSource.MergeRequest, result.Sources);
+    }
+
+    [Fact]
     public void ContinueRouteAdoptsPublishedReviewWithoutStartingRevision()
     {
         var review = CreateState(WorkflowPhase.Review, WorkflowOperationalState.Waiting);
@@ -63,6 +76,17 @@ public sealed class WorkflowCommandRoutingTests
 
         Assert.Null(WorkflowCommandRouting.ContinueRoute(pausedPlanning, pausedPlanning));
         Assert.Equal(WorkflowCommand.Replan, WorkflowCommandRouting.ContinueRoute(pausedPlanning, interruptedPlanning));
+    }
+
+    [Fact]
+    public void ContinueRouteReplansFromDurablyRecordedInterruptedPlanning()
+    {
+        var recoveredPlanning = CreateState(WorkflowPhase.Planning, WorkflowOperationalState.Waiting) with
+        {
+            InterruptedPhase = WorkflowPhase.Planning,
+        };
+
+        Assert.Equal(WorkflowCommand.Replan, WorkflowCommandRouting.ContinueRoute(recoveredPlanning, recoveredPlanning));
     }
 
     private static WorkflowState CreateState(WorkflowPhase phase, WorkflowOperationalState operationalState) => new(

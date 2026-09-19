@@ -22,6 +22,7 @@ public sealed partial class GitHubGraphQlClient(HttpClient httpClient)
                   id
                   isResolved
                   comments(first: 100) {
+                    pageInfo { hasNextPage endCursor }
                     nodes {
                       databaseId
                       body
