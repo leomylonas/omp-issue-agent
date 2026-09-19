@@ -20,11 +20,15 @@ public static class AdditionalCaTrustStore
         }
 
         var leaf = new X509Certificate2(certificate);
-        if (!string.IsNullOrEmpty(host) && !CertificateMatchesHost(leaf, host))
+        if (!HasServerAuthenticationEku(leaf))
         {
             return false;
         }
 
+        if (!string.IsNullOrEmpty(host) && !CertificateMatchesHost(leaf, host))
+        {
+            return false;
+        }
         using var chain = new X509Chain();
         chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
         chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
@@ -34,6 +38,13 @@ public static class AdditionalCaTrustStore
         }
 
         return chain.Build(leaf);
+    }
+
+    private static bool HasServerAuthenticationEku(X509Certificate2 leaf)
+    {
+        var eku = leaf.Extensions.OfType<X509EnhancedKeyUsageExtension>().FirstOrDefault();
+        return eku is not null &&
+               eku.EnhancedKeyUsages.Cast<Oid>().Any(oid => oid.Value == "1.3.6.1.5.5.7.3.1");
     }
 
     private static readonly char[] SanSeparators = [',', '\n'];
@@ -49,8 +60,11 @@ public static class AdditionalCaTrustStore
             foreach (var line in sanExtension.Format(false).Split(SanSeparators, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
             {
                 var separatorIndex = line.IndexOf('=');
-                if (separatorIndex < 0) continue;
-                var value = line[(separatorIndex + 1)..].Trim();
+                var value = separatorIndex >= 0
+                    ? line[(separatorIndex + 1)..].Trim()
+                    : line.StartsWith("DNS:", StringComparison.OrdinalIgnoreCase)
+                        ? line[4..].Trim()
+                        : string.Empty;
                 if (MatchesDnsPattern(value, host)) return true;
             }
 

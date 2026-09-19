@@ -36,8 +36,10 @@ public static class GitHubProviderFactory
 
         var graphQlHttpClient = CreateHttpClient(configuration.TlsTrust, graphQlBaseUri);
         var timelineHttpClient = CreateHttpClient(configuration.TlsTrust, restRawBaseUri);
+        var mutationHttpClient = CreateHttpClient(configuration.TlsTrust, restRawBaseUri);
         ConfigureGitHubHeaders(graphQlHttpClient, configuration.Token);
         ConfigureGitHubHeaders(timelineHttpClient, configuration.Token);
+        ConfigureGitHubHeaders(mutationHttpClient, configuration.Token);
 
         var authenticatedAttachmentClient = CreateHttpClient(configuration.TlsTrust);
         ConfigureGitHubHeaders(authenticatedAttachmentClient, configuration.Token);
@@ -47,6 +49,7 @@ public static class GitHubProviderFactory
             restClient,
             new GitHubGraphQlClient(graphQlHttpClient),
             new GitHubTimelineClient(timelineHttpClient),
+            mutationHttpClient,
             authenticatedAttachmentClient,
             anonymousAttachmentClient,
             configuration.TrustedAttachmentHostSuffixes,

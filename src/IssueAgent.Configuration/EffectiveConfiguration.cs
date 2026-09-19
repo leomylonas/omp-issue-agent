@@ -33,6 +33,8 @@ public sealed record RepositorySettingsOptions
 {
     public bool? IgnoreBotComments { get; init; }
     public int? RelatedIssueTraversalDepth { get; init; }
+    /// <summary>Whether provider-native closing syntax is added to newly-created PR/MR bodies.</summary>
+    public bool? CloseIssueOnMerge { get; init; }
     public long? MaxAttachmentSizeBytes { get; init; }
     public long? MaxTotalAttachmentSizeBytes { get; init; }
     public ConfiguredWorkflowMode? WorkflowMode { get; init; }
@@ -122,6 +124,7 @@ public sealed record EffectiveRepositoryConfiguration(
 
     /// <summary>True when the Git author email should come from the authenticated provider user.</summary>
     public bool UsesProviderIdentityForEmail { get; init; }
+    public bool CloseIssueOnMerge { get; init; } = true;
 }
 
 public sealed record EffectiveGitConfiguration(
@@ -239,14 +242,18 @@ public static class EffectiveConfigurationResolver
             roles)
         {
             UsesProviderIdentityForName = settings.GitIdentity?.Name is null && string.IsNullOrWhiteSpace(provider.IdentityOverride),
-            UsesProviderIdentityForEmail = settings.GitIdentity?.Email is null,
+            // An anonymous provider with an explicit identity override cannot resolve provider
+            // metadata (notably email) without making an authenticated /user request.
+            UsesProviderIdentityForEmail = settings.GitIdentity?.Email is null && providerToken is not null,
+            CloseIssueOnMerge = settings.CloseIssueOnMerge ?? true,
         };
     }
     internal static RepositorySettingsOptions Merge(params RepositorySettingsOptions[] levels)
     {
         bool? ignoreBots = null;
-        int? relatedDepth = null;
+        bool? closeIssueOnMerge = null;
         long? maxFile = null;
+        int? relatedDepth = null;
         long? maxTotal = null;
         ConfiguredWorkflowMode? workflowMode = null;
         GitTransportOptions? git = null;
@@ -257,6 +264,7 @@ public static class EffectiveConfigurationResolver
         foreach (var level in levels)
         {
             ignoreBots = level.IgnoreBotComments ?? ignoreBots;
+            closeIssueOnMerge = level.CloseIssueOnMerge ?? closeIssueOnMerge;
             relatedDepth = level.RelatedIssueTraversalDepth ?? relatedDepth;
             maxFile = level.MaxAttachmentSizeBytes ?? maxFile;
             maxTotal = level.MaxTotalAttachmentSizeBytes ?? maxTotal;
@@ -270,6 +278,7 @@ public static class EffectiveConfigurationResolver
         return new RepositorySettingsOptions
         {
             IgnoreBotComments = ignoreBots,
+            CloseIssueOnMerge = closeIssueOnMerge,
             RelatedIssueTraversalDepth = relatedDepth,
             MaxAttachmentSizeBytes = maxFile,
             MaxTotalAttachmentSizeBytes = maxTotal,

@@ -68,7 +68,7 @@ public sealed class ProviderRegistry
 
     private static IGitProvider Create(ProviderOptions configuration, string? token, TlsTrust tlsTrust)
     {
-        var trustedHosts = new[] { configuration.BaseUri.Host };
+        var trustedHosts = GetTrustedAttachmentHosts(configuration);
         return configuration.Kind switch
         {
             ProviderKind.GitHub => GitHubProviderFactory.Create(new GitHubProviderConfiguration(
@@ -77,6 +77,22 @@ public sealed class ProviderRegistry
                 configuration.Name, configuration.BaseUri, token, trustedHosts, tlsTrust)),
             _ => throw new InvalidOperationException($"Unsupported provider kind '{configuration.Kind}'."),
         };
+    }
+
+    private static string[] GetTrustedAttachmentHosts(ProviderOptions configuration)
+    {
+        var hosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { configuration.BaseUri.Host };
+        // GitHub.com serves user attachments from github.com and the CDN-backed
+        // githubusercontent.com family, while its API endpoint is api.github.com.
+        if (configuration.Kind == ProviderKind.GitHub &&
+            (configuration.BaseUri.Host.Equals("api.github.com", StringComparison.OrdinalIgnoreCase) ||
+             configuration.BaseUri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)))
+        {
+            hosts.Add("github.com");
+            hosts.Add("githubusercontent.com");
+        }
+
+        return hosts.ToArray();
     }
 
     private static TlsTrust ResolveProviderTlsTrust(IReadOnlyList<EffectiveRepositoryConfiguration> repositories)

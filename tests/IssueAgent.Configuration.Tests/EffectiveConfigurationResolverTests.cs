@@ -66,6 +66,36 @@ public sealed class EffectiveConfigurationResolverTests
     }
 
     [Fact]
+    public void ResolveInheritsIssueClosingSettingThroughProviderAndRepository()
+    {
+        var options = CreateOptions() with
+        {
+            Defaults = new RepositorySettingsOptions { CloseIssueOnMerge = false },
+            Providers =
+            [
+                CreateProvider() with
+                {
+                    Defaults = new RepositorySettingsOptions { CloseIssueOnMerge = true },
+                    Repositories =
+                    [
+                        new RepositoryOptions
+                        {
+                            Id = "github/octo/widgets",
+                            Name = "octo/widgets",
+                            Settings = new RepositorySettingsOptions { CloseIssueOnMerge = false },
+                        },
+                    ],
+                },
+            ],
+        };
+
+        var repository = Assert.Single(Assert.Single(
+            EffectiveConfigurationResolver.Resolve(options, _ => "token", _ => throw new InvalidOperationException()).Providers).Repositories);
+
+        Assert.False(repository.CloseIssueOnMerge);
+    }
+
+    [Fact]
     public void ResolveAppliesConfiguredGitIdentityInsteadOfHardcodingIssueAgentAtEveryLevel()
     {
         // Regression: commit author/committer identity was previously hardcoded downstream
@@ -122,6 +152,30 @@ public sealed class EffectiveConfigurationResolverTests
 
         Assert.True(repository.UsesProviderIdentityForName);
         Assert.True(repository.UsesProviderIdentityForEmail);
+    }
+
+    [Fact]
+    public void ResolveDoesNotRequireProviderIdentityForAnonymousOverride()
+    {
+        var options = CreateOptions() with
+        {
+            Providers =
+            [
+                CreateProvider() with
+                {
+                    Token = null,
+                    IdentityOverride = "anonymous-bot",
+                    Repositories = [new RepositoryOptions { Id = "github/octo/widgets", Name = "octo/widgets" }],
+                },
+            ],
+        };
+
+        var repository = Assert.Single(Assert.Single(
+            EffectiveConfigurationResolver.Resolve(options, _ => null, _ => throw new InvalidOperationException()).Providers).Repositories);
+
+        Assert.False(repository.UsesProviderIdentityForName);
+        Assert.False(repository.UsesProviderIdentityForEmail);
+        Assert.Equal("anonymous-bot", repository.GitIdentityName);
     }
 
     [Fact]

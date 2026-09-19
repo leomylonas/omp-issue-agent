@@ -118,6 +118,23 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task CreateWorktreeAsyncRepairsStaleRegistrationAfterDirectoryRemoval()
+    {
+        var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out var baseCommit));
+        await manager.EnsureBareRepositoryAsync("repo-stale", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
+        await manager.CreateWorktreeAsync("repo-stale", "wt-stale", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
+
+        Directory.Delete(worktreePath, recursive: true);
+
+        await manager.CreateWorktreeAsync("repo-stale", "wt-stale", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
+
+        Assert.True(File.Exists(Path.Combine(worktreePath, "README.md")));
+        using var repository = new LibGit2Sharp.Repository(Path.Combine(reposRoot, "repo-stale"));
+        Assert.Single(repository.Worktrees, worktree => worktree.Name == "wt-stale");
+    }
+
+    [Fact]
     public async Task ResetWorktreeAsyncDiscardsUncommittedChanges()
     {
         var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out var baseCommit));

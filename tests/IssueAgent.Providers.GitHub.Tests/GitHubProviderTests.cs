@@ -202,6 +202,58 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
         Assert.Equal("updated", updated.Body);
     }
 
+    [Fact]
+    public async Task UpdateIssueCommentAsyncCancelsInFlightPatch()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/comments/100").UsingPatch())
+            .RespondWith(Response.Create().WithStatusCode(200).WithDelay(TimeSpan.FromSeconds(5)).WithBody(
+                """{"id":100,"user":{"login":"issue-agent-bot"},"body":"updated","created_at":"2024-01-01T00:00:00Z"}"""));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            fixture.Provider.UpdateIssueCommentAsync(Repository, 7, 100, "updated", cancellation.Token).AsTask());
+    }
+
+    [Fact]
+    public async Task RemoveLabelAsyncCancelsInFlightDelete()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath(p => p != null && p.Contains("/api/v3/repos/octo/widgets/issues/7/labels/", StringComparison.Ordinal)).UsingDelete())
+            .RespondWith(Response.Create().WithStatusCode(204).WithDelay(TimeSpan.FromSeconds(5)));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            fixture.Provider.RemoveLabelAsync(
+                new ProviderWorkItemReference(Repository, ProviderWorkItemKind.Issue, 7),
+                "agent:phase:working",
+                cancellation.Token).AsTask());
+    }
+
+    [Fact]
+    public async Task AddLabelsAsyncRetriesTransientServerErrors()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7/labels").UsingPost())
+            .InScenario("github-label-retry")
+            .WillSetStateTo("recovered")
+            .RespondWith(Response.Create().WithStatusCode(503).WithBody("""{"message":"temporary"}"""));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7/labels").UsingPost())
+            .InScenario("github-label-retry")
+            .WhenStateIs("recovered")
+            .RespondWith(JsonResponse("[]"));
+
+        await fixture.Provider.AddLabelsAsync(
+            new ProviderWorkItemReference(Repository, ProviderWorkItemKind.Issue, 7),
+            ["agent:phase:working"],
+            CancellationToken.None);
+
+        Assert.Equal(2, fixture.Server.LogEntries.Count(e =>
+            e.RequestMessage!.Path == "/api/v3/repos/octo/widgets/issues/7/labels" &&
+            e.RequestMessage.Method == "POST"));
+    }
+
 
     [Fact]
     public async Task GetIssueCommentsAsyncFlagsBotAuthorsByLoginSuffix()

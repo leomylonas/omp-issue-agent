@@ -1,8 +1,11 @@
+using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
+using System.Text.Json.Serialization;
 using IssueAgent.Providers;
 using Octokit;
 
 namespace IssueAgent.Providers.GitHub;
+
 
 /// <summary>
 /// GitHub implementation of <see cref="IGitProvider"/>. REST operations use Octokit.NET; review
@@ -14,6 +17,7 @@ public sealed class GitHubProvider(
     IGitHubClient client,
     GitHubGraphQlClient graphQlClient,
     GitHubTimelineClient timelineClient,
+    HttpClient mutationClient,
     HttpClient authenticatedAttachmentClient,
     HttpClient anonymousAttachmentClient,
     IReadOnlyList<string> trustedAttachmentHostSuffixes,
@@ -168,9 +172,21 @@ public sealed class GitHubProvider(
         string body,
         CancellationToken cancellationToken)
     {
-        var comment = await ExecuteWithRetryAsync(
-            () => client.Issue.Comment.Update(repository.OwnerOrNamespace, repository.Name, checked((int)commentId), body),
+        using var response = await ProviderRetryPolicy.SendAsync(
+            async token =>
+            {
+                using var request = new HttpRequestMessage(
+                    HttpMethod.Patch,
+                    new Uri($"repos/{repository.OwnerOrNamespace}/{repository.Name}/issues/comments/{commentId}", UriKind.Relative))
+                {
+                    Content = JsonContent.Create(new { body }),
+                };
+                return await mutationClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+            },
             cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        var comment = await response.Content.ReadFromJsonAsync<GitHubCommentResponse>(cancellationToken: cancellationToken)
+            .ConfigureAwait(false) ?? throw new InvalidOperationException("GitHub did not return the updated comment.");
         return ToProviderComment(comment, issueNumber);
     }
 
@@ -192,7 +208,7 @@ public sealed class GitHubProvider(
         await ExecuteWithRetryAsync(
             token => PostAsync<IReadOnlyList<Label>>(client.Connection, new Uri($"repos/{workItem.Repository.OwnerOrNamespace}/{workItem.Repository.Name}/issues/{checked((int)workItem.Number)}/labels", UriKind.Relative), new { labels }, null, null, new Dictionary<string, string>(), token),
             cancellationToken,
-            isIdempotent: false).ConfigureAwait(false);
+            isIdempotent: true).ConfigureAwait(false);
     }
 
     public async ValueTask RemoveLabelAsync(
@@ -200,10 +216,16 @@ public sealed class GitHubProvider(
         string label,
         CancellationToken cancellationToken)
     {
-        await ExecuteWithRetryAsync(
-            () => client.Issue.Labels.RemoveFromIssue(workItem.Repository.OwnerOrNamespace, workItem.Repository.Name, checked((int)workItem.Number), label),
-            cancellationToken,
-            isIdempotent: false).ConfigureAwait(false);
+        using var response = await ProviderRetryPolicy.SendAsync(
+            async token =>
+            {
+                using var request = new HttpRequestMessage(
+                    HttpMethod.Delete,
+                    new Uri($"repos/{workItem.Repository.OwnerOrNamespace}/{workItem.Repository.Name}/issues/{checked((int)workItem.Number)}/labels/{Uri.EscapeDataString(label)}", UriKind.Relative));
+                return await mutationClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+            },
+            cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
     }
 
     public async ValueTask EnsureLabelAsync(
@@ -224,7 +246,6 @@ public sealed class GitHubProvider(
                 cancellationToken,
                 isIdempotent: false).ConfigureAwait(false);
         }
-
     }
 
     public async ValueTask<ProviderMergeRequest?> FindMergeRequestAsync(
@@ -465,6 +486,23 @@ public sealed class GitHubProvider(
         TimeSpan.FromMinutes(Math.Min(5, Math.Pow(2, attempt - 1)));
 
     private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(5);
+    private static ProviderComment ToProviderComment(GitHubCommentResponse comment, long issueNumber) => new(
+        comment.Id,
+        comment.User.Login,
+        comment.Body,
+        comment.CreatedAt,
+        comment.UpdatedAt ?? comment.CreatedAt,
+        new AttachmentSource("issue-comment", issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture), comment.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+        comment.User.Login.EndsWith("[bot]", StringComparison.Ordinal));
+
+    private sealed record GitHubCommentResponse(
+        [property: JsonPropertyName("id")] long Id,
+        [property: JsonPropertyName("body")] string Body,
+        [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
+        [property: JsonPropertyName("updated_at")] DateTimeOffset? UpdatedAt,
+        [property: JsonPropertyName("user")] GitHubCommentAuthor User);
+
+    private sealed record GitHubCommentAuthor([property: JsonPropertyName("login")] string Login);
     private static ProviderMergeRequest ToProviderMergeRequest(RepositoryRef repository, PullRequest pullRequest) => new(
         repository,
         pullRequest.Number,
