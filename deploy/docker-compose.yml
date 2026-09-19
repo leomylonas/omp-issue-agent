@@ -11,6 +11,7 @@ services:
       IssueAgent__Workspace__RootPath: /data
       IssueAgent__Omp__ExecutablePath: /usr/local/bin/omp
       IssueAgent__Omp__AuthBrokerUrl: ${ISSUE_AGENT_OMP_AUTH_BROKER_URL:-}
+      OMP_CONFIG_DIR: /etc/omp
     secrets:
       - github_token
     ports:
@@ -32,6 +33,9 @@ services:
     profiles: ["auth-broker"]
     environment:
       OMP_BROKER_LISTEN: http://0.0.0.0:8081
+    ports:
+      # Keep the interactive setup endpoint on the host loopback only.
+      - "127.0.0.1:${OMP_AUTH_BROKER_PORT:-8081}:8081"
     volumes:
       - omp-auth-data:/data
     read_only: true

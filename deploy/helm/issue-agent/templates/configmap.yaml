@@ -18,3 +18,23 @@ metadata:
 data:
   {{- include "issue-agent.configmap.data" . | nindent 2 }}
 {{- end }}
+---
+{{- define "issue-agent.omp-config.data" -}}
+{{- range $key, $value := .Values.omp.config.data }}
+{{ $key }}: {{ $value | quote }}
+{{- end }}
+{{- end -}}
+{{- if not .Values.omp.config.existingConfigMap }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "issue-agent.fullname" . }}-omp-config
+  labels:
+    {{- include "issue-agent.labels" . | nindent 4 }}
+data:
+  {{- if .Values.omp.config.data }}
+  {{- include "issue-agent.omp-config.data" . | nindent 2 }}
+  {{- else }}
+  {}
+  {{- end }}
+{{- end }}

@@ -1,5 +1,6 @@
 image:
-  repository: ghcr.io/example/issue-agent
+  # This is the image published by the release workflow. Override for private registries.
+  repository: ghcr.io/leomylonas/omp-issue-agent
   tag: ""
   pullPolicy: IfNotPresent
 
@@ -11,8 +12,11 @@ workspace:
 
 omp:
   config:
+    # Supply either an existing ConfigMap or data for the generated ConfigMap.
     existingConfigMap: ""
+    existingConfigMapChecksum: ""
     mountPath: /etc/omp
+    data: {}
   authBroker:
     enabled: false
     image:
@@ -25,6 +29,7 @@ omp:
       storageClassName: ""
 secret:
   existingSecret: ""
+  existingSecretChecksum: ""
   stringData: {}
 
 grafana:
@@ -54,6 +59,7 @@ prometheusRule:
 
 config:
   existingConfigMap: ""
+  existingConfigMapChecksum: ""
   pollInterval: "00:01:00"
   concurrencyAgent: 3
   concurrencyPolling: 10

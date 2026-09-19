@@ -20,6 +20,7 @@ spec:
         app.kubernetes.io/component: auth-broker
         {{- include "issue-agent.selectorLabels" . | nindent 8 }}
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         seccompProfile:

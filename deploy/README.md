@@ -16,8 +16,32 @@ OMP_AUTH_BROKER_IMAGE=ghcr.io/example/omp-auth-broker:0.1.0 \
   docker compose -f docker-compose.yml --profile auth-broker up -d
 ```
 
-IssueAgent health and metrics are bound to `127.0.0.1:8080`. The Auth Broker is reachable only on
-the Compose network.
+IssueAgent uses `http://omp-auth-broker:8081` when the broker URL is configured:
+
+```sh
+ISSUE_AGENT_OMP_AUTH_BROKER_URL=http://omp-auth-broker:8081 \
+OMP_AUTH_BROKER_IMAGE=ghcr.io/example/omp-auth-broker:0.1.0 \
+  docker compose -f docker-compose.yml --profile auth-broker up -d
+```
+
+The broker's interactive setup endpoint is published only on host loopback at
+`http://127.0.0.1:${OMP_AUTH_BROKER_PORT:-8081}`. It is not reachable from the network. Open it
+only during initial login and stop the profile afterwards if setup is complete.
+
+## Helm
+
+The chart generates both the IssueAgent ConfigMap and a read-only OMP ConfigMap by default.
+Provide OMP files as key/value entries under `omp.config.data`, or reference an existing ConfigMap
+with `omp.config.existingConfigMap`. Existing ConfigMaps and Secrets must also provide their
+content checksum (`existingConfigMapChecksum`, `omp.config.existingConfigMapChecksum`, or
+`existingSecretChecksum`) when rendering offline so changes deterministically roll the pod.
+
+For Helm, keep the broker internal and use a local port-forward only during setup:
+
+```sh
+kubectl -n "$NAMESPACE" port-forward \
+  "svc/${RELEASE}-issue-agent-auth-broker" 8081:8081
+```
 
 ## Plain Docker
 
@@ -30,7 +54,7 @@ docker run --rm --name issue-agent \
   --read-only --cap-drop=ALL --security-opt=no-new-privileges \
   --tmpfs /tmp \
   -p 127.0.0.1:8080:8080 \
-  -v issue-agent-data:/data \
+  -e OMP_CONFIG_DIR=/etc/omp \
   -v "$PWD/omp:/etc/omp:ro" \
   --env-file "$PWD/issue-agent.env" \
   --mount type=bind,src="$PWD/secrets/github-token",dst=/run/secrets/github_token,readonly \

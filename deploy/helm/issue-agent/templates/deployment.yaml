@@ -1,24 +1,34 @@
-{{- $ompConfigChecksum := .Values.omp.config.existingConfigMap | sha256sum }}
+{{- $ompConfigChecksum := include "issue-agent.omp-config.data" . | sha256sum }}
 {{- if .Values.omp.config.existingConfigMap }}
 {{- $ompConfig := lookup "v1" "ConfigMap" .Release.Namespace .Values.omp.config.existingConfigMap }}
 {{- if $ompConfig }}
 {{- $ompConfigChecksum = $ompConfig.data | toYaml | sha256sum }}
+{{- else if .Values.omp.config.existingConfigMapChecksum }}
+{{- $ompConfigChecksum = .Values.omp.config.existingConfigMapChecksum }}
+{{- else }}
+{{- fail "omp.config.existingConfigMapChecksum is required when the existing OMP ConfigMap cannot be looked up" }}
 {{- end }}
 {{- end }}
 {{- $configChecksum := include "issue-agent.configmap.data" . | sha256sum }}
 {{- if .Values.config.existingConfigMap }}
-{{- $configChecksum = .Values.config.existingConfigMap | sha256sum }}
 {{- $cfg := lookup "v1" "ConfigMap" .Release.Namespace .Values.config.existingConfigMap }}
 {{- if $cfg }}
 {{- $configChecksum = $cfg.data | toYaml | sha256sum }}
+{{- else if .Values.config.existingConfigMapChecksum }}
+{{- $configChecksum = .Values.config.existingConfigMapChecksum }}
+{{- else }}
+{{- fail "config.existingConfigMapChecksum is required when the existing IssueAgent ConfigMap cannot be looked up" }}
 {{- end }}
 {{- end }}
 {{- $secretChecksum := .Values.secret.stringData | toYaml | sha256sum }}
 {{- if .Values.secret.existingSecret }}
-{{- $secretChecksum = .Values.secret.existingSecret | sha256sum }}
 {{- $sec := lookup "v1" "Secret" .Release.Namespace .Values.secret.existingSecret }}
 {{- if $sec }}
 {{- $secretChecksum = $sec.data | toYaml | sha256sum }}
+{{- else if .Values.secret.existingSecretChecksum }}
+{{- $secretChecksum = .Values.secret.existingSecretChecksum }}
+{{- else }}
+{{- fail "secret.existingSecretChecksum is required when the existing Secret cannot be looked up" }}
 {{- end }}
 {{- end }}
 apiVersion: apps/v1
@@ -41,6 +51,7 @@ spec:
         checksum/omp-config: {{ $ompConfigChecksum }}
         checksum/secret: {{ $secretChecksum }}
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -69,10 +80,8 @@ spec:
             - name: OpenTelemetry__OtlpEndpoint
               value: {{ .Values.config.otlpEndpoint | quote }}
             {{- end }}
-            {{- if .Values.omp.config.existingConfigMap }}
             - name: OMP_CONFIG_DIR
               value: {{ .Values.omp.config.mountPath | quote }}
-            {{- end }}
           readinessProbe:
             httpGet:
               path: /health/ready
@@ -93,19 +102,15 @@ spec:
               mountPath: /data
             - name: tmp
               mountPath: /tmp
-            {{- if .Values.omp.config.existingConfigMap }}
             - name: omp-config
               mountPath: {{ .Values.omp.config.mountPath }}
               readOnly: true
-            {{- end }}
       volumes:
         - name: workspace
           persistentVolumeClaim:
             claimName: {{ default (include "issue-agent.fullname" .) .Values.workspace.existingClaim }}
         - name: tmp
           emptyDir: {}
-        {{- if .Values.omp.config.existingConfigMap }}
         - name: omp-config
           configMap:
-            name: {{ .Values.omp.config.existingConfigMap }}
-        {{- end }}
+            name: {{ default (printf "%s-omp-config" (include "issue-agent.fullname" .)) .Values.omp.config.existingConfigMap }}
