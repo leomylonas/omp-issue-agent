@@ -55,3 +55,23 @@ The requested Sonnet reviewer was still unavailable due account rate limiting, s
 ## Residual uncertainty
 
 No real provider timing, broker, or pinned OMP process integration was available for all paths. The OMP protocol findings are based on the pinned binary contract and current host framing; they require a real-binary smoke test before release. The Sonnet review provider remained rate-limited, so this report records the available Codex fallback explicitly.
+
+## Remediation status
+
+All fourth-pass findings were actioned in four additional commits:
+
+- `84cdf80` — typed OMP RPC/session protocol, supported runtime configuration, and real-binary smoke coverage.
+- `742a7b7` — workflow recovery, command routing, canonical markers, shutdown admission, input/review snapshots, and remote-history handling.
+- `02fad60` — provider-derived identity, Telegram validation, clone URL hardening, GitHub retry/backoff/cancellation, and provider tests.
+- `0796e02` — Docker persistence/config documentation and deployment regression coverage.
+
+Final verification:
+- `dotnet test IssueAgent.slnx --configuration Release --no-build --no-restore --nologo` — passed: 311 tests, 0 failures, 1 optional OMP smoke skipped without the binary.
+- `dotnet build IssueAgent.slnx --configuration Release --no-restore -nodeReuse:false -m:1` — passed, 0 warnings/errors.
+- `OMP_TEST_BINARY=/home/leo/.local/bin/omp dotnet test tests/IssueAgent.Omp.Tests/IssueAgent.Omp.Tests.csproj --configuration Release --no-build --no-restore --filter FullyQualifiedName~RealPinnedBinary` — passed, 1/1.
+- `helm lint deploy/helm/issue-agent` — passed.
+- `helm template issue-agent deploy/helm/issue-agent` — passed.
+- `docker compose -f deploy/docker-compose.yml config` — passed.
+- `git diff --check` — passed before commits.
+
+The worktree is clean. The real local OMP v18.2.3 smoke exercised typed startup, session creation/state, and abort behavior.
