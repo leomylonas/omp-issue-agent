@@ -161,14 +161,36 @@ public sealed partial class WorkflowDispatcher(
             .ConfigureAwait(false);
         var initialBranchName = BranchNaming.DeriveBranchName(issueNumber, initialIssue.Title);
         var initialWorktreePath = Path.Combine(runtime.Config.WorkflowsStoragePath, workflowId.ToString(), "worktree");
-        await runtime.Dependencies.Git.CreateWorktreeAsync(
-            runtime.Repository.Id,
-            workflowId.ToString(),
-            initialWorktreePath,
-            initialBranchName,
-            initialBaseCommit,
-            cancellationToken).ConfigureAwait(false);
-        await using var omp = StartOmp(runtime, issueNumber, initialWorktreePath);
+        IOmpClient omp = null!;
+        try
+        {
+            await runtime.Dependencies.Git.CreateWorktreeAsync(
+                runtime.Repository.Id,
+                workflowId.ToString(),
+                initialWorktreePath,
+                initialBranchName,
+                initialBaseCommit,
+                cancellationToken).ConfigureAwait(false);
+            omp = StartOmp(runtime, issueNumber, initialWorktreePath);
+        }
+        catch
+        {
+            try
+            {
+                await runtime.Dependencies.Git
+                    .RemoveWorktreeAsync(runtime.Repository.Id, workflowId.ToString(), initialWorktreePath, CancellationToken.None)
+                    .ConfigureAwait(false);
+                await runtime.Dependencies.Git
+                    .RemoveLocalBranchAsync(runtime.Repository.Id, initialBranchName, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+                // Best-effort cleanup; the original startup failure remains authoritative.
+            }
+        }
+
+        await using var ompScope = omp;
         var stopwatch = Stopwatch.StartNew();
         metrics.PlanCount.Add(1, runtime.Tags);
         try
