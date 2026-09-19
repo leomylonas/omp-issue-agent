@@ -3,10 +3,12 @@ kind: Service
 metadata:
   name: {{ include "issue-agent.fullname" . }}
   labels:
+    app.kubernetes.io/component: issue-agent
     {{- include "issue-agent.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
   selector:
+    app.kubernetes.io/component: issue-agent
     {{- include "issue-agent.selectorLabels" . | nindent 4 }}
   ports:
     - name: http

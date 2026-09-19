@@ -162,7 +162,9 @@ public sealed class OmpProcessClient(
     public async ValueTask CancelAsync(string sessionId, CancellationToken cancellationToken)
     {
         Interlocked.Exchange(ref cancellationRequested, 1);
-        await dispatchGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        using var gateCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        gateCts.CancelAfter(abortGracePeriod);
+        await dispatchGate.WaitAsync(gateCts.Token).ConfigureAwait(false);
         try
         {
             await RequestAbortAsync(suppressErrors: false).ConfigureAwait(false);

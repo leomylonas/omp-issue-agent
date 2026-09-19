@@ -30,7 +30,7 @@ ARG OMP_VERSION=18.2.4
 ARG GIT_LFS_VERSION=3.8.0
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install --no-install-recommends --yes curl git openssh-client ca-certificates \
+    && apt-get install --no-install-recommends --yes curl git openssh-client ca-certificates util-linux \
     && case "$TARGETARCH" in \
          amd64) omp_asset="omp-linux-x64"; omp_sha256="61b4cd50ceaea70baccae7b52a22034469130ea2985a0b2e9adc0f7b3a77a85f"; lfs_arch="amd64"; lfs_sha256="e455e00f15d9b95661b8d53498ffb0c3367962cf1ec73c31ab7369516cd6ab8d" ;; \
          arm64) omp_asset="omp-linux-arm64"; omp_sha256="59fe68eee9103494016e22d4261c81ac64a3493df5a9b54816bc064a44fad7cf"; lfs_arch="arm64"; lfs_sha256="ac9c8efac980bb0505ead384d087e2acb6486fd8498691a2165fa174ec6118c2" ;; \
@@ -53,13 +53,18 @@ RUN apt-get update \
     && rm -f /tmp/git-lfs.tar.gz \
     && rm -rf /var/lib/apt/lists/*
 RUN useradd --create-home --uid 10001 issueagent \
+    && useradd --create-home --uid 10002 omp \
     && mkdir --parents /data \
-    && chown --recursive issueagent:issueagent /data
+    && chown issueagent:issueagent /data \
+    && chmod 2770 /data
+COPY docker/issue-agent-entrypoint.sh /usr/local/bin/issue-agent-entrypoint
+COPY docker/omp-unprivileged.sh /usr/local/bin/omp-unprivileged
+RUN chmod 0755 /usr/local/bin/issue-agent-entrypoint /usr/local/bin/omp-unprivileged
 COPY --from=build /app/publish .
-USER issueagent
+USER root
 ENV HOME=/data \
     PI_CODING_AGENT_DIR=/data/omp/agent \
     PI_CODING_AGENT_SESSION_DIR=/data/omp \
     ASPNETCORE_URLS=http://+:8080
 EXPOSE 8080
-ENTRYPOINT ["dotnet", "IssueAgent.Host.dll"]
+ENTRYPOINT ["/usr/local/bin/issue-agent-entrypoint", "dotnet", "IssueAgent.Host.dll"]

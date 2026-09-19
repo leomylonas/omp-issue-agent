@@ -14,14 +14,15 @@ namespace IssueAgent.Workflow;
 /// approved plan, risks. <see cref="IsMaterialDeviation"/> signals the workflow must pause for
 /// human interaction rather than silently proceeding (§20 "material architectural/scope deviation").
 /// </summary>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record ImplementationResult(
-    [property: JsonPropertyName("summary")] string Summary,
-    [property: JsonPropertyName("keyChanges")] IReadOnlyList<string> KeyChanges,
-    [property: JsonPropertyName("decisions")] IReadOnlyList<string> DecisionsAndRationale,
-    [property: JsonPropertyName("checksRun")] IReadOnlyList<string> ChecksRun,
-    [property: JsonPropertyName("knownFailures")] IReadOnlyList<string> KnownFailures,
-    [property: JsonPropertyName("deviations")] IReadOnlyList<string> Deviations,
-    [property: JsonPropertyName("risks")] IReadOnlyList<string> Risks,
+    [property: JsonRequired, JsonPropertyName("summary")] string Summary,
+    [property: JsonRequired, JsonPropertyName("keyChanges")] IReadOnlyList<string> KeyChanges,
+    [property: JsonRequired, JsonPropertyName("decisions")] IReadOnlyList<string> DecisionsAndRationale,
+    [property: JsonRequired, JsonPropertyName("checksRun")] IReadOnlyList<string> ChecksRun,
+    [property: JsonRequired, JsonPropertyName("knownFailures")] IReadOnlyList<string> KnownFailures,
+    [property: JsonRequired, JsonPropertyName("deviations")] IReadOnlyList<string> Deviations,
+    [property: JsonRequired, JsonPropertyName("risks")] IReadOnlyList<string> Risks,
     [property: JsonPropertyName("isMaterialDeviation")] bool IsMaterialDeviation = false,
     [property: JsonPropertyName("materialDeviationExplanation")] string? MaterialDeviationExplanation = null)
 {
@@ -91,17 +92,21 @@ public static class ImplementationPromptBuilder
         }
 
         AppendIssueSummary(builder, context.PrimaryIssue);
+        AppendOutputContract(builder);
         return builder.ToString();
     }
 
     public static string BuildCorrectivePrompt() =>
-        "The intended changes were not fully committed. Commit the remaining changes now, or explain why nothing further should be committed.";
+        "The intended changes were not fully committed. Commit the remaining changes now, or explain why nothing further should be committed.\n\n" +
+        OutputContract;
 
     public static string BuildContinuationPrompt() =>
-        "Continue the approved implementation after the human acknowledged the reported deviation. Inspect the current worktree, implement the accepted direction, run tests/checks, and commit. Report the resulting implementation summary and any remaining material deviation.";
+        "Continue the approved implementation after the human acknowledged the reported deviation. Inspect the current worktree, implement the accepted direction, run tests/checks, and commit. Report the resulting implementation summary and any remaining material deviation.\n\n" +
+        OutputContract;
 
     public static string BuildConflictResolutionPrompt() =>
-        "The target branch advanced and conflicts were merged into your branch. Resolve the conflicts, ensure the code is correct, and commit the resolution.";
+        "The target branch advanced and conflicts were merged into your branch. Resolve the conflicts, ensure the code is correct, and commit the resolution.\n\n" +
+        OutputContract;
 
     public static string BuildRevisionPrompt(AgentContext context, IReadOnlyList<HumanComment> reviewFeedback)
     {
@@ -121,8 +126,14 @@ public static class ImplementationPromptBuilder
 
         builder.AppendLine();
         AppendIssueSummary(builder, context.PrimaryIssue);
+        AppendOutputContract(builder);
         return builder.ToString();
     }
+
+    private const string OutputContract =
+        """Return only one JSON object: no Markdown fence, prose, or text before or after it. Its exact result schema is {"summary":"string","keyChanges":["string"],"decisions":["string"],"checksRun":["string"],"knownFailures":["string"],"deviations":["string"],"risks":["string"],"isMaterialDeviation":"boolean (optional)","materialDeviationExplanation":"string or null (optional)"}; include every non-optional property and use no others.""";
+
+    private static void AppendOutputContract(StringBuilder builder) => builder.AppendLine(OutputContract);
 
     private static void AppendIssueSummary(StringBuilder builder, IssueContext issue)
     {

@@ -22,7 +22,8 @@ public sealed class GitHubProvider(
     HttpClient mutationClient,
     HttpClient authenticatedAttachmentClient,
     HttpClient anonymousAttachmentClient,
-    IReadOnlyList<string> trustedAttachmentHostSuffixes,
+    IReadOnlyList<string> trustedAttachmentAuthorities,
+    bool trustsGitHubDotComAttachmentHosts,
     string name) : IGitProvider
 {
     public string Name { get; } = name;
@@ -336,9 +337,10 @@ public sealed class GitHubProvider(
     {
         ArgumentNullException.ThrowIfNull(url);
         return url.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
-            trustedAttachmentHostSuffixes.Any(suffix =>
-                url.Host.Equals(suffix, StringComparison.OrdinalIgnoreCase) ||
-                url.Host.EndsWith("." + suffix, StringComparison.OrdinalIgnoreCase));
+            (trustedAttachmentAuthorities.Contains(url.Authority, StringComparer.OrdinalIgnoreCase) ||
+             (trustsGitHubDotComAttachmentHosts &&
+              (url.Host.Equals("githubusercontent.com", StringComparison.OrdinalIgnoreCase) ||
+               url.Host.EndsWith(".githubusercontent.com", StringComparison.OrdinalIgnoreCase))));
     }
 
     public async ValueTask<DownloadedAttachment> DownloadAttachmentAsync(

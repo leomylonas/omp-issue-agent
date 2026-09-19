@@ -154,20 +154,22 @@ public sealed partial class WorkflowDispatcher(
 
         Directory.CreateDirectory(runtime.Config.WorkflowsStoragePath);
         var workflowId = WorkflowId.New();
-        var issue = await runtime.Provider.GetIssueAsync(runtime.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
-        var baseCommit = await runtime.Dependencies.Git
-            .ResolveBranchCommitAsync(runtime.Repository.Id, runtime.Config.TargetBranchOverride, cancellationToken)
+        var initialIssue = await runtime.Provider.GetIssueAsync(runtime.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var initialTargetBranch = runtime.Config.TargetBranchOverride;
+        var initialBaseCommit = await runtime.Dependencies.Git
+            .ResolveBranchCommitAsync(runtime.Repository.Id, initialTargetBranch, cancellationToken)
             .ConfigureAwait(false);
-        var worktreePath = Path.Combine(runtime.Config.WorkflowsStoragePath, workflowId.ToString(), "worktree");
+        var initialBranchName = BranchNaming.DeriveBranchName(issueNumber, initialIssue.Title);
+        var initialWorktreePath = Path.Combine(runtime.Config.WorkflowsStoragePath, workflowId.ToString(), "worktree");
         await runtime.Dependencies.Git.CreateWorktreeAsync(
             runtime.Repository.Id,
             workflowId.ToString(),
-            worktreePath,
-            BranchNaming.DeriveBranchName(issueNumber, issue.Title),
-            baseCommit,
+            initialWorktreePath,
+            initialBranchName,
+            initialBaseCommit,
             cancellationToken).ConfigureAwait(false);
-
-        await using var omp = StartOmp(runtime, issueNumber, worktreePath);
+        // PlanningWorkflow publishes the durable checkpoint before using this retained checkout.
+        await using var omp = StartOmp(runtime, issueNumber, initialWorktreePath);
         var stopwatch = Stopwatch.StartNew();
         metrics.PlanCount.Add(1, runtime.Tags);
         try
@@ -338,8 +340,9 @@ public sealed partial class WorkflowDispatcher(
         if (command == WorkflowCommand.Continue)
         {
             var durableState = CanonicalStateSerializer.ToWorkflowState(reconciled.Content!.State);
-            command = WorkflowCommandRouting.ContinueRoute(state, durableState);
-            if (command is null)
+            var routedCommand = WorkflowCommandRouting.ContinueRoute(state, durableState);
+            await RecoverContinueWorkspaceAsync(runtime.Dependencies, runtime.Config, state, cancellationToken).ConfigureAwait(false);
+            if (routedCommand is null)
             {
                 await ConsumeCommandAsync(
                     runtime.Provider, runtime.Repository, issueNumber, mergeRequest?.Number,
@@ -353,12 +356,12 @@ public sealed partial class WorkflowDispatcher(
                 canonical,
                 reconciled.Content!,
                 state,
-                command.Value,
+                routedCommand.Value,
                 cancellationToken).ConfigureAwait(false);
             await ConsumeCommandAsync(
                 runtime.Provider, runtime.Repository, issueNumber, mergeRequest?.Number,
                 commandResolution.Sources, WorkflowCommand.Continue, cancellationToken).ConfigureAwait(false);
-            await ContinueAsync(runtime, state, durableState, cancellationToken).ConfigureAwait(false);
+            command = routedCommand;
         }
 
         await using var omp = StartOmp(runtime, issueNumber, Path.Combine(runtime.Config.WorkflowsStoragePath, state.WorkflowId.ToString(), "worktree"));
@@ -422,35 +425,32 @@ public sealed partial class WorkflowDispatcher(
             else if (command == WorkflowCommand.Replan) metrics.PlanDuration.Record(stopwatch.Elapsed.TotalSeconds, runtime.Tags);
         }
     }
-
-    private static async Task<WorkflowCommand?> ContinueAsync(
-        Runtime runtime,
+    internal static async Task RecoverContinueWorkspaceAsync(
+        WorkflowDependencies dependencies,
+        WorkflowRepositoryConfig config,
         WorkflowState state,
-        WorkflowState durableState,
         CancellationToken cancellationToken)
     {
-        var worktreePath = Path.Combine(runtime.Config.WorkflowsStoragePath, state.WorkflowId.ToString(), "worktree");
-        var remoteHead = await runtime.Dependencies.Git
-            .TryResolveRemoteBranchCommitAsync(runtime.Config.Repository.Id, state.Branch, cancellationToken)
+        var worktreePath = Path.Combine(config.WorkflowsStoragePath, state.WorkflowId.ToString(), "worktree");
+        var remoteHead = await dependencies.Git
+            .TryResolveRemoteBranchCommitAsync(config.Repository.Id, state.Branch, cancellationToken)
             .ConfigureAwait(false);
         if (!Directory.Exists(worktreePath))
         {
-            await runtime.Dependencies.Git.CreateWorktreeAsync(
-                runtime.Config.Repository.Id,
+            await dependencies.Git.CreateWorktreeAsync(
+                config.Repository.Id,
                 state.WorkflowId.ToString(),
                 worktreePath,
                 state.Branch,
                 remoteHead ?? state.BaseCommit,
                 cancellationToken).ConfigureAwait(false);
         }
-        else if (remoteHead is not null && !await runtime.Dependencies.Git.HasUncommittedChangesAsync(
-            runtime.Config.Repository.Id, worktreePath, cancellationToken).ConfigureAwait(false))
+        else if (remoteHead is not null && !await dependencies.Git.HasUncommittedChangesAsync(
+            config.Repository.Id, worktreePath, cancellationToken).ConfigureAwait(false))
         {
-            await runtime.Dependencies.Git.ResetWorktreeAsync(
-                runtime.Config.Repository.Id, worktreePath, remoteHead, cancellationToken).ConfigureAwait(false);
+            await dependencies.Git.ResetWorktreeAsync(
+                config.Repository.Id, worktreePath, remoteHead, cancellationToken).ConfigureAwait(false);
         }
-
-        return WorkflowCommandRouting.ContinueRoute(state, durableState);
     }
 
     private static async Task PersistContinueAcceptanceAsync(

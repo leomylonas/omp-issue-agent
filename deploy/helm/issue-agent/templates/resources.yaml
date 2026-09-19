@@ -25,6 +25,7 @@ metadata:
 spec:
   selector:
     matchLabels:
+      app.kubernetes.io/component: issue-agent
       {{- include "issue-agent.selectorLabels" . | nindent 6 }}
   jobLabel: {{ .Values.serviceMonitor.jobLabel | quote }}
   endpoints:
@@ -45,13 +46,13 @@ spec:
     - name: issue-agent
       rules:
         - alert: IssueAgentDown
-          expr: up{job="{{ include "issue-agent.name" . }}"} == 0
+          expr: up{job="{{ include "issue-agent.name" . }}"} == 0 or absent(up{job="{{ include "issue-agent.name" . }}"})
           for: 5m
         - alert: IssueAgentPollingStalled
-          expr: increase(issueagent_poll_count_total[{{ .Values.prometheusRule.pollingStalledFor }}]) == 0
+          expr: increase(issueagent_poll_count_total[{{ .Values.prometheusRule.pollingStalledFor }}]) == 0 or absent(issueagent_poll_count_total{job="{{ include "issue-agent.name" . }}"})
           for: {{ .Values.prometheusRule.pollingStalledFor }}
         - alert: IssueAgentProviderFailures
-          expr: rate(issueagent_provider_errors_total[10m]) > 0
+          expr: rate(issueagent_provider_errors_total[10m]) > 0 or rate(issueagent_poll_errors_total[10m]) > 0
           for: 10m
         - alert: IssueAgentOmpFailures
           expr: rate(issueagent_omp_errors_total[10m]) > 0

@@ -1,4 +1,7 @@
+using IssueAgent.Context;
 using IssueAgent.Domain;
+using IssueAgent.Git;
+using IssueAgent.Providers;
 using IssueAgent.Workflow;
 using Xunit;
 
@@ -87,6 +90,114 @@ public sealed class WorkflowCommandRoutingTests
         };
 
         Assert.Equal(WorkflowCommand.Replan, WorkflowCommandRouting.ContinueRoute(recoveredPlanning, recoveredPlanning));
+    }
+
+    [Fact]
+    public async Task ReviewContinueRecoveryResetsCleanRetainedWorkspaceToRemoteHead()
+    {
+        var state = ReviewState();
+        var root = Path.Combine(Path.GetTempPath(), $"issue-agent-{Guid.NewGuid():N}");
+        var worktreePath = Path.Combine(root, state.WorkflowId.ToString(), "worktree");
+        Directory.CreateDirectory(worktreePath);
+        try
+        {
+            var git = new ContinueRecoveryGit { RemoteHead = "remote-rewrite" };
+
+            await WorkflowDispatcher.RecoverContinueWorkspaceAsync(
+                Dependencies(git), Config(root), state, CancellationToken.None);
+
+            Assert.Equal([("repo", worktreePath, "remote-rewrite")], git.ResetWorktrees);
+            Assert.Empty(git.CreatedWorktrees);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ReviewContinueRecoveryRecreatesMissingWorkspaceAtRemoteHead()
+    {
+        var state = ReviewState();
+        var root = Path.Combine(Path.GetTempPath(), $"issue-agent-{Guid.NewGuid():N}");
+        try
+        {
+            var git = new ContinueRecoveryGit { RemoteHead = "remote-rewrite" };
+
+            await WorkflowDispatcher.RecoverContinueWorkspaceAsync(
+                Dependencies(git), Config(root), state, CancellationToken.None);
+
+            Assert.Equal([(state.WorkflowId.ToString(), "agent/issue-1", "remote-rewrite")], git.CreatedWorktrees);
+            Assert.Empty(git.ResetWorktrees);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static WorkflowState ReviewState() => CreateState(WorkflowPhase.Review, WorkflowOperationalState.Waiting) with
+    {
+        WorkflowId = new WorkflowId(Guid.Parse("11111111-1111-1111-1111-111111111111")),
+    };
+
+    private static WorkflowDependencies Dependencies(IGitRepositoryManager git) =>
+        new(null!, git, null!, new NullWorkflowNotifier(), new SystemClock());
+
+    private static WorkflowRepositoryConfig Config(string root) => new(
+        new RepositoryRef("repo", "owner", "name"),
+        Path.Combine(root, "repos"),
+        root,
+        "main",
+        GitAuthentication.Anonymous(TlsTrust.System),
+        new GitIdentity("IssueAgent", "issue-agent@example.test"),
+        "omp",
+        [],
+        new Dictionary<string, string>(),
+        "plan",
+        "task");
+
+    private sealed class ContinueRecoveryGit : IGitRepositoryManager
+    {
+        public string? RemoteHead { get; init; }
+
+        public List<(string WorktreeId, string Branch, string BaseCommit)> CreatedWorktrees { get; } = [];
+
+        public List<(string RepositoryId, string WorktreePath, string Commit)> ResetWorktrees { get; } = [];
+
+        public ValueTask<string?> TryResolveRemoteBranchCommitAsync(string repositoryId, string branchName, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(RemoteHead);
+
+        public ValueTask CreateWorktreeAsync(string repositoryId, string worktreeId, string worktreePath, string branchName, string baseCommit, CancellationToken cancellationToken)
+        {
+            CreatedWorktrees.Add((worktreeId, branchName, baseCommit));
+            Directory.CreateDirectory(worktreePath);
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask ResetWorktreeAsync(string repositoryId, string worktreePath, string commit, CancellationToken cancellationToken)
+        {
+            ResetWorktrees.Add((repositoryId, worktreePath, commit));
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask<bool> HasUncommittedChangesAsync(string repositoryId, string worktreePath, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(false);
+
+        public ValueTask EnsureBareRepositoryAsync(string repositoryId, string cloneUrl, GitAuthentication authentication, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask FetchAsync(string repositoryId, GitAuthentication authentication, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask<string> ResolveBranchCommitAsync(string repositoryId, string branchName, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask<bool> IsAncestorAsync(string repositoryId, string ancestorCommit, string descendantCommit, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask<string> GetHeadCommitAsync(string repositoryId, string worktreePath, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask UpdateSubmodulesAsync(string repositoryId, string worktreePath, Func<string, GitAuthentication?> authenticationResolver, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask<bool> TryRebaseOntoAsync(string repositoryId, string worktreePath, string ontoCommit, GitIdentity identity, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask<bool> TryMergeAsync(string repositoryId, string worktreePath, string commit, GitIdentity identity, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask PushAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask RemoveWorktreeAsync(string repositoryId, string worktreeId, string worktreePath, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask RemoveLocalBranchAsync(string repositoryId, string branchName, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public bool WorktreeRequiresLfs(string worktreePath) => throw new NotSupportedException();
+        public ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask UploadLfsObjectsAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
     private static WorkflowState CreateState(WorkflowPhase phase, WorkflowOperationalState operationalState) => new(

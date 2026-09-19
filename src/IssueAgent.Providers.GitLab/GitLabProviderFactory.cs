@@ -22,7 +22,7 @@ public static class GitLabProviderFactory
             new GitLabApiClient(restHttpClient),
             authenticatedAttachmentClient,
             anonymousAttachmentClient,
-            configuration.TrustedAttachmentHostSuffixes,
+            configuration.TrustedAttachmentAuthorities,
             configuration.Name);
     }
 
@@ -44,7 +44,7 @@ public sealed record GitLabProviderConfiguration(
     string Name,
     Uri ApiBaseUri,
     string? Token,
-    IReadOnlyList<string> TrustedAttachmentHostSuffixes,
+    IReadOnlyList<string> TrustedAttachmentAuthorities,
     TlsTrust? Trust = null)
 {
     public TlsTrust TlsTrust { get; init; } = Trust ?? IssueAgent.Git.TlsTrust.System;

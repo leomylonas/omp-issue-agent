@@ -12,7 +12,7 @@ public sealed class GitHubProviderFixture : IDisposable
             "github",
             baseUri,
             "test-token",
-            ["github.example", "githubusercontent.example"]));
+            ["github.example"]));
     }
 
     public WireMockServer Server { get; }

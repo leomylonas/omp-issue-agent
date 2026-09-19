@@ -2,13 +2,22 @@
 
 ## Docker Compose
 
-Copy `issue-agent.env`, add provider/repository settings, and provide the provider secret at
+Copy `issue-agent.env`, add provider/repository settings that reference
+`/run/issue-agent-secrets/<secret-name>`, and provide the provider secret at
 `secrets/github-token`. The base Compose file is brokerless and does not require an Auth Broker
-token:
+token. Restrict each file-backed secret to its owner before starting the stack:
+
+```sh
+chmod 600 secrets/github-token
+```
 
 ```sh
 docker compose -f docker-compose.yml up -d --build
 ```
+
+The entrypoint copies provider and notification secret files to a root-only runtime mount before
+starting IssueAgent. OMP runs under a separate unprivileged UID, so it cannot read those files.
+Only explicitly configured OMP execution secrets are mounted where OMP can read them.
 
 To enable the bundled Auth Broker, create one bearer token file and start the broker overlay. The
 token is mounted as a Compose secret and never placed in an environment file:
@@ -50,6 +59,13 @@ docker compose -f docker-compose.yml -f docker-compose.auth-broker.yml \
   up -d --force-recreate omp-auth-broker issue-agent
 ```
 
+To enable the optional Telegram and Slack examples, create both secret files and add the
+notification overlay:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.notifications.yml up -d --build
+```
+
 
 ## Helm
 The chart generates both the IssueAgent ConfigMap and a read-only OMP ConfigMap by default.
@@ -62,7 +78,7 @@ mounted file path (for example `/etc/omp/config.yml`), and OMP session state rem
 
 When `omp.authBroker.enabled=true`, the chart reuses `image.repository` and the release image tag
 unless `omp.authBroker.image` overrides either one. It injects
-`http://<release>-issue-agent-auth-broker:8081` into IssueAgent, starts the broker with
+`http://<broker-service>:8081` into IssueAgent, starts the broker with
 `omp auth-broker serve --bind=0.0.0.0:8081`, and mounts the same
 `OMP_AUTH_BROKER_TOKEN` Secret key into the broker's native auth store and the IssueAgent OMP
 environment. Supply that key through an existing `secret.existingSecret`, or keep its value out of
@@ -82,8 +98,10 @@ with the local OMP CLI before exposing the broker on loopback:
 ```sh
 omp auth-broker login
 
-kubectl -n "$NAMESPACE" port-forward \
-  "svc/${RELEASE}-issue-agent-auth-broker" 8081:8081
+BROKER_SERVICE="$(kubectl -n "$NAMESPACE" get service \
+  -l app.kubernetes.io/component=auth-broker \
+  -o jsonpath='{.items[0].metadata.name}')"
+kubectl -n "$NAMESPACE" port-forward "svc/${BROKER_SERVICE}" 8081:8081
 
 OMP_AUTH_BROKER_URL=http://127.0.0.1:8081 \
 OMP_AUTH_BROKER_TOKEN="$(cat omp-auth-broker-token)" \
@@ -102,24 +120,25 @@ Build the image, create persistent storage, and provide configuration and secret
 docker build -t issue-agent:local ..
 docker volume create issue-agent-data
 docker run --rm --name issue-agent \
-  --read-only --cap-drop=ALL --security-opt=no-new-privileges \
-  --tmpfs /tmp \
+  --read-only --cap-drop=ALL --cap-add=DAC_OVERRIDE --cap-add=SETGID --cap-add=SETUID --security-opt=no-new-privileges \
+  --tmpfs /tmp --tmpfs /run/issue-agent-secrets \
   -p 127.0.0.1:8080:8080 \
   -v issue-agent-data:/data \
   -e PI_CONFIG_FILES=/etc/omp/config.yml \
   --volume "$PWD/omp:/etc/omp:ro" \
   --env-file "$PWD/issue-agent.env" \
-  --mount type=bind,src="$PWD/secrets/github-token",dst=/run/secrets/github_token,readonly \
+  --mount type=bind,src="$PWD/secrets/github-token",dst=/run/secrets-source/github_token,readonly \
   issue-agent:local
 ```
 
-The container runs as the non-root `issueagent` user. `/data` is the only persistent writable
-application path; OMP configuration is read-only. `PI_CONFIG_FILES` is the pinned OMP runtime
-setting that points to the mounted `/etc/omp/config.yml` file; OMP sessions and native state remain
-under `/data/omp`.
+The IssueAgent host starts as root only to read and copy mounted secrets, then runs OMP as a
+separate unprivileged UID. Point file-backed provider and notification settings at
+`/run/issue-agent-secrets/<secret-name>`; only `/data` is persistent writable application storage.
+OMP configuration is read-only. `PI_CONFIG_FILES` is the pinned OMP runtime setting that points to
+the mounted `/etc/omp/config.yml` file; OMP sessions and native state remain under `/data/omp`.
 
 ## Optional integrations
 
 `issue-agent.env` contains examples for OTLP tracing, Telegram, and Slack. Configure notification
-tokens through mounted secret files; do not place token values or webhook credentials directly in
-the env file.
+tokens through mounted secret files and start `docker-compose.notifications.yml` with the base
+Compose file; do not place token values or webhook credentials directly in the env file.

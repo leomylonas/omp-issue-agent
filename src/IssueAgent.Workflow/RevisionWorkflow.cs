@@ -104,6 +104,8 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                     "Failed to resolve conflicts while merging the latest target branch.",
                     cancellationToken).ConfigureAwait(false);
             }
+
+            _ = ImplementationResult.Parse(conflictOutcome.Completed!.ResultJson);
         }
 
         var feedbackAfterRevision = await CaptureFeedbackSnapshotAsync(config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);

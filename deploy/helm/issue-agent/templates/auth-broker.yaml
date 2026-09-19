@@ -20,7 +20,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "issue-agent.fullname" . }}-auth-broker
+  name: {{ include "issue-agent.authBrokerFullname" . }}
   labels:
     {{- include "issue-agent.labels" . | nindent 4 }}
 spec:
@@ -99,7 +99,7 @@ spec:
       volumes:
         - name: broker-data
           persistentVolumeClaim:
-            claimName: {{ default (printf "%s-auth-broker" (include "issue-agent.fullname" .)) .Values.omp.authBroker.existingClaim }}
+            claimName: {{ default (include "issue-agent.authBrokerFullname" .) .Values.omp.authBroker.existingClaim }}
         - name: tmp
           emptyDir: {}
         - name: omp-auth-broker-token
@@ -113,7 +113,10 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "issue-agent.fullname" . }}-auth-broker
+  name: {{ include "issue-agent.authBrokerFullname" . }}
+  labels:
+    app.kubernetes.io/component: auth-broker
+    {{- include "issue-agent.labels" . | nindent 4 }}
 spec:
   type: ClusterIP
   selector:
@@ -128,7 +131,7 @@ spec:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ include "issue-agent.fullname" . }}-auth-broker
+  name: {{ include "issue-agent.authBrokerFullname" . }}
 spec:
   accessModes: {{- toYaml .Values.omp.authBroker.storage.accessModes | nindent 4 }}
   {{- if .Values.omp.authBroker.storage.storageClassName }}

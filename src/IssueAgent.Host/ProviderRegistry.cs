@@ -68,31 +68,30 @@ public sealed class ProviderRegistry
 
     private static IGitProvider Create(ProviderOptions configuration, string? token, TlsTrust tlsTrust)
     {
-        var trustedHosts = GetTrustedAttachmentHosts(configuration);
+        var trustedAuthorities = GetTrustedAttachmentAuthorities(configuration);
         return configuration.Kind switch
         {
             ProviderKind.GitHub => GitHubProviderFactory.Create(new GitHubProviderConfiguration(
-                configuration.Name, configuration.BaseUri, token, trustedHosts, tlsTrust)),
+                configuration.Name, configuration.BaseUri, token, trustedAuthorities, tlsTrust)),
             ProviderKind.GitLab => GitLabProviderFactory.Create(new GitLabProviderConfiguration(
-                configuration.Name, configuration.BaseUri, token, trustedHosts, tlsTrust)),
+                configuration.Name, configuration.BaseUri, token, trustedAuthorities, tlsTrust)),
             _ => throw new InvalidOperationException($"Unsupported provider kind '{configuration.Kind}'."),
         };
     }
 
-    private static string[] GetTrustedAttachmentHosts(ProviderOptions configuration)
+    private static string[] GetTrustedAttachmentAuthorities(ProviderOptions configuration)
     {
-        var hosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { configuration.BaseUri.Host };
-        // GitHub.com serves user attachments from github.com and the CDN-backed
-        // githubusercontent.com family, while its API endpoint is api.github.com.
+        var authorities = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { configuration.BaseUri.Authority };
+        // GitHub.com serves some attachments from its web authority in addition to its API
+        // authority. githubusercontent.com descendants are recognized by GitHubProvider as the
+        // public GitHub-owned attachment family, not as configurable enterprise authorities.
         if (configuration.Kind == ProviderKind.GitHub &&
-            (configuration.BaseUri.Host.Equals("api.github.com", StringComparison.OrdinalIgnoreCase) ||
-             configuration.BaseUri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)))
+            configuration.BaseUri.Host.Equals("api.github.com", StringComparison.OrdinalIgnoreCase))
         {
-            hosts.Add("github.com");
-            hosts.Add("githubusercontent.com");
+            authorities.Add("github.com");
         }
 
-        return hosts.ToArray();
+        return authorities.ToArray();
     }
 
     private static TlsTrust ResolveProviderTlsTrust(IReadOnlyList<EffectiveRepositoryConfiguration> repositories)

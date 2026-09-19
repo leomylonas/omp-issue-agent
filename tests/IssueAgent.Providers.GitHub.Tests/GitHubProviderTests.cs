@@ -512,12 +512,27 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
-    public void IsTrustedAttachmentHostRequiresHttpsForConfiguredSuffixes()
+    public void IsTrustedAttachmentHostRequiresHttpsAndExactConfiguredAuthority()
     {
-        Assert.True(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://githubusercontent.example/foo.png")));
-        Assert.True(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://raw.githubusercontent.example/foo.png")));
-        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("http://githubusercontent.example/foo.png")));
+        Assert.True(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://github.example/foo.png")));
+        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://raw.githubusercontent.com/foo.png")));
+        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://uploads.github.example/foo.png")));
+        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://github.example:8443/foo.png")));
+        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("http://github.example/foo.png")));
         Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://evil.example/foo.png")));
+    }
+
+    [Fact]
+    public void IsTrustedAttachmentHostAllowsGitHubDotComAttachmentFamily()
+    {
+        var provider = GitHubProviderFactory.Create(new GitHubProviderConfiguration(
+            "github",
+            new Uri("https://api.github.com/"),
+            "test-token",
+            ["api.github.com", "github.com"]));
+
+        Assert.True(provider.IsTrustedAttachmentHost(new Uri("https://raw.githubusercontent.com/foo.png")));
+        Assert.False(provider.IsTrustedAttachmentHost(new Uri("http://raw.githubusercontent.com/foo.png")));
     }
 
     [Fact]

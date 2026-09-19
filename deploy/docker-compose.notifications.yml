@@ -1,0 +1,15 @@
+services:
+  issue-agent:
+    secrets:
+      - source: telegram_bot_token
+        target: /run/secrets-source/telegram_bot_token
+        mode: 0400
+      - source: slack_webhook_url
+        target: /run/secrets-source/slack_webhook_url
+        mode: 0400
+
+secrets:
+  telegram_bot_token:
+    file: ./secrets/telegram-bot-token
+  slack_webhook_url:
+    file: ./secrets/slack-webhook-url

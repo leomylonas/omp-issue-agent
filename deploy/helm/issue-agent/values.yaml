@@ -72,7 +72,7 @@ config:
   pollInterval: "00:01:00"
   concurrencyAgent: 3
   concurrencyPolling: 10
-  ompExecutablePath: /usr/local/bin/omp
+  ompExecutablePath: /usr/local/bin/omp-unprivileged
   traceSamplingRatio: "1.0"
   otlpEndpoint: ""
   extra: {}

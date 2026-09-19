@@ -374,9 +374,11 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     }
 
     [Fact]
-    public void IsTrustedAttachmentHostRequiresHttpsForConfiguredSuffix()
+    public void IsTrustedAttachmentHostRequiresHttpsAndExactConfiguredAuthority()
     {
         Assert.True(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://gitlab.example/uploads/1/file.png")));
+        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://uploads.gitlab.example/file.png")));
+        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://gitlab.example:8443/uploads/1/file.png")));
         Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("http://gitlab.example/uploads/1/file.png")));
         Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://evil.example/file.png")));
     }

@@ -17,7 +17,7 @@ public sealed class GitLabProvider(
     GitLabApiClient client,
     HttpClient authenticatedAttachmentClient,
     HttpClient anonymousAttachmentClient,
-    IReadOnlyList<string> trustedAttachmentHostSuffixes,
+    IReadOnlyList<string> trustedAttachmentAuthorities,
     string name) : IGitProvider
 {
     private const string DraftTitlePrefix = "Draft: ";
@@ -248,9 +248,7 @@ public sealed class GitLabProvider(
     {
         ArgumentNullException.ThrowIfNull(url);
         return url.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
-            trustedAttachmentHostSuffixes.Any(suffix =>
-                url.Host.Equals(suffix, StringComparison.OrdinalIgnoreCase) ||
-                url.Host.EndsWith("." + suffix, StringComparison.OrdinalIgnoreCase));
+            trustedAttachmentAuthorities.Contains(url.Authority, StringComparer.OrdinalIgnoreCase);
     }
 
     public async ValueTask<DownloadedAttachment> DownloadAttachmentAsync(

@@ -52,7 +52,8 @@ public static class GitHubProviderFactory
             mutationHttpClient,
             authenticatedAttachmentClient,
             anonymousAttachmentClient,
-            configuration.TrustedAttachmentHostSuffixes,
+            configuration.TrustedAttachmentAuthorities,
+            isGitHubDotCom,
             configuration.Name);
     }
 
@@ -74,7 +75,7 @@ public sealed record GitHubProviderConfiguration(
     string Name,
     Uri ApiBaseUri,
     string? Token,
-    IReadOnlyList<string> TrustedAttachmentHostSuffixes,
+    IReadOnlyList<string> TrustedAttachmentAuthorities,
     TlsTrust? Trust = null)
 {
     public TlsTrust TlsTrust { get; init; } = Trust ?? IssueAgent.Git.TlsTrust.System;

@@ -12,9 +12,10 @@ namespace IssueAgent.Workflow;
 /// proposed changes, sequence, key decisions and rationale, alternatives, testing strategy, risks,
 /// open questions. Adjust this type first if the real OMP planning result differs in shape.
 /// </summary>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PlanningResult(
-    [property: JsonPropertyName("planText")] string PlanText,
-    [property: JsonPropertyName("decisions")] IReadOnlyList<string> DecisionsAndRationale,
+    [property: JsonRequired, JsonPropertyName("planText")] string PlanText,
+    [property: JsonRequired, JsonPropertyName("decisions")] IReadOnlyList<string> DecisionsAndRationale,
     [property: JsonPropertyName("suggestedSlug")] string? SuggestedSlug = null)
 {
     public static PlanningResult Parse(string resultJson)
@@ -59,7 +60,8 @@ public static class PlanningPromptBuilder
         builder.AppendLine();
         AppendIssue(builder, context.PrimaryIssue, "Primary issue");
         AppendRelatedIssues(builder, context.RelatedIssues);
-        builder.AppendLine("Respond with the plan content only; do not modify repository files while planning.");
+        builder.AppendLine("Do not modify repository files while planning.");
+        AppendOutputContract(builder);
         return builder.ToString();
     }
 
@@ -88,8 +90,15 @@ public static class PlanningPromptBuilder
         builder.AppendLine();
         AppendIssue(builder, context.PrimaryIssue, "Primary issue");
         AppendRelatedIssues(builder, context.RelatedIssues);
-        builder.AppendLine("Respond with the revised plan content only; do not modify repository files while planning.");
+        builder.AppendLine("Do not modify repository files while planning.");
+        AppendOutputContract(builder);
         return builder.ToString();
+    }
+
+    private static void AppendOutputContract(StringBuilder builder)
+    {
+        builder.AppendLine("Return only one JSON object: no Markdown fence, prose, or text before or after it.");
+        builder.AppendLine("""Its exact result schema is {"planText":"string","decisions":["string"],"suggestedSlug":"string or null (optional)"}; include planText and decisions, use no other properties.""");
     }
 
     private static void AppendIssue(StringBuilder builder, IssueContext issue, string heading)

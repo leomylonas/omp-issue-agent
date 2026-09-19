@@ -234,6 +234,8 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                 {
                     return await FailAsync(config, issueNumber, workingState, "Failed to resolve rebase conflicts before first publication.", cancellationToken).ConfigureAwait(false);
                 }
+
+                _ = ImplementationResult.Parse(conflictOutcome.Completed!.ResultJson);
             }
         }
 

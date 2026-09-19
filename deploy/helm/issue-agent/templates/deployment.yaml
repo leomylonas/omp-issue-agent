@@ -46,10 +46,12 @@ spec:
   replicas: 1
   selector:
     matchLabels:
+      app.kubernetes.io/component: issue-agent
       {{- include "issue-agent.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
+        app.kubernetes.io/component: issue-agent
         {{- include "issue-agent.selectorLabels" . | nindent 8 }}
       annotations:
         checksum/config: {{ $configChecksum }}
@@ -58,8 +60,8 @@ spec:
     spec:
       automountServiceAccountToken: false
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 10001
+        runAsNonRoot: false
+        runAsUser: 0
         runAsGroup: 10001
         fsGroup: 10001
         seccompProfile:
@@ -98,7 +100,7 @@ spec:
               value: {{ printf "%s/%s" .Values.omp.config.mountPath .Values.omp.config.file | quote }}
             {{- if .Values.omp.authBroker.enabled }}
             - name: IssueAgent__Omp__AuthBrokerUrl
-              value: {{ printf "http://%s-auth-broker:8081" (include "issue-agent.fullname" .) | quote }}
+              value: {{ printf "http://%s:8081" (include "issue-agent.authBrokerFullname" .) | quote }}
             {{- end }}
             {{- if .Values.omp.authBroker.enabled }}
             - name: IssueAgent__Omp__ExecutionSecrets__OMP_AUTH_BROKER_TOKEN__File
@@ -119,6 +121,7 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
+              add: [SETGID, SETUID]
           volumeMounts:
             - name: workspace
               mountPath: /data
@@ -127,6 +130,13 @@ spec:
             - name: omp-config
               mountPath: {{ .Values.omp.config.mountPath }}
               readOnly: true
+            - name: issue-agent-secrets
+              mountPath: /run/issue-agent-secrets
+            {{- if or .Values.secret.existingSecret .Values.secret.stringData }}
+            - name: issue-agent-secret-source
+              mountPath: /run/secrets-source
+              readOnly: true
+            {{- end }}
             {{- if .Values.omp.authBroker.enabled }}
             - name: omp-auth-broker-token
               mountPath: /run/secrets/omp-auth-broker
@@ -138,6 +148,15 @@ spec:
             claimName: {{ default (include "issue-agent.fullname" .) .Values.workspace.existingClaim }}
         - name: tmp
           emptyDir: {}
+        - name: issue-agent-secrets
+          emptyDir:
+            medium: Memory
+        {{- if or .Values.secret.existingSecret .Values.secret.stringData }}
+        - name: issue-agent-secret-source
+          secret:
+            secretName: {{ default (printf "%s-secret" (include "issue-agent.fullname" .)) .Values.secret.existingSecret }}
+            defaultMode: 0400
+        {{- end }}
         - name: omp-config
           configMap:
             name: {{ default (printf "%s-omp-config" (include "issue-agent.fullname" .)) .Values.omp.config.existingConfigMap }}
@@ -145,7 +164,7 @@ spec:
         - name: omp-auth-broker-token
           secret:
             secretName: {{ $brokerTokenSecretName }}
-            defaultMode: 0440
+            defaultMode: 0444
             items:
               - key: {{ $brokerTokenSecretKey }}
                 path: token
