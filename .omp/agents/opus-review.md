@@ -1,8 +1,8 @@
 ---
 name: opus-review
-description: Read-only, maximum-reasoning-depth code review specialist for IssueAgent parity, invariant, and security audits. Use for review work only; never for edits.
-model: anthropic/claude-opus-5
-thinking-level: max
+description: Read-only, high-reasoning code review specialist for IssueAgent parity, invariant, and security audits. Use for review work only; never for edits.
+model: anthropic/claude-sonnet-5
+thinking-level: high
 tools: read, grep, glob, bash, hub
 ---
 

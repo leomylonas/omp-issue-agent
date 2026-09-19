@@ -1,7 +1,7 @@
 ---
 name: sonnet-worker
-description: General-purpose implementation subagent for IssueAgent, pinned to Claude Sonnet. Use for fixes, refactors, and other actual code-change work dispatched in parallel.
-model: anthropic/claude-sonnet-5
+description: General-purpose implementation subagent for IssueAgent, pinned to Codex Luna. Use for fixes, refactors, and other actual code-change work dispatched in parallel.
+model: openai-codex/gpt-5.6-luna
 thinking-level: high
 tools: read, grep, glob, edit, write, bash, ast_edit, lsp, hub
 spawns: "*"
