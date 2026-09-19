@@ -174,7 +174,17 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
                     {
                         pendingRequests.Remove(id, out completion);
                     }
-                    completion?.TrySetResult(parsed);
+                    if (completion is not null)
+                    {
+                        completion.TrySetResult(parsed);
+                    }
+                    else if (parsed["success"]?.GetValue<bool>() == false)
+                    {
+                        // A command can finish after its waiter has moved on (notably prompt
+                        // failures racing a cancellation). Preserve failures for the run stream;
+                        // silently dropping them makes durable workflow state claim success.
+                        await frames.Writer.WriteAsync(parsed).ConfigureAwait(false);
+                    }
                     continue;
                 }
 

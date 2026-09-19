@@ -11,83 +11,141 @@ public sealed class OmpProcessClient(NdjsonRpcTransport transport, TimeSpan shut
     public async ValueTask<OmpSession> CreateSessionAsync(string role, CancellationToken cancellationToken)
     {
         await RequireSuccessAsync(
-            await transport.SendCommandAsync("new_session", null, cancellationToken).ConfigureAwait(false))
+            await transport.SendCommandAsync(
+                "new_session",
+                new JsonObject { ["role"] = role },
+                cancellationToken).ConfigureAwait(false))
             .ConfigureAwait(false);
         var state = RequireData(
             await transport.SendCommandAsync("get_state", null, cancellationToken).ConfigureAwait(false));
         var sessionId = RequireString(state, "sessionId");
-        // OMP sessions do not carry IssueAgent's semantic planning/implementation role. The role
-        // remains a host concern and is retained on the domain handle for logging and fakes.
-        return new OmpSession(sessionId, role);
+        return new OmpSession(sessionId, role, ExtractSessionFile(state, sessionId));
     }
 
-    public async ValueTask<OmpSession> ResumeSessionAsync(string sessionId, CancellationToken cancellationToken)
+    public async ValueTask<OmpSession> ResumeSessionAsync(
+        string sessionId,
+        string? sessionFile,
+        CancellationToken cancellationToken)
     {
         var response = await transport.SendCommandAsync(
             "switch_session",
-            new JsonObject { ["sessionPath"] = sessionId },
+            new JsonObject { ["sessionPath"] = sessionFile ?? sessionId },
             cancellationToken).ConfigureAwait(false);
         await RequireSuccessAsync(response).ConfigureAwait(false);
         var state = RequireData(
             await transport.SendCommandAsync("get_state", null, cancellationToken).ConfigureAwait(false));
         var activeSessionId = state["sessionId"]?.GetValue<string>() ?? sessionId;
-        return new OmpSession(activeSessionId, string.Empty);
+        return new OmpSession(activeSessionId, string.Empty, ExtractSessionFile(state, sessionFile ?? sessionId));
     }
+    public ValueTask<OmpSession> ResumeSessionAsync(string sessionId, CancellationToken cancellationToken) =>
+        ResumeSessionAsync(sessionId, sessionFile: null, cancellationToken);
+
 
     public async IAsyncEnumerable<OmpEvent> RunAsync(
         OmpRunRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        // OMP's RPC protocol has no per-prompt working-directory or environment fields. The
-        // process is launched with the allow-listed environment; make the retained worktree
-        // explicit in the prompt so built-in tools operate on the workflow worktree.
-        var prompt = $"Work exclusively in the repository at '{request.WorkingDirectory}'.\n\n{request.Prompt}";
-        Interlocked.Exchange(ref cancellationRequested, 0);
-        var response = await transport.SendCommandAsync(
-            "prompt",
-            new JsonObject { ["message"] = prompt },
-            cancellationToken).ConfigureAwait(false);
-        await RequireSuccessAsync(response).ConfigureAwait(false);
-        var assistantText = new System.Text.StringBuilder();
-
-        await foreach (var frame in transport.Frames.WithCancellation(cancellationToken).ConfigureAwait(false))
+        if (Interlocked.CompareExchange(ref cancellationRequested, 0, 0) != 0)
         {
-            var domainEvent = BuildEvent(request.SessionId, frame);
-            if (domainEvent is OmpCompletedEvent && Volatile.Read(ref cancellationRequested) != 0)
-            {
-                domainEvent = new OmpErrorEvent(request.SessionId, DateTimeOffset.UtcNow, "OMP run cancelled.", true);
-            }
-            if (domainEvent is OmpMessageEvent message)
-            {
-                assistantText.Append(message.Text);
-            }
+            Interlocked.Exchange(ref cancellationRequested, 0);
+            yield return new OmpErrorEvent(request.SessionId, DateTimeOffset.UtcNow, "OMP run cancelled before prompt dispatch.", true);
+            yield break;
+        }
 
-            if (domainEvent is OmpCompletedEvent completed &&
-                string.Equals(completed.ResultJson, "null", StringComparison.Ordinal) &&
-                assistantText.Length > 0)
-            {
-                domainEvent = completed with { ResultJson = assistantText.ToString() };
-            }
-
-            if (domainEvent is null)
-            {
-                continue;
-            }
-
+        var events = await RunToListAsync(request, cancellationToken).ConfigureAwait(false);
+        foreach (var domainEvent in events)
+        {
             yield return domainEvent;
-            if (domainEvent is OmpCompletedEvent or OmpErrorEvent)
+        }
+    }
+
+    private async Task<IReadOnlyList<OmpEvent>> RunToListAsync(
+        OmpRunRequest request,
+        CancellationToken cancellationToken)
+    {
+        using var timeoutCts = request.Timeout is { } timeout && timeout > TimeSpan.Zero
+            ? new CancellationTokenSource(timeout)
+            : null;
+        using var runCts = timeoutCts is null
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+            : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+        var runToken = runCts.Token;
+        var events = new List<OmpEvent>();
+        var prompt = $"Work exclusively in the repository at '{request.WorkingDirectory}'.\n\n{request.Prompt}";
+        try
+        {
+            var response = await transport.SendCommandAsync(
+                "prompt",
+                new JsonObject { ["message"] = prompt },
+                runToken).ConfigureAwait(false);
+            await RequireSuccessAsync(response).ConfigureAwait(false);
+            var assistantText = new System.Text.StringBuilder();
+
+            await foreach (var frame in transport.Frames.WithCancellation(runToken).ConfigureAwait(false))
             {
-                yield break;
+                var domainEvent = BuildEvent(request.SessionId, frame);
+                if (domainEvent is OmpCompletedEvent && Volatile.Read(ref cancellationRequested) != 0)
+                {
+                    domainEvent = new OmpErrorEvent(request.SessionId, DateTimeOffset.UtcNow, "OMP run cancelled.", true);
+                }
+                if (domainEvent is OmpMessageEvent message)
+                {
+                    assistantText.Append(message.Text);
+                }
+
+                if (domainEvent is OmpCompletedEvent completed &&
+                    string.Equals(completed.ResultJson, "null", StringComparison.Ordinal) &&
+                    assistantText.Length > 0)
+                {
+                    domainEvent = completed with { ResultJson = assistantText.ToString() };
+                }
+
+                if (domainEvent is null)
+                {
+                    continue;
+                }
+
+                events.Add(domainEvent);
+                if (domainEvent is OmpCompletedEvent or OmpErrorEvent)
+                {
+                    break;
+                }
             }
         }
+        catch (OperationCanceledException) when (
+            timeoutCts?.IsCancellationRequested == true && !cancellationToken.IsCancellationRequested)
+        {
+            Interlocked.Exchange(ref cancellationRequested, 1);
+            await RequestAbortAsync(suppressErrors: true, cancellationToken: cancellationToken).ConfigureAwait(false);
+            Interlocked.Exchange(ref cancellationRequested, 0);
+            events.Add(new OmpErrorEvent(request.SessionId, DateTimeOffset.UtcNow, "OMP run timed out.", true));
+        }
+
+        return events;
     }
 
     public async ValueTask CancelAsync(string sessionId, CancellationToken cancellationToken)
     {
         Interlocked.Exchange(ref cancellationRequested, 1);
-        await RequireSuccessAsync(
-            await transport.SendCommandAsync("abort", null, cancellationToken).ConfigureAwait(false))
-            .ConfigureAwait(false);
+        await RequestAbortAsync(suppressErrors: false, cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task RequestAbortAsync(bool suppressErrors = false, CancellationToken cancellationToken = default)
+    {
+        using var abortCts = cancellationToken.CanBeCanceled
+            ? null
+            : new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var token = abortCts?.Token ?? cancellationToken;
+        try
+        {
+            await RequireSuccessAsync(
+                await transport.SendCommandAsync("abort", null, token).ConfigureAwait(false))
+                .ConfigureAwait(false);
+        }
+        catch (Exception) when (suppressErrors || !token.IsCancellationRequested)
+        {
+            // A timeout/cancel path must remain bounded even when OMP is already gone.
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -102,6 +160,12 @@ public sealed class OmpProcessClient(NdjsonRpcTransport transport, TimeSpan shut
         var timestamp = DateTimeOffset.UtcNow;
         return type switch
         {
+            "response" when frame["success"]?.GetValue<bool>() == false =>
+                new OmpErrorEvent(
+                    sessionId,
+                    timestamp,
+                    frame["error"]?.GetValue<string>() ?? "OMP command failed.",
+                    frame["cancelled"]?.GetValue<bool>() ?? false),
             "message_update" => BuildMessage(sessionId, timestamp, frame),
             "tool_execution_start" => new OmpToolCallEvent(
                 sessionId,
@@ -125,6 +189,11 @@ public sealed class OmpProcessClient(NdjsonRpcTransport transport, TimeSpan shut
             _ => null,
         };
     }
+
+    private static string ExtractSessionFile(JsonObject state, string fallback) =>
+        state["sessionFile"]?.GetValue<string>()
+        ?? state["sessionPath"]?.GetValue<string>()
+        ?? fallback;
 
     private static OmpMessageEvent? BuildMessage(string sessionId, DateTimeOffset timestamp, JsonObject frame)
     {

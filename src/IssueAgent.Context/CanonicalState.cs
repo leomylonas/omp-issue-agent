@@ -22,6 +22,7 @@ public sealed record CanonicalStateDocument
     public int? ApprovedPlanRevision { get; init; }
     public string? PlanInputHash { get; init; }
     public required string OmpSessionId { get; init; }
+    public string? OmpSessionFile { get; init; }
     public required string Branch { get; init; }
     public required string TargetBranch { get; init; }
     public required string BaseCommit { get; init; }
@@ -75,6 +76,7 @@ public static partial class CanonicalStateSerializer
         ApprovedPlanRevision = state.ApprovedPlanRevision,
         PlanInputHash = state.PlanInputHash,
         OmpSessionId = state.OmpSessionId,
+        OmpSessionFile = state.OmpSessionFile,
         Branch = state.Branch,
         TargetBranch = state.TargetBranch,
         BaseCommit = state.BaseCommit,
@@ -110,7 +112,8 @@ public static partial class CanonicalStateSerializer
             targetBranch,
             baseCommit,
             document.UpdatedAt,
-            document.PlanInputHash);
+            document.PlanInputHash,
+            document.OmpSessionFile);
     }
 
     [GeneratedRegex(@"^[A-Za-z0-9]([A-Za-z0-9._/-]*[A-Za-z0-9])?$")]

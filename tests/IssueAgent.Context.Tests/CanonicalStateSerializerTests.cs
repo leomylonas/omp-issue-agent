@@ -31,6 +31,19 @@ public sealed class CanonicalStateSerializerTests
     }
 
     [Fact]
+    public void RoundTripPreservesDistinctOmpSessionFile()
+    {
+        var state = CreateState(WorkflowPhase.Planned, WorkflowOperationalState.Waiting, WaitingReason.PlanApproval)
+            with { OmpSessionFile = "/data/omp/session-123.jsonl" };
+
+        var roundTripped = CanonicalStateSerializer.ToWorkflowState(
+            CanonicalStateSerializer.Deserialize(
+                CanonicalStateSerializer.Serialize(CanonicalStateSerializer.ToDocument(state, null))));
+
+        Assert.Equal("omp-session-123", roundTripped.OmpSessionId);
+        Assert.Equal("/data/omp/session-123.jsonl", roundTripped.OmpSessionFile);
+    }
+    [Fact]
     public void ToWorkflowStateRejectsUnsupportedVersion()
     {
         var document = CanonicalStateSerializer.ToDocument(CreateState(WorkflowPhase.Planning, WorkflowOperationalState.Working, null), null) with { Version = 2 };

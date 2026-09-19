@@ -57,11 +57,16 @@ public sealed class FakeOmpClient : IOmpClient
         return ValueTask.FromResult(new OmpSession(sessionId, role));
     }
 
-    public ValueTask<OmpSession> ResumeSessionAsync(string sessionId, CancellationToken cancellationToken)
+    public ValueTask<OmpSession> ResumeSessionAsync(
+        string sessionId,
+        string? sessionFile,
+        CancellationToken cancellationToken)
     {
         ResumedSessionIds.Add(sessionId);
-        return ValueTask.FromResult(new OmpSession(sessionId, "resumed"));
+        return ValueTask.FromResult(new OmpSession(sessionId, "resumed", sessionFile));
     }
+    public ValueTask<OmpSession> ResumeSessionAsync(string sessionId, CancellationToken cancellationToken) =>
+        ResumeSessionAsync(sessionId, sessionFile: null, cancellationToken);
 
     public async IAsyncEnumerable<OmpEvent> RunAsync(OmpRunRequest request, [EnumeratorCancellation] CancellationToken cancellationToken)
     {

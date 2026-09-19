@@ -29,6 +29,7 @@ def main():
         "maxReassembledFrameBytes": 67108864,
     })
     session_id = "fake-session-1"
+    session_file = "/tmp/fake-session-1.jsonl"
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -40,12 +41,15 @@ def main():
         if command == "new_session":
             response(request_id, command, {"cancelled": False})
         elif command == "switch_session":
-            session_id = request.get("sessionPath", session_id)
+            session_file = request.get("sessionPath", session_file)
+            session_id = "existing-session"
             response(request_id, command, {"cancelled": False})
         elif command == "get_state":
-            response(request_id, command, {"sessionId": session_id})
+            response(request_id, command, {"sessionId": session_id, "sessionFile": session_file})
         elif command == "prompt":
             response(request_id, command, {"agentInvoked": True})
+            if "hang" in request.get("message", ""):
+                continue
             send({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": '{"summary":"done"}'}})
             send({
                 "type": "tool_execution_start",

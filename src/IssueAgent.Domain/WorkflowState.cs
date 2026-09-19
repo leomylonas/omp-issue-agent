@@ -93,7 +93,8 @@ public sealed record WorkflowState(
     string TargetBranch,
     string BaseCommit,
     DateTimeOffset UpdatedAt,
-    string? PlanInputHash = null)
+    string? PlanInputHash = null,
+    string? OmpSessionFile = null)
 {
     public void EnsureValid()
     {

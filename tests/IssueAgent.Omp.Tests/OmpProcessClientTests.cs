@@ -7,13 +7,14 @@ public sealed class OmpProcessClientTests
     private static readonly string ScriptPath = Path.Combine(AppContext.BaseDirectory, "fake_omp_server.py");
 
     [Fact]
-    public async Task CreateSessionAsyncReturnsSessionIdFromServer()
+    public async Task CreateSessionAsyncReturnsIdAndPersistedSessionFileFromServer()
     {
         await using var client = StartClient();
 
         var session = await client.CreateSessionAsync("plan", CancellationToken.None);
 
         Assert.Equal("fake-session-1", session.SessionId);
+        Assert.Equal("/tmp/fake-session-1.jsonl", session.SessionFile);
         Assert.Equal("plan", session.Role);
     }
 
@@ -22,9 +23,10 @@ public sealed class OmpProcessClientTests
     {
         await using var client = StartClient();
 
-        var session = await client.ResumeSessionAsync("existing-session", CancellationToken.None);
+        var session = await client.ResumeSessionAsync("existing-session", "/persisted/session.jsonl", CancellationToken.None);
 
         Assert.Equal("existing-session", session.SessionId);
+        Assert.Equal("/persisted/session.jsonl", session.SessionFile);
     }
 
     [Fact]
@@ -62,6 +64,36 @@ public sealed class OmpProcessClientTests
         var toolResult = events.OfType<OmpToolResultEvent>().Single();
         Assert.Equal(toolCall.ToolCallId, toolResult.ToolCallId);
         Assert.False(toolResult.IsError);
+    }
+
+    [Fact]
+    public async Task RunAsyncTimeoutRequestsAbortAndReturnsCancellationError()
+    {
+        await using var client = StartClient();
+        var session = await client.CreateSessionAsync("plan", CancellationToken.None);
+
+        var events = await CollectAsync(client.RunAsync(
+            new OmpRunRequest(session.SessionId, "/tmp", "hang", new Dictionary<string, string>(), TimeSpan.FromMilliseconds(50)),
+            CancellationToken.None));
+
+        var error = Assert.IsType<OmpErrorEvent>(Assert.Single(events));
+        Assert.True(error.WasCancelled);
+        Assert.Contains("timed out", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+    [Fact]
+    public async Task CancellationBeforePromptDispatchPreventsPrompt()
+    {
+        await using var client = StartClient();
+        var session = await client.CreateSessionAsync("plan", CancellationToken.None);
+        await client.CancelAsync(session.SessionId, CancellationToken.None);
+
+        var events = await CollectAsync(client.RunAsync(
+            new OmpRunRequest(session.SessionId, "/tmp", "plan this issue", new Dictionary<string, string>()),
+            CancellationToken.None));
+
+        var error = Assert.IsType<OmpErrorEvent>(Assert.Single(events));
+        Assert.True(error.WasCancelled);
+        Assert.Contains("before prompt", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -119,6 +151,14 @@ public sealed class OmpProcessClientTests
         Assert.True(created["success"]?.GetValue<bool>());
         var stateResponse = await transport.SendCommandAsync("get_state", null, CancellationToken.None);
         Assert.True(stateResponse["data"]?["sessionId"]?.GetValue<string>() is { Length: > 0 });
+        var sessionFile = stateResponse["data"]?["sessionFile"]?.GetValue<string>()
+            ?? stateResponse["data"]?["sessionPath"]?.GetValue<string>();
+        Assert.True(sessionFile is { Length: > 0 });
+        var resumed = await transport.SendCommandAsync(
+            "switch_session",
+            new JsonObject { ["sessionPath"] = sessionFile },
+            CancellationToken.None);
+        Assert.True(resumed["success"]?.GetValue<bool>());
         var aborted = await transport.SendCommandAsync("abort", null, CancellationToken.None);
         Assert.True(aborted["success"]?.GetValue<bool>());
     }

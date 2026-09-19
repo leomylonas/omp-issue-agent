@@ -41,7 +41,10 @@ public sealed class ObservableOmpClient(IOmpClient inner, IssueAgentMetrics metr
         }
     }
 
-    public async ValueTask<OmpSession> ResumeSessionAsync(string sessionId, CancellationToken cancellationToken)
+    public async ValueTask<OmpSession> ResumeSessionAsync(
+        string sessionId,
+        string? sessionFile,
+        CancellationToken cancellationToken)
     {
         using var activity = IssueAgentActivitySource.StartOmpOperation("session.resume", sessionId);
         var tags = new KeyValuePair<string, object?>[] { new(LogContextFields.Operation, "session.resume") };
@@ -49,7 +52,7 @@ public sealed class ObservableOmpClient(IOmpClient inner, IssueAgentMetrics metr
         var stopwatch = Stopwatch.StartNew();
         try
         {
-            return await inner.ResumeSessionAsync(sessionId, cancellationToken).ConfigureAwait(false);
+            return await inner.ResumeSessionAsync(sessionId, sessionFile, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -67,6 +70,8 @@ public sealed class ObservableOmpClient(IOmpClient inner, IssueAgentMetrics metr
             metrics.OmpDuration.Record(stopwatch.Elapsed.TotalSeconds, tags);
         }
     }
+    public ValueTask<OmpSession> ResumeSessionAsync(string sessionId, CancellationToken cancellationToken) =>
+        ResumeSessionAsync(sessionId, sessionFile: null, cancellationToken);
 
     public async IAsyncEnumerable<OmpEvent> RunAsync(OmpRunRequest request, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
