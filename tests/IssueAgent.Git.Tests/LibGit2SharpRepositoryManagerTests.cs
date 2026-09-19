@@ -92,8 +92,8 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
         await manager.CreateWorktreeAsync("repo-4", "wt-1", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
 
         Assert.True(File.Exists(Path.Combine(worktreePath, "README.md")));
-        Assert.Equal(baseCommit, await manager.GetHeadCommitAsync(worktreePath, CancellationToken.None));
-        Assert.False(await manager.HasUncommittedChangesAsync(worktreePath, CancellationToken.None));
+        Assert.Equal(baseCommit, await manager.GetHeadCommitAsync("repo-4", worktreePath, CancellationToken.None));
+        Assert.False(await manager.HasUncommittedChangesAsync("repo-4", worktreePath, CancellationToken.None));
     }
 
     [Fact]
@@ -105,11 +105,11 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
         await manager.CreateWorktreeAsync("repo-5", "wt-1", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
 
         File.WriteAllText(Path.Combine(worktreePath, "scratch.txt"), "dirty");
-        Assert.True(await manager.HasUncommittedChangesAsync(worktreePath, CancellationToken.None));
+        Assert.True(await manager.HasUncommittedChangesAsync("repo-5", worktreePath, CancellationToken.None));
 
-        await manager.ResetWorktreeAsync(worktreePath, baseCommit, CancellationToken.None);
+        await manager.ResetWorktreeAsync("repo-5", worktreePath, baseCommit, CancellationToken.None);
 
-        Assert.False(await manager.HasUncommittedChangesAsync(worktreePath, CancellationToken.None));
+        Assert.False(await manager.HasUncommittedChangesAsync("repo-5", worktreePath, CancellationToken.None));
         Assert.False(File.Exists(Path.Combine(worktreePath, "scratch.txt")));
     }
 
@@ -160,7 +160,7 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
         }
 
         await manager.FetchAsync("repo-7", TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
-        var merged = await manager.TryMergeAsync(worktreePath, nonConflictingCommit, TempGitFixtures.TestIdentity, CancellationToken.None);
+        var merged = await manager.TryMergeAsync("repo-7", worktreePath, nonConflictingCommit, TempGitFixtures.TestIdentity, CancellationToken.None);
 
         Assert.True(merged);
         Assert.True(File.Exists(Path.Combine(worktreePath, "unrelated.txt")));
@@ -192,7 +192,7 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
         }
 
         await manager.FetchAsync("repo-8", TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
-        var merged = await manager.TryMergeAsync(worktreePath, conflictingCommit, TempGitFixtures.TestIdentity, CancellationToken.None);
+        var merged = await manager.TryMergeAsync("repo-8", worktreePath, conflictingCommit, TempGitFixtures.TestIdentity, CancellationToken.None);
 
         Assert.False(merged);
     }
@@ -223,7 +223,7 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
         }
 
         await manager.FetchAsync("repo-9", TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
-        var rebased = await manager.TryRebaseOntoAsync(worktreePath, newBaseCommit, TempGitFixtures.TestIdentity, CancellationToken.None);
+        var rebased = await manager.TryRebaseOntoAsync("repo-9", worktreePath, newBaseCommit, TempGitFixtures.TestIdentity, CancellationToken.None);
 
         Assert.True(rebased);
         Assert.True(File.Exists(Path.Combine(worktreePath, "unrelated.txt")));
@@ -247,7 +247,7 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
             commitSha = worktreeRepo.Commit("Publish", signature, signature).Sha;
         }
 
-        await manager.PushAsync(worktreePath, "agent/issue-1", TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        await manager.PushAsync("repo-10", worktreePath, "agent/issue-1", TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
 
         using var bareRepo = new Repository(bareRemotePath);
         var remoteBranch = bareRepo.Branches["agent/issue-1"];
@@ -305,7 +305,7 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
         var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
         await manager.CreateWorktreeAsync("repo-13", "wt-1", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
 
-        await manager.UpdateSubmodulesAsync(worktreePath, _ => null, CancellationToken.None);
+        await manager.UpdateSubmodulesAsync("repo-13", worktreePath, _ => null, CancellationToken.None);
 
         Assert.True(File.Exists(Path.Combine(worktreePath, "lib", "dependency", "README.md")));
     }

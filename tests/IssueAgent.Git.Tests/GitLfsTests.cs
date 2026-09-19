@@ -29,7 +29,7 @@ public sealed class GitLfsTests : IDisposable
         var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
         await manager.CreateWorktreeAsync("lfs-repo-3", "wt-1", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
 
-        await manager.MaterializeLfsContentAsync(worktreePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        await manager.MaterializeLfsContentAsync("lfs-repo-3", worktreePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
 
         using var repo = new Repository(worktreePath);
         var hooksDir = Path.Combine(repo.Info.Path, "issueagent-disabled-hooks");
@@ -51,7 +51,7 @@ public sealed class GitLfsTests : IDisposable
         var pointerContent = File.ReadAllText(assetPath);
         Assert.Contains("git-lfs", pointerContent, StringComparison.Ordinal);
 
-        await manager.MaterializeLfsContentAsync(worktreePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        await manager.MaterializeLfsContentAsync("lfs-repo-1", worktreePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
 
         var materializedBytes = File.ReadAllBytes(assetPath);
         Assert.Equal(expectedContent, materializedBytes);
@@ -64,7 +64,7 @@ public sealed class GitLfsTests : IDisposable
         await manager.EnsureBareRepositoryAsync("lfs-repo-2", bareRemotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
         var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
         await manager.CreateWorktreeAsync("lfs-repo-2", "wt-1", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
-        await manager.MaterializeLfsContentAsync(worktreePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        await manager.MaterializeLfsContentAsync("lfs-repo-2", worktreePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
 
         var newAssetBytes = new byte[2048];
         Random.Shared.NextBytes(newAssetBytes);
@@ -75,8 +75,8 @@ public sealed class GitLfsTests : IDisposable
         RunGitCli(worktreePath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Add new LFS asset");
         var commitSha = new Repository(worktreePath).Head.Tip.Sha;
 
-        await manager.UploadLfsObjectsAsync(worktreePath, "agent/issue-1", TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
-        await manager.PushAsync(worktreePath, "agent/issue-1", TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        await manager.UploadLfsObjectsAsync("lfs-repo-2", worktreePath, "agent/issue-1", TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        await manager.PushAsync("lfs-repo-2", worktreePath, "agent/issue-1", TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
 
         using var bareRepo = new Repository(bareRemotePath);
         var remoteBranch = bareRepo.Branches["agent/issue-1"];

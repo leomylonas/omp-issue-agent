@@ -29,13 +29,13 @@ public sealed partial class GitSshTransport
         RunGit(["fetch", "--all", "--prune"], bareRepositoryPath, GetOriginUrl(bareRepositoryPath), authentication);
 
     public static void Push(string worktreePath, string branchName, GitAuthentication authentication) =>
-        RunGit(["push", "origin", $"{branchName}:{branchName}"], worktreePath, GetOriginUrl(worktreePath), authentication);
+        RunGit(["push", "origin", "--", $"{branchName}:{branchName}"], worktreePath, GetOriginUrl(worktreePath), authentication);
 
     private static string GetOriginUrl(string workingDirectory)
     {
         using var process = Process.Start(new ProcessStartInfo("git")
         {
-            ArgumentList = { "-C", workingDirectory, "remote", "get-url", "origin" },
+            ArgumentList = { "-c", "core.hooksPath=/dev/null", "-C", workingDirectory, "remote", "get-url", "origin" },
             RedirectStandardOutput = true,
             UseShellExecute = false,
         }) ?? throw new InvalidOperationException("Failed to start git process.");
@@ -66,6 +66,8 @@ public sealed partial class GitSshTransport
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
             };
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add("core.hooksPath=/dev/null");
             foreach (var argument in arguments)
             {
                 startInfo.ArgumentList.Add(argument);
@@ -159,7 +161,12 @@ public sealed partial class GitSshTransport
         }) ?? throw new InvalidOperationException("Failed to start ssh-keyscan.");
 
         var output = process.StandardOutput.ReadToEnd();
+        var stderr = process.StandardError.ReadToEnd();
         process.WaitForExit();
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"ssh-keyscan failed for '{host}:{port}' with exit code {process.ExitCode}: {stderr.Trim()}");
+        }
 
         var matchedLines = new List<string>();
         foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
@@ -169,13 +176,22 @@ public sealed partial class GitSshTransport
                 continue;
             }
 
-            var parts = line.Split(' ', 3);
+            var parts = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length < 3)
             {
                 continue;
             }
 
-            var keyBlob = Convert.FromBase64String(parts[2]);
+            byte[] keyBlob;
+            try
+            {
+                keyBlob = Convert.FromBase64String(parts[2]);
+            }
+            catch (FormatException)
+            {
+                continue;
+            }
+
             var fingerprint = "sha256:" + Convert.ToBase64String(SHA256.HashData(keyBlob)).TrimEnd('=');
             if (trust.Fingerprints.Any(f => string.Equals(NormalizeFingerprint(f), NormalizeFingerprint(fingerprint), StringComparison.Ordinal)))
             {
@@ -191,8 +207,13 @@ public sealed partial class GitSshTransport
         return string.Join('\n', matchedLines) + "\n";
     }
 
-    private static string NormalizeFingerprint(string fingerprint) =>
-        WhitespacePattern().Replace(fingerprint, string.Empty).ToLowerInvariant();
+    private static string NormalizeFingerprint(string fingerprint)
+    {
+        var compact = WhitespacePattern().Replace(fingerprint, string.Empty).TrimStart(':');
+        return compact.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)
+            ? compact["sha256:".Length..].TrimStart(':')
+            : compact;
+    }
 
     private static string Quote(string value) => "\"" + value.Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
 

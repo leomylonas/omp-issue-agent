@@ -8,9 +8,19 @@ namespace IssueAgent.Git;
 /// augmenting system trust in-process without touching the system/root certificate store.</summary>
 public static class AdditionalCaTrustStore
 {
-    public static bool IsTrusted(Certificate certificate, IReadOnlyList<string> additionalCaCertificatePaths)
+    public static bool IsTrusted(Certificate certificate, IReadOnlyList<string> additionalCaCertificatePaths, string? host) =>
+        certificate is CertificateX509 x509Certificate &&
+        IsTrusted(x509Certificate.Certificate, additionalCaCertificatePaths, host);
+
+    public static bool IsTrusted(X509Certificate certificate, IReadOnlyList<string> additionalCaCertificatePaths, string? host = null)
     {
-        if (certificate is not CertificateX509 x509Certificate || additionalCaCertificatePaths.Count == 0)
+        if (additionalCaCertificatePaths.Count == 0)
+        {
+            return false;
+        }
+
+        var leaf = new X509Certificate2(certificate);
+        if (!string.IsNullOrEmpty(host) && !CertificateMatchesHost(leaf, host))
         {
             return false;
         }
@@ -23,7 +33,45 @@ public static class AdditionalCaTrustStore
             chain.ChainPolicy.CustomTrustStore.Add(X509CertificateLoader.LoadCertificateFromFile(caPath));
         }
 
-        return chain.Build(new X509Certificate2(x509Certificate.Certificate));
+        return chain.Build(leaf);
+    }
+
+    private static readonly char[] SanSeparators = [',', '\n'];
+
+    /// <summary>Matches the leaf certificate's Subject Alternative Names (falling back to the
+    /// subject common name) against <paramref name="host"/>, so a CA trusted for one host cannot be
+    /// used to impersonate an unrelated host.</summary>
+    private static bool CertificateMatchesHost(X509Certificate2 leaf, string host)
+    {
+        var sanExtension = leaf.Extensions["2.5.29.17"];
+        if (sanExtension is not null)
+        {
+            foreach (var line in sanExtension.Format(false).Split(SanSeparators, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+            {
+                var separatorIndex = line.IndexOf('=');
+                if (separatorIndex < 0) continue;
+                var value = line[(separatorIndex + 1)..].Trim();
+                if (MatchesDnsPattern(value, host)) return true;
+            }
+
+            return false;
+        }
+
+        return MatchesDnsPattern(leaf.GetNameInfo(X509NameType.DnsName, false), host);
+    }
+
+    private static bool MatchesDnsPattern(string pattern, string host)
+    {
+        if (string.IsNullOrEmpty(pattern)) return false;
+        if (pattern.StartsWith("*.", StringComparison.Ordinal))
+        {
+            var suffix = pattern[1..];
+            return host.EndsWith(suffix, StringComparison.OrdinalIgnoreCase) &&
+                   host.Length > suffix.Length &&
+                   !host[..^suffix.Length].Contains('.', StringComparison.Ordinal);
+        }
+
+        return string.Equals(pattern, host, StringComparison.OrdinalIgnoreCase);
     }
 }
 
@@ -31,14 +79,18 @@ public static class AdditionalCaTrustStore
 /// pinned fingerprints.</summary>
 public static class PinnedCertificateVerifier
 {
-    public static bool Matches(Certificate certificate, IReadOnlyList<string> fingerprints)
+    public static bool Matches(Certificate certificate, IReadOnlyList<string> fingerprints) =>
+        certificate is CertificateX509 x509Certificate &&
+        Matches(x509Certificate.Certificate, fingerprints);
+
+    public static bool Matches(X509Certificate certificate, IReadOnlyList<string> fingerprints)
     {
-        if (certificate is not CertificateX509 x509Certificate || fingerprints.Count == 0)
+        if (fingerprints.Count == 0)
         {
             return false;
         }
 
-        var actual = ComputeSha256Fingerprint(x509Certificate.Certificate.GetRawCertData());
+        var actual = ComputeSha256Fingerprint(certificate.GetRawCertData());
         return fingerprints.Any(configured => FingerprintsEqual(configured, actual));
     }
 

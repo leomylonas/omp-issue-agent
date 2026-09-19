@@ -40,7 +40,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
             {
                 IsBare = true,
                 Checkout = false,
-                FetchOptions = { CredentialsProvider = CredentialsHandlerFor(authentication), CertificateCheck = CertificateCheckHandlerFor(authentication.TlsTrust) },
+                FetchOptions = { CredentialsProvider = CredentialsHandlerFor(authentication, TryGetHost(cloneUrl)), CertificateCheck = CertificateCheckHandlerFor(authentication.TlsTrust) },
             };
             Repository.Clone(cloneUrl, path, options);
         }
@@ -63,7 +63,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         var refSpecs = remote.FetchRefSpecs.Select(r => r.Specification);
         Commands.Fetch(repo, remote.Name, refSpecs, new FetchOptions
         {
-            CredentialsProvider = CredentialsHandlerFor(authentication),
+            CredentialsProvider = CredentialsHandlerFor(authentication, TryGetHost(remote.Url)),
             CertificateCheck = CertificateCheckHandlerFor(authentication.TlsTrust),
         }, logMessage: null);
         return ValueTask.CompletedTask;
@@ -79,6 +79,15 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         }
 
         return ValueTask.FromResult(branch.Tip.Sha);
+    }
+
+    public ValueTask<string?> TryResolveRemoteBranchCommitAsync(
+        string repositoryId,
+        string branchName,
+        CancellationToken cancellationToken)
+    {
+        using var repo = new Repository(BareRepositoryPath(repositoryId));
+        return ValueTask.FromResult(repo.Branches[$"origin/{branchName}"]?.Tip.Sha);
     }
 
     public ValueTask CreateWorktreeAsync(
@@ -107,7 +116,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask ResetWorktreeAsync(string worktreePath, string commit, CancellationToken cancellationToken)
+    public ValueTask ResetWorktreeAsync(string repositoryId, string worktreePath, string commit, CancellationToken cancellationToken)
     {
         using var repo = new Repository(worktreePath);
         var target = (Commit)repo.Lookup(commit, ObjectType.Commit);
@@ -116,20 +125,20 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask<bool> HasUncommittedChangesAsync(string worktreePath, CancellationToken cancellationToken)
+    public ValueTask<bool> HasUncommittedChangesAsync(string repositoryId, string worktreePath, CancellationToken cancellationToken)
     {
         using var repo = new Repository(worktreePath);
         var status = repo.RetrieveStatus(new StatusOptions());
         return ValueTask.FromResult(status.IsDirty);
     }
 
-    public ValueTask<string> GetHeadCommitAsync(string worktreePath, CancellationToken cancellationToken)
+    public ValueTask<string> GetHeadCommitAsync(string repositoryId, string worktreePath, CancellationToken cancellationToken)
     {
         using var repo = new Repository(worktreePath);
         return ValueTask.FromResult(repo.Head.Tip.Sha);
     }
 
-    public ValueTask UpdateSubmodulesAsync(string worktreePath, Func<string, GitAuthentication?> authenticationResolver, CancellationToken cancellationToken)
+    public ValueTask UpdateSubmodulesAsync(string repositoryId, string worktreePath, Func<string, GitAuthentication?> authenticationResolver, CancellationToken cancellationToken)
     {
         using var repo = new Repository(worktreePath);
         foreach (var submodule in repo.Submodules)
@@ -142,7 +151,11 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
                 repo.Submodules.Update(submodule.Name, new SubmoduleUpdateOptions
                 {
                     Init = true,
-                    FetchOptions = { CredentialsProvider = CredentialsHandlerFor(authentication ?? GitAuthentication.Anonymous(TlsTrust.System)) },
+                    FetchOptions =
+                    {
+                        CredentialsProvider = CredentialsHandlerFor(authentication ?? GitAuthentication.Anonymous(TlsTrust.System), host),
+                        CertificateCheck = CertificateCheckHandlerFor((authentication ?? GitAuthentication.Anonymous(TlsTrust.System)).TlsTrust),
+                    },
                 });
             }
             catch (LibGit2SharpException) when (authentication is null)
@@ -158,7 +171,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask<bool> TryRebaseOntoAsync(string worktreePath, string ontoCommit, GitIdentity identity, CancellationToken cancellationToken)
+    public ValueTask<bool> TryRebaseOntoAsync(string repositoryId, string worktreePath, string ontoCommit, GitIdentity identity, CancellationToken cancellationToken)
     {
         using var repo = new Repository(worktreePath);
         var currentBranch = repo.Branches[repo.Head.FriendlyName];
@@ -189,7 +202,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         }
     }
 
-    public ValueTask<bool> TryMergeAsync(string worktreePath, string commit, GitIdentity identity, CancellationToken cancellationToken)
+    public ValueTask<bool> TryMergeAsync(string repositoryId, string worktreePath, string commit, GitIdentity identity, CancellationToken cancellationToken)
     {
         using var repo = new Repository(worktreePath);
         var target = (Commit)repo.Lookup(commit, ObjectType.Commit);
@@ -199,7 +212,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         return ValueTask.FromResult(result.Status != MergeStatus.Conflicts);
     }
 
-    public ValueTask PushAsync(string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken)
+    public ValueTask PushAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken)
     {
         if (authentication.Mode == GitAuthenticationMode.Ssh)
         {
@@ -216,7 +229,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         var remote = repo.Network.Remotes["origin"];
         repo.Network.Push(remote, $"refs/heads/{branchName}:refs/heads/{branchName}", new PushOptions
         {
-            CredentialsProvider = CredentialsHandlerFor(authentication),
+            CredentialsProvider = CredentialsHandlerFor(authentication, TryGetHost(remote.Url)),
             CertificateCheck = CertificateCheckHandlerFor(authentication.TlsTrust),
         });
         return ValueTask.CompletedTask;
@@ -247,22 +260,19 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         {
             repo.Branches.Remove(branch);
         }
-
         return ValueTask.CompletedTask;
     }
 
     public bool WorktreeRequiresLfs(string worktreePath) => GitLfsRunner.RepositoryRequiresLfs(worktreePath);
 
-    public ValueTask MaterializeLfsContentAsync(string worktreePath, GitAuthentication authentication, CancellationToken cancellationToken)
+    public async ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, CancellationToken cancellationToken)
     {
-        GitLfsRunner.MaterializeContent(worktreePath, authentication);
-        return ValueTask.CompletedTask;
+        await GitLfsRunner.MaterializeContentAsync(worktreePath, authentication, cancellationToken).ConfigureAwait(false);
     }
 
-    public ValueTask UploadLfsObjectsAsync(string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken)
+    public async ValueTask UploadLfsObjectsAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken)
     {
-        GitLfsRunner.UploadObjects(worktreePath, branchName, authentication);
-        return ValueTask.CompletedTask;
+        await GitLfsRunner.UploadObjectsAsync(worktreePath, branchName, authentication, cancellationToken).ConfigureAwait(false);
     }
 
     private string BareRepositoryPath(string repositoryId) => Path.Combine(reposRootPath, repositoryId);
@@ -286,15 +296,29 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         repo.Config.Set("filter.lfs.required", true, ConfigurationLevel.Local);
     }
 
-    private static string? TryGetHost(string url) => Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : null;
 
-    private static CredentialsHandler CredentialsHandlerFor(GitAuthentication authentication) =>
-        (url, usernameFromUrl, types) => authentication.Mode switch
+    private static string? TryGetHost(string url) => GitUrlHost.TryGetHost(url);
+
+    /// <summary>Returns credentials for <paramref name="authentication"/> only when libgit2's
+    /// callback URL host matches <paramref name="expectedHost"/> (specification §11: never forward
+    /// credentials to an unexpected host, including via a followed redirect). A <see langword="null"/>
+    /// <paramref name="expectedHost"/> means the caller could not determine an expected host and no
+    /// credentials are ever returned.</summary>
+    private static CredentialsHandler CredentialsHandlerFor(GitAuthentication authentication, string? expectedHost) =>
+        (url, usernameFromUrl, types) =>
         {
-            GitAuthenticationMode.ProviderToken or GitAuthenticationMode.Token =>
-                new UsernamePasswordCredentials { Username = authentication.HttpsUsername ?? "x-access-token", Password = authentication.HttpsToken! },
-            GitAuthenticationMode.Anonymous => new DefaultCredentials(),
-            _ => throw new InvalidOperationException($"Unsupported credential mode '{authentication.Mode}' for HTTPS transport."),
+            if (expectedHost is null || !string.Equals(TryGetHost(url), expectedHost, StringComparison.OrdinalIgnoreCase))
+            {
+                return new DefaultCredentials();
+            }
+
+            return authentication.Mode switch
+            {
+                GitAuthenticationMode.ProviderToken or GitAuthenticationMode.Token =>
+                    new UsernamePasswordCredentials { Username = authentication.HttpsUsername ?? "x-access-token", Password = authentication.HttpsToken! },
+                GitAuthenticationMode.Anonymous => new DefaultCredentials(),
+                _ => throw new InvalidOperationException($"Unsupported credential mode '{authentication.Mode}' for HTTPS transport."),
+            };
         };
 
     private static CertificateCheckHandler CertificateCheckHandlerFor(TlsTrust tlsTrust) =>
@@ -302,7 +326,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         {
             TlsTrustMode.System => validByDefault,
             TlsTrustMode.None => true,
-            TlsTrustMode.SystemPlusAdditionalCa => validByDefault || AdditionalCaTrustStore.IsTrusted(certificate, tlsTrust.AdditionalCaCertificatePaths),
+            TlsTrustMode.SystemPlusAdditionalCa => validByDefault || AdditionalCaTrustStore.IsTrusted(certificate, tlsTrust.AdditionalCaCertificatePaths, host),
             TlsTrustMode.Pinned => PinnedCertificateVerifier.Matches(certificate, tlsTrust.Fingerprints),
             _ => false,
         };
