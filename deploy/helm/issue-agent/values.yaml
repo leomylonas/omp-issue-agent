@@ -12,15 +12,20 @@ workspace:
 
 omp:
   config:
-    # Config files are mounted read-only and exposed to OMP through PI_CONFIG_FILES.
+    # OMP consumes a platform path-list of files, not a directory.
     existingConfigMap: ""
     existingConfigMapChecksum: ""
     mountPath: /etc/omp
-    data: {}
+    file: config.yml
+    data:
+      config.yml: "{}"
   authBroker:
     enabled: false
+    # The IssueAgent image contains the pinned OMP binary and is also the
+    # bundled broker image. Override only when publishing a separately built
+    # image with the same `omp auth-broker serve` contract.
     image:
-      repository: ""
+      repository: ghcr.io/leomylonas/omp-issue-agent
       tag: ""
     existingClaim: ""
     storage:

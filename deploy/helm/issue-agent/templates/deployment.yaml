@@ -54,6 +54,9 @@ spec:
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
@@ -74,6 +77,12 @@ spec:
           env:
             - name: ASPNETCORE_URLS
               value: http://+:8080
+            - name: HOME
+              value: /data
+            - name: PI_CODING_AGENT_DIR
+              value: /data/omp/agent
+            - name: PI_CODING_AGENT_SESSION_DIR
+              value: /data/omp
             - name: OpenTelemetry__TraceSamplingRatio
               value: {{ .Values.config.traceSamplingRatio | quote }}
             {{- if .Values.config.otlpEndpoint }}
@@ -81,7 +90,11 @@ spec:
               value: {{ .Values.config.otlpEndpoint | quote }}
             {{- end }}
             - name: PI_CONFIG_FILES
-              value: {{ .Values.omp.config.mountPath | quote }}
+              value: {{ printf "%s/%s" .Values.omp.config.mountPath .Values.omp.config.file | quote }}
+            {{- if .Values.omp.authBroker.enabled }}
+            - name: IssueAgent__Omp__AuthBrokerUrl
+              value: {{ printf "http://%s-auth-broker:8081" (include "issue-agent.fullname" .) | quote }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /health/ready

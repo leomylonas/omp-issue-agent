@@ -57,6 +57,9 @@ RUN useradd --create-home --uid 10001 issueagent \
     && chown --recursive issueagent:issueagent /data
 COPY --from=build /app/publish .
 USER issueagent
-ENV ASPNETCORE_URLS=http://+:8080
+ENV HOME=/data \
+    PI_CODING_AGENT_DIR=/data/omp/agent \
+    PI_CODING_AGENT_SESSION_DIR=/data/omp \
+    ASPNETCORE_URLS=http://+:8080
 EXPOSE 8080
 ENTRYPOINT ["dotnet", "IssueAgent.Host.dll"]

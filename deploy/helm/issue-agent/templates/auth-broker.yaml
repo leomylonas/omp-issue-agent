@@ -1,6 +1,8 @@
 {{- if .Values.omp.authBroker.enabled }}
-{{- if or (empty .Values.omp.authBroker.image.repository) (empty .Values.omp.authBroker.image.tag) }}
-{{- fail "omp.authBroker.image.repository and tag are required when the Auth Broker is enabled" }}
+{{- $brokerRepository := default .Values.image.repository .Values.omp.authBroker.image.repository }}
+{{- $brokerTag := default (default .Chart.AppVersion .Values.image.tag) .Values.omp.authBroker.image.tag }}
+{{- if or (empty $brokerRepository) (empty $brokerTag) }}
+{{- fail "a broker image repository and tag are required when the Auth Broker is enabled" }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
@@ -23,17 +25,32 @@ spec:
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: auth-broker
-          image: "{{ .Values.omp.authBroker.image.repository }}:{{ .Values.omp.authBroker.image.tag }}"
+          image: "{{ $brokerRepository }}:{{ $brokerTag }}"
+          command: ["/usr/local/bin/omp"]
+          args: ["auth-broker", "serve", "--bind=0.0.0.0:8081"]
           ports:
             - name: http
               containerPort: 8081
           env:
-            - name: OMP_BROKER_LISTEN
-              value: http://+:8081
+            - name: HOME
+              value: /data
+            - name: PI_CODING_AGENT_DIR
+              value: /data/omp/agent
+          readinessProbe:
+            httpGet:
+              path: /v1/healthz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /v1/healthz
+              port: http
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -42,10 +59,14 @@ spec:
           volumeMounts:
             - name: broker-data
               mountPath: /data
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: broker-data
           persistentVolumeClaim:
             claimName: {{ default (printf "%s-auth-broker" (include "issue-agent.fullname" .)) .Values.omp.authBroker.existingClaim }}
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

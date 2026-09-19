@@ -8,10 +8,13 @@ services:
       - ./issue-agent.env
     environment:
       ASPNETCORE_URLS: http://+:8080
+      HOME: /data
+      PI_CODING_AGENT_DIR: /data/omp/agent
+      PI_CODING_AGENT_SESSION_DIR: /data/omp
       IssueAgent__Workspace__RootPath: /data
       IssueAgent__Omp__ExecutablePath: /usr/local/bin/omp
-      IssueAgent__Omp__AuthBrokerUrl: ${ISSUE_AGENT_OMP_AUTH_BROKER_URL:-}
-      PI_CONFIG_FILES: /etc/omp
+      IssueAgent__Omp__AuthBrokerUrl: ${ISSUE_AGENT_OMP_AUTH_BROKER_URL-http://omp-auth-broker:8081}
+      PI_CONFIG_FILES: /etc/omp/config.yml
     secrets:
       - github_token
     ports:
@@ -26,13 +29,15 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    restart: unless-stopped
-
   omp-auth-broker:
-    image: ${OMP_AUTH_BROKER_IMAGE:-ghcr.io/example/omp-auth-broker:0.1.0}
+    image: ${OMP_AUTH_BROKER_IMAGE:-issue-agent:local}
     profiles: ["auth-broker"]
+    entrypoint: ["/usr/local/bin/omp"]
+    command: ["auth-broker", "serve", "--bind=0.0.0.0:8081"]
     environment:
-      OMP_BROKER_LISTEN: http://0.0.0.0:8081
+      HOME: /data
+      PI_CODING_AGENT_DIR: /data/omp/agent
+      PI_CODING_AGENT_SESSION_DIR: /data/omp
     ports:
       # Keep the interactive setup endpoint on the host loopback only.
       - "127.0.0.1:${OMP_AUTH_BROKER_PORT:-8081}:8081"

@@ -1,0 +1,3 @@
+# OMP settings and model/provider overlays live here.
+# IssueAgent passes this file through PI_CONFIG_FILES.
+{}

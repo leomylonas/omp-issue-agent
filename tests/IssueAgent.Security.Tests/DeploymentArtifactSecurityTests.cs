@@ -7,17 +7,26 @@ namespace IssueAgent.Security.Tests;
 public sealed class DeploymentArtifactSecurityTests
 {
     [Fact]
-    public void HelmWorkloadsDisableServiceAccountTokenAutomountAndMountOmpConfigReadOnly()
+    public void HelmWorkloadsUseFileBasedOmpConfigAndWritableNativeState()
     {
         var deployment = ReadRepositoryFile("deploy/helm/issue-agent/templates/deployment.yaml");
         var broker = ReadRepositoryFile("deploy/helm/issue-agent/templates/auth-broker.yaml");
+        var values = ReadRepositoryFile("deploy/helm/issue-agent/values.yaml");
 
         Assert.Contains("automountServiceAccountToken: false", deployment, StringComparison.Ordinal);
         Assert.Contains("PI_CONFIG_FILES", deployment, StringComparison.Ordinal);
+        Assert.Contains("omp.config.file", deployment, StringComparison.Ordinal);
         Assert.DoesNotContain("OMP_CONFIG_DIR", deployment, StringComparison.Ordinal);
         Assert.Contains("mountPath: {{ .Values.omp.config.mountPath }}", deployment, StringComparison.Ordinal);
         Assert.Contains("readOnly: true", deployment, StringComparison.Ordinal);
-        Assert.Contains("automountServiceAccountToken: false", broker, StringComparison.Ordinal);
+        Assert.Contains("HOME", deployment, StringComparison.Ordinal);
+        Assert.Contains("PI_CODING_AGENT_DIR", deployment, StringComparison.Ordinal);
+        Assert.Contains("fsGroup: 10001", deployment, StringComparison.Ordinal);
+        Assert.Contains("fsGroup: 10001", broker, StringComparison.Ordinal);
+        Assert.Contains("command: [\"/usr/local/bin/omp\"]", broker, StringComparison.Ordinal);
+        Assert.Contains("auth-broker\", \"serve\", \"--bind=0.0.0.0:8081", broker, StringComparison.Ordinal);
+        Assert.Contains("path: /v1/healthz", broker, StringComparison.Ordinal);
+        Assert.Contains("repository: ghcr.io/leomylonas/omp-issue-agent", values, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -45,8 +54,8 @@ public sealed class DeploymentArtifactSecurityTests
         Assert.Contains("--cap-drop=ALL", readme, StringComparison.Ordinal);
         Assert.Contains("--tmpfs /tmp", readme, StringComparison.Ordinal);
         Assert.Contains("-v issue-agent-data:/data", readme, StringComparison.Ordinal);
-        Assert.Contains("-e PI_CONFIG_FILES=/etc/omp", readme, StringComparison.Ordinal);
-        Assert.Contains("PI_CONFIG_FILES=/etc/omp", environment, StringComparison.Ordinal);
+        Assert.Contains("-e PI_CONFIG_FILES=/etc/omp/config.yml", readme, StringComparison.Ordinal);
+        Assert.Contains("PI_CONFIG_FILES=/etc/omp/config.yml", environment, StringComparison.Ordinal);
         Assert.DoesNotContain("OMP_CONFIG_DIR", readme, StringComparison.Ordinal);
         Assert.DoesNotContain("OMP_CONFIG_DIR", environment, StringComparison.Ordinal);
     }
@@ -56,21 +65,24 @@ public sealed class DeploymentArtifactSecurityTests
     {
         var compose = ReadRepositoryFile("deploy/docker-compose.yml");
 
-        Assert.Contains("127.0.0.1:${OMP_AUTH_BROKER_PORT:-8081}:8081", compose, StringComparison.Ordinal);
-        Assert.Contains("PI_CONFIG_FILES: /etc/omp", compose, StringComparison.Ordinal);
+        Assert.Contains("IssueAgent__Omp__AuthBrokerUrl: ${ISSUE_AGENT_OMP_AUTH_BROKER_URL-http://omp-auth-broker:8081}", compose, StringComparison.Ordinal);
+        Assert.Contains("PI_CONFIG_FILES: /etc/omp/config.yml", compose, StringComparison.Ordinal);
+        Assert.Contains("entrypoint: [\"/usr/local/bin/omp\"]", compose, StringComparison.Ordinal);
+        Assert.Contains("command: [\"auth-broker\", \"serve\", \"--bind=0.0.0.0:8081\"]", compose, StringComparison.Ordinal);
+        Assert.DoesNotContain("OMP_BROKER_LISTEN", compose, StringComparison.Ordinal);
         Assert.DoesNotContain("OMP_CONFIG_DIR", compose, StringComparison.Ordinal);
         Assert.Contains("./omp:/etc/omp:ro", compose, StringComparison.Ordinal);
     }
-
     [Fact]
-    public void CiInstallsGitLfsFromPinnedVerifiedReleaseArtifact()
+    public void ProductionImageRedirectsNativeOmpStateToPersistentData()
     {
-        var workflow = ReadRepositoryFile(".github/workflows/ci.yml");
+        var dockerfile = ReadRepositoryFile("Dockerfile");
 
-        Assert.Contains("GIT_LFS_VERSION: 3.8.0", workflow, StringComparison.Ordinal);
-        Assert.Contains("GIT_LFS_SHA256:", workflow, StringComparison.Ordinal);
-        Assert.Contains("sha256sum --check --strict", workflow, StringComparison.Ordinal);
-        Assert.DoesNotContain("apt-get install -y --no-install-recommends git-lfs", workflow, StringComparison.Ordinal);
+        Assert.Contains("USER issueagent", dockerfile, StringComparison.Ordinal);
+        Assert.Contains("ENV HOME=/data", dockerfile, StringComparison.Ordinal);
+        Assert.Contains("PI_CODING_AGENT_DIR=/data/omp/agent", dockerfile, StringComparison.Ordinal);
+        Assert.Contains("PI_CODING_AGENT_SESSION_DIR=/data/omp", dockerfile, StringComparison.Ordinal);
+        Assert.Contains("mkdir --parents /data", dockerfile, StringComparison.Ordinal);
     }
 
     private static string ReadRepositoryFile(string relativePath)

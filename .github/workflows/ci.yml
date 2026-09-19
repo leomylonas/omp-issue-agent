@@ -57,9 +57,8 @@ jobs:
         run: |
           helm template issue-agent deploy/helm/issue-agent \
             --set omp.authBroker.enabled=true \
-            --set omp.authBroker.image.repository=example/broker \
-            --set omp.authBroker.image.tag=1.2.3 \
-            --set serviceMonitor.enabled=true \
+            --set omp.authBroker.image.repository=ghcr.io/leomylonas/omp-issue-agent \
+            --set omp.authBroker.image.tag=0.1.0 \
             --set prometheusRule.enabled=true \
             --set grafana.dashboard.enabled=true >/tmp/issue-agent-broker.yaml
           docker run --rm --interactive ghcr.io/yannh/kubeconform:v0.7.0 \

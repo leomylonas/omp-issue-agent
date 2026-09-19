@@ -35,6 +35,6 @@ data:
   {{- if .Values.omp.config.data }}
   {{- include "issue-agent.omp-config.data" . | nindent 2 }}
   {{- else }}
-  {}
+  {{ .Values.omp.config.file }}: "{}"
   {{- end }}
 {{- end }}
