@@ -55,6 +55,116 @@ public sealed class IssueAgentOptionsValidatorTests
         Assert.Equal("The configured secret source resolved to an empty value.", exception.Message);
     }
 
+    [Fact]
+    public void ValidateRejectsSshWithoutExplicitHostVerification()
+    {
+        var options = CreateOptions() with
+        {
+            Defaults = new RepositorySettingsOptions
+            {
+                Git = new GitTransportOptions { Mode = ConfiguredGitAuthenticationMode.Ssh },
+            },
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("host verification", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ValidateAcceptsARepositoryThatOverridesOnlyGitModeWhileInheritingItsPinnedSshTrustPolicyFromDefaults()
+    {
+        // Regression: a repository-level override of only `git.mode` must be validated against the
+        // merged global -> provider -> repository result, not evaluated in isolation — the merged
+        // result here does have a host verification policy, inherited from Defaults.
+        var options = CreateOptions() with
+        {
+            Defaults = new RepositorySettingsOptions
+            {
+                Git = new GitTransportOptions
+                {
+                    SshTrust = new SshTrustOptions { Mode = ConfiguredSshHostVerificationMode.Pinned, Fingerprints = ["sha256:host"] },
+                },
+            },
+            Providers = [CreateProvider() with
+            {
+                Repositories = [new RepositoryOptions
+                {
+                    Id = "github/example/repo",
+                    Name = "example/repo",
+                    Settings = new RepositorySettingsOptions { Git = new GitTransportOptions { Mode = ConfiguredGitAuthenticationMode.Ssh } },
+                }],
+            }],
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.False(result.Failed);
+    }
+
+    [Fact]
+    public void ValidateAcceptsARepositoryThatOverridesOnlyPinnedTlsModeWhileInheritingItsFingerprintsFromDefaults()
+    {
+        var options = CreateOptions() with
+        {
+            Defaults = new RepositorySettingsOptions
+            {
+                Git = new GitTransportOptions { Tls = new TlsTrustOptions { Fingerprints = ["sha256:cert"] } },
+            },
+            Providers = [CreateProvider() with
+            {
+                Repositories = [new RepositoryOptions
+                {
+                    Id = "github/example/repo",
+                    Name = "example/repo",
+                    Settings = new RepositorySettingsOptions { Git = new GitTransportOptions { Tls = new TlsTrustOptions { Mode = ConfiguredTlsTrustMode.Pinned } } },
+                }],
+            }],
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.False(result.Failed);
+    }
+
+    [Fact]
+    public void ValidateStillRejectsAPinnedTrustModeThatHasNoFingerprintsAnywhereInTheMergedChain()
+    {
+        var options = CreateOptions() with
+        {
+            Providers = [CreateProvider() with
+            {
+                Repositories = [new RepositoryOptions
+                {
+                    Id = "github/example/repo",
+                    Name = "example/repo",
+                    Settings = new RepositorySettingsOptions { Git = new GitTransportOptions { Tls = new TlsTrustOptions { Mode = ConfiguredTlsTrustMode.Pinned } } },
+                }],
+            }],
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("Pinned TLS trust requires", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ValidateReportsMissingProviderFieldsInsteadOfThrowing()
+    {
+        var options = CreateOptions() with
+        {
+            Providers = [CreateProvider() with { Name = null!, BaseUri = null! }],
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("non-empty Name", StringComparison.Ordinal));
+        Assert.Contains(result.Failures!, failure => failure.Contains("absolute HTTP(S) BaseUri", StringComparison.Ordinal));
+    }
+
     private static IssueAgentOptions CreateOptions() => new()
     {
         Workspace = new WorkspaceOptions { RootPath = "/data" },

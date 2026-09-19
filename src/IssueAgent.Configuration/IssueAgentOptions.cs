@@ -11,12 +11,18 @@ public sealed record IssueAgentOptions
 
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(60);
 
+    public DateTimeOffset StartDate { get; init; } = DateTimeOffset.MinValue;
+
+    public TimeSpan ShutdownGracePeriod { get; init; } = TimeSpan.FromSeconds(15);
+
     public ConcurrencyOptions Concurrency { get; init; } = new();
 
     public required WorkspaceOptions Workspace { get; init; }
 
     public required OmpOptions Omp { get; init; }
 
+    public NotificationsOptions Notifications { get; init; } = new();
+    public RepositorySettingsOptions Defaults { get; init; } = new();
     public IReadOnlyList<ProviderOptions> Providers { get; init; } = [];
 }
 
@@ -31,12 +37,19 @@ public sealed record WorkspaceOptions
 {
     public required string RootPath { get; init; }
 }
-
 public sealed record OmpOptions
 {
     public required string ExecutablePath { get; init; }
 
     public TimeSpan? Timeout { get; init; }
+
+    public string? AuthBrokerUrl { get; init; }
+
+    public IReadOnlyDictionary<string, string> ConnectionSettings { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
+    public IReadOnlyDictionary<string, SecretSource> ExecutionSecrets { get; init; } =
+        new Dictionary<string, SecretSource>(StringComparer.Ordinal);
 
     public IReadOnlyDictionary<string, string> Roles { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal)
     {
@@ -45,6 +58,31 @@ public sealed record OmpOptions
         ["revision"] = "task",
         ["conflictResolution"] = "task",
     };
+}
+public sealed record NotificationsOptions
+{
+    public TelegramOptions? Telegram { get; init; }
+
+    public SlackOptions? Slack { get; init; }
+
+    /// <summary>TLS trust policy for outbound notification sink requests (specification §11: the
+    /// configured trust policy applies to every managed HttpClient, not just Git/provider traffic).
+    /// Defaults to system trust when unset.</summary>
+    public TlsTrustOptions? Tls { get; init; }
+
+    public IReadOnlyDictionary<string, IReadOnlySet<string>> Routing { get; init; } =
+        new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase);
+}
+
+public sealed record TelegramOptions
+{
+    public required SecretSource BotToken { get; init; }
+    public required string ChatId { get; init; }
+}
+
+public sealed record SlackOptions
+{
+    public required SecretSource WebhookUrl { get; init; }
 }
 
 public sealed record ProviderOptions
@@ -61,6 +99,7 @@ public sealed record ProviderOptions
 
     public string? DefaultOwnerOrNamespace { get; init; }
 
+    public RepositorySettingsOptions Defaults { get; init; } = new();
     public IReadOnlyList<RepositoryOptions> Repositories { get; init; } = [];
 }
 
@@ -75,10 +114,17 @@ public sealed record RepositoryOptions
     public required string Id { get; init; }
 
     public required string Name { get; init; }
+    public string? OwnerOrNamespace { get; init; }
+
+    public string? CloneUrl { get; init; }
+
+    public string? TargetBranch { get; init; }
 
     public bool Enabled { get; init; } = true;
 
     public DateTimeOffset? StartDate { get; init; }
+
+    public RepositorySettingsOptions Settings { get; init; } = new();
 }
 
 /// <summary>A secret configured from exactly one source and resolved once at startup.</summary>
@@ -123,6 +169,11 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
             failures.Add("IssueAgent:PollInterval must be greater than zero.");
         }
 
+        if (options.ShutdownGracePeriod <= TimeSpan.Zero)
+        {
+            failures.Add("IssueAgent:ShutdownGracePeriod must be greater than zero.");
+        }
+
         if (options.Concurrency.Agent <= 0 || options.Concurrency.Polling <= 0)
         {
             failures.Add("IssueAgent:Concurrency Agent and Polling values must be greater than zero.");
@@ -137,17 +188,42 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
         {
             failures.Add("IssueAgent:Omp:ExecutablePath is required.");
         }
+        foreach (var (secretName, source) in options.Omp.ExecutionSecrets)
+        {
+            if (!source.IsExactlyOneSource())
+            {
+                failures.Add($"IssueAgent:Omp:ExecutionSecrets:{secretName} must configure exactly one of env or file.");
+            }
+        }
+
+        if (options.Notifications.Telegram is { } telegram &&
+            (!telegram.BotToken.IsExactlyOneSource() || string.IsNullOrWhiteSpace(telegram.ChatId)))
+        {
+            failures.Add("IssueAgent:Notifications:Telegram requires exactly one bot token source and a chat id.");
+        }
+
+        if (options.Notifications.Slack is { } slack && !slack.WebhookUrl.IsExactlyOneSource())
+        {
+            failures.Add("IssueAgent:Notifications:Slack:WebhookUrl must configure exactly one secret source.");
+        }
 
         var providerNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var repositoryIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        ValidateLocalSettings(options.Defaults, "IssueAgent:Defaults", failures);
         foreach (var provider in options.Providers)
         {
-            if (!providerNames.Add(provider.Name))
+            if (string.IsNullOrWhiteSpace(provider.Name))
+            {
+                failures.Add("Every provider must define a non-empty Name.");
+            }
+            else if (!providerNames.Add(provider.Name))
             {
                 failures.Add($"Provider name '{provider.Name}' is duplicated.");
             }
 
-            if (!provider.BaseUri.IsAbsoluteUri || provider.BaseUri.Scheme is not ("https" or "http"))
+            if (provider.BaseUri is null ||
+                !provider.BaseUri.IsAbsoluteUri ||
+                provider.BaseUri.Scheme is not ("https" or "http"))
             {
                 failures.Add($"Provider '{provider.Name}' must define an absolute HTTP(S) BaseUri.");
             }
@@ -156,6 +232,7 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
             {
                 failures.Add($"Provider '{provider.Name}' token must configure exactly one of env or file.");
             }
+            ValidateLocalSettings(provider.Defaults, $"Provider '{provider.Name}' defaults", failures);
 
             if (provider.Token is null && string.IsNullOrWhiteSpace(provider.IdentityOverride))
             {
@@ -168,10 +245,74 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
                 {
                     failures.Add($"Repository id '{repository.Id}' is duplicated across providers.");
                 }
+                ValidateLocalSettings(repository.Settings, $"Repository '{repository.Id}' settings", failures);
+                var mergedTrust = EffectiveConfigurationResolver.Merge(options.Defaults, provider.Defaults, repository.Settings);
+                ValidateMergedTrust(mergedTrust, $"Repository '{repository.Id}' (merged effective settings)", failures);
+                var hasOwner = !string.IsNullOrWhiteSpace(repository.OwnerOrNamespace) ||
+                    repository.Name.Contains('/', StringComparison.Ordinal) ||
+                    !string.IsNullOrWhiteSpace(provider.DefaultOwnerOrNamespace);
+                if (!hasOwner)
+                {
+                    failures.Add($"Repository '{repository.Id}' requires an owner/namespace or an owner-qualified name.");
+                }
             }
         }
 
         return failures.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
+    }
+
+    /// <summary>Intrinsically local shape checks (secret-source arity, non-negative numbers) that
+    /// hold regardless of what a higher or lower configuration level supplies, so these run at every
+    /// level independently rather than only on the merged result.</summary>
+    private static void ValidateLocalSettings(RepositorySettingsOptions settings, string path, List<string> failures)
+    {
+        if (settings.RelatedIssueTraversalDepth is < 0)
+        {
+            failures.Add($"{path} RelatedIssueTraversalDepth cannot be negative.");
+        }
+        if (settings.MaxAttachmentSizeBytes is <= 0 || settings.MaxTotalAttachmentSizeBytes is <= 0)
+        {
+            failures.Add($"{path} attachment limits must be greater than zero.");
+        }
+        if (settings.OmpTimeout is { } timeout && timeout <= TimeSpan.Zero)
+        {
+            failures.Add($"{path} OmpTimeout must be greater than zero.");
+        }
+        var git = settings.Git;
+        foreach (var (name, secret) in new[]
+        {
+            ("token", git?.Token),
+            ("SSH private key", git?.SshPrivateKey),
+            ("SSH private-key passphrase", git?.SshPrivateKeyPassphrase),
+        })
+        {
+            if (secret is not null && !secret.IsExactlyOneSource())
+            {
+                failures.Add($"{path} {name} must configure exactly one of env or file.");
+            }
+        }
+    }
+
+    /// <summary>Cross-field Git-trust checks (specification §7: providers define defaults,
+    /// repositories inherit and may override) evaluated over the fully merged global → provider →
+    /// repository result. A repository that overrides only <c>git.mode</c> while inheriting its
+    /// trust policy from a shared default is valid and must not be flagged by evaluating any single
+    /// level in isolation.</summary>
+    private static void ValidateMergedTrust(RepositorySettingsOptions merged, string path, List<string> failures)
+    {
+        var git = merged.Git;
+        if (git?.Mode == ConfiguredGitAuthenticationMode.Ssh && git.SshTrust?.Mode is null)
+        {
+            failures.Add($"{path} SSH Git authentication requires an explicit host verification policy.");
+        }
+        if (git?.Tls?.Mode == ConfiguredTlsTrustMode.Pinned && git.Tls.Fingerprints.Count == 0)
+        {
+            failures.Add($"{path} Pinned TLS trust requires at least one fingerprint.");
+        }
+        if (git?.SshTrust?.Mode == ConfiguredSshHostVerificationMode.Pinned && git.SshTrust.Fingerprints.Count == 0)
+        {
+            failures.Add($"{path} Pinned SSH host verification requires at least one fingerprint.");
+        }
     }
 }
 
