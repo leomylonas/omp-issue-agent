@@ -54,6 +54,27 @@ public sealed class ImplementationWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsyncOmitsIssueClosingReferenceWhenDisabled()
+    {
+        var state = await SeedApprovedPlanAsync();
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """
+            {"summary":"Added a guard clause.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}
+            """));
+
+        var outcome = await CreateWorkflow().RunAsync(
+            CreateConfig() with { CloseIssueOnMerge = false },
+            WorkflowMode.Full,
+            1,
+            state,
+            omp,
+            CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.DoesNotContain("Fixes #1", provider.MergeRequests[1].Description, StringComparison.Ordinal);
+        Assert.DoesNotContain("Closes #1", provider.MergeRequests[1].Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RunAsyncPausesForMaterialDeviationWithoutPublishing()
     {
         var state = await SeedApprovedPlanAsync();

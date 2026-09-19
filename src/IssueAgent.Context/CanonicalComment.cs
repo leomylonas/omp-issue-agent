@@ -84,11 +84,18 @@ public static partial class CanonicalCommentMarkdown
         return builder.ToString();
     }
 
-    /// <summary>True when <paramref name="body"/> is a managed IssueAgent comment, identified by its
-    /// hidden locator marker on its own line. Callers use this to distinguish the canonical comment
-    /// from ordinary human comments when scanning an issue's comment list.</summary>
-    public static bool IsCanonicalComment(string body) =>
-        body.TrimEnd().EndsWith(StateLocatorMarker, StringComparison.Ordinal);
+    /// <summary>True when <paramref name="body"/> contains the unique hidden locator marker on
+    /// its own line. The marker is intentionally recognized even when a corruption warning or
+    /// other appended operator text follows it, so an escalated canonical comment remains
+    /// discoverable on the next poll.</summary>
+    public static bool IsCanonicalComment(string body)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+        return body
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split('\n')
+            .Any(line => string.Equals(line.Trim(), StateLocatorMarker, StringComparison.Ordinal));
+    }
 
     /// <summary>Parses a canonical comment body. Throws <see cref="CanonicalCommentCorruptException"/>
     /// when the locator marker, state fence, or YAML content cannot be recovered; callers must treat

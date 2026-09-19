@@ -37,7 +37,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         var initialState = new WorkflowState(
             workflowId, WorkflowPhase.Planning, WorkflowOperationalState.Working, null,
             PlanRevision: 0, ApprovedPlanRevision: null, session.SessionId, branchName, targetBranch, baseCommit,
-            deps.Clock.UtcNow, PlanInputHasher.Compute(issue.Title, issue.Description));
+            deps.Clock.UtcNow, PlanInputHasher.Compute(issue.Title, issue.Description), session.SessionFile);
 
         // Publish the planning/working checkpoint before creating any retained local state or
         // invoking OMP. A restart can therefore distinguish an interrupted first attempt from a
@@ -148,6 +148,17 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         var outcome = await OmpRunCollector
             .RunToCompletionAsync(omp, new OmpRunRequest(currentState.OmpSessionId, worktreePath, prompt, config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
             .ConfigureAwait(false);
+        if (!outcome.Succeeded)
+        {
+            return await FailAsync(
+                config,
+                issueNumber,
+                workingState,
+                WaitingReason.ManualIntervention,
+                outcome.Error?.Message ?? "OMP replanning failed.",
+                cancellationToken).ConfigureAwait(false);
+        }
+
         var planningResult = PlanningResult.Parse(outcome.Completed!.ResultJson);
         ReconciledPlanningResult reconciled;
         try

@@ -255,6 +255,7 @@ public sealed partial class WorkflowDispatcher(
         }
 
         var state = reconciled.State!;
+        var mergeRequestCommandsAmbiguous = false;
         if (command is null)
         {
             var mergeRequest = await runtime.Provider
@@ -266,9 +267,47 @@ public sealed partial class WorkflowDispatcher(
                     new ProviderWorkItemReference(runtime.Repository, ProviderWorkItemKind.MergeRequest, mergeRequest.Number),
                     cancellationToken).ConfigureAwait(false);
                 var mergeRequestSnapshot = LabelProtocol.Analyze(mergeRequestLabels);
+                mergeRequestCommandsAmbiguous = mergeRequestSnapshot.HasConflictingCommands;
                 command = mergeRequestSnapshot.SingleCommand;
             }
         }
+
+        // A review command discovered on the PR/MR may be inspected while reconciliation is
+        // waiting, but it may not bypass dirty/divergent/history blockers. Only cancellation and
+        // explicit recovery are allowed through those blockers.
+        if (reconciled.Disposition != ReconciliationDisposition.ResumeAllowed &&
+            command is not (WorkflowCommand.Cancel or WorkflowCommand.Continue))
+        {
+            if (mergeRequestCommandsAmbiguous)
+            {
+                await reconciliation.PauseForHumanAsync(
+                    runtime.Config,
+                    issueNumber,
+                    canonical,
+                    reconciled.Content!,
+                    state,
+                    WaitingReason.AmbiguousCommand,
+                    "Multiple conflicting workflow command labels are present on the merge request.",
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            return;
+        }
+
+        if (mergeRequestCommandsAmbiguous)
+        {
+            await reconciliation.PauseForHumanAsync(
+                runtime.Config,
+                issueNumber,
+                canonical,
+                reconciled.Content!,
+                state,
+                WaitingReason.AmbiguousCommand,
+                "Multiple conflicting workflow command labels are present on the merge request.",
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         if (command is null) return;
         if (command == WorkflowCommand.Cancel)
         {
@@ -369,11 +408,15 @@ public sealed partial class WorkflowDispatcher(
             state = state with { BaseCommit = remoteHead };
         }
 
-        if (state.Phase is WorkflowPhase.Planning or WorkflowPhase.Planned)
+        // Continue is a recovery command. Published review phases must resume the review
+        // conversation on the adopted branch; they must never fall back into the initial
+        // implementation workflow and replay the approved plan.
+        if (state.Phase is WorkflowPhase.Review or WorkflowPhase.Revising)
         {
-            await new PlanningWorkflow(runtime.Dependencies).RunReplanAsync(runtime.Config, issueNumber, state, omp, cancellationToken).ConfigureAwait(false);
+            await new RevisionWorkflow(runtime.Dependencies).RunAsync(runtime.Config, issueNumber, state, omp, cancellationToken).ConfigureAwait(false);
             return;
         }
+
         await new ImplementationWorkflow(runtime.Dependencies).RunAsync(runtime.Config, runtime.WorkflowMode, issueNumber, state, omp, cancellationToken).ConfigureAwait(false);
     }
 
@@ -408,8 +451,11 @@ public sealed partial class WorkflowDispatcher(
         var gitName = resolved.UsesProviderIdentityForName
             ? providerIdentity!.DisplayName
             : resolved.GitIdentityName;
+        var noreplyDomain = resolved.ProviderKind == ProviderKind.GitLab
+            ? "users.noreply.gitlab.com"
+            : "users.noreply.github.com";
         var gitEmail = resolved.UsesProviderIdentityForEmail
-            ? providerIdentity?.Email ?? $"{providerIdentity?.Login ?? "issue-agent"}@users.noreply.github.com"
+            ? providerIdentity?.Email ?? $"{providerIdentity?.Login ?? "issue-agent"}@{noreplyDomain}"
             : resolved.GitIdentityEmail;
         var gitIdentity = new GitIdentity(gitName, gitEmail);
         var config = new WorkflowRepositoryConfig(
@@ -428,7 +474,8 @@ public sealed partial class WorkflowDispatcher(
             resolved.OmpRoles.GetValueOrDefault("implementation", "task"),
             resolved.SupplementalInstructions,
             resolved.OmpTimeout,
-            providers.TryGetGitAuthenticationForHost);
+            providers.TryGetGitAuthenticationForHost,
+            resolved.CloseIssueOnMerge);
         var workflowMode = resolved.WorkflowMode == ConfiguredWorkflowMode.PlanOnly ? WorkflowMode.PlanOnly : WorkflowMode.Full;
         return new Runtime(provider, repository, dependencies, config, workflowMode, resolved.OmpTimeout, new TagList { { LogContextFields.Provider, providerName }, { LogContextFields.Repository, repository.Id } });
     }

@@ -114,7 +114,9 @@ public static class ImplementationPromptBuilder
         builder.AppendLine("## Review feedback since the previous revision");
         foreach (var comment in reviewFeedback)
         {
-            builder.Append("- ").Append(comment.Author).Append(": ").AppendLine(comment.Body);
+            builder.Append("- ").Append(comment.Author)
+                .Append(" (resolved: ").Append(comment.IsResolved ? "true" : "false")
+                .Append("): ").AppendLine(comment.Body);
         }
 
         builder.AppendLine();

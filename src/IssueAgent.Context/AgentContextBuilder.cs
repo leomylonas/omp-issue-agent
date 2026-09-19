@@ -164,7 +164,7 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
                     continue;
                 }
 
-                reviewThreads.Add(new HumanComment(comment.AuthorLogin, comment.CreatedAt, comment.Body, thread.Id));
+                reviewThreads.Add(new HumanComment(comment.AuthorLogin, comment.CreatedAt, comment.Body, thread.Id, thread.IsResolved));
                 attachments.AddRange(await attachmentPipeline
                     .ProcessAsync(comment.Body, comment.Source, attachmentsDestinationDirectory, remainingBudget, cancellationToken)
                     .ConfigureAwait(false));

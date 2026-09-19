@@ -36,6 +36,11 @@ public static class ReconciliationDecider
     {
         ArgumentNullException.ThrowIfNull(input);
 
+        if (input.RemoteLabels.HasConflictingCommands)
+        {
+            return Wait(WaitingReason.AmbiguousCommand, "Multiple conflicting workflow command labels are present.");
+        }
+
         if (input.RemoteLabels.IsAmbiguous)
         {
             return Wait(WaitingReason.AmbiguousCommand, DescribeLabelAmbiguity(input.RemoteLabels.Ambiguity));

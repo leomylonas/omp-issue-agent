@@ -368,16 +368,17 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             return existing;
         }
 
-        var closingReference = string.Equals(deps.Provider.Name, "gitlab", StringComparison.OrdinalIgnoreCase)
-            ? $"Closes #{issueNumber}"
-            : $"Fixes #{issueNumber}";
+        var closingReference = config.CloseIssueOnMerge
+            ? Environment.NewLine + Environment.NewLine +
+                (string.Equals(deps.Provider.Name, "gitlab", StringComparison.OrdinalIgnoreCase)
+                    ? $"Closes #{issueNumber}"
+                    : $"Fixes #{issueNumber}")
+            : string.Empty;
         var body = $"""
             <!-- issue-agent:workflow:{state.WorkflowId} -->
             ## IssueAgent implementation
 
-            {implementationResult.Trim()}
-
-            {closingReference}
+            {implementationResult.Trim()}{closingReference}
             """.Trim();
         return await deps.Provider.CreateDraftMergeRequestAsync(
             new CreateMergeRequestRequest(config.Repository, state.Branch, state.TargetBranch, issue.Title, body, IsDraft: true, issueNumber),

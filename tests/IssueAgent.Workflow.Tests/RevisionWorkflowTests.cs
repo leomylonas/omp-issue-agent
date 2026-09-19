@@ -23,6 +23,16 @@ public sealed class RevisionWorkflowTests : IDisposable
         [
             new ProviderComment(1, "bob", "Please rename this variable.", clock.UtcNow, clock.UtcNow, new AttachmentSource("merge-request-comment", "1"), false),
         ];
+        provider.ReviewThreads[(Repository.Id, 1)] =
+        [
+            new ProviderReviewThread(
+                "thread-1",
+                IsResolved: true,
+                [
+                    new ProviderComment(2, "carol", "This concern is resolved.", clock.UtcNow, clock.UtcNow,
+                        new AttachmentSource("review-thread-comment", "2"), false),
+                ]),
+        ];
 
         var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """
             {"summary":"Renamed the variable.","keyChanges":["Renamed x to itemCount"],"decisions":[],"checksRun":["dotnet test"],"knownFailures":[],"deviations":[],"risks":[]}
@@ -37,6 +47,7 @@ public sealed class RevisionWorkflowTests : IDisposable
 
         var request = Assert.Single(omp.RunRequests);
         Assert.Contains("Please rename this variable.", request.Prompt, StringComparison.Ordinal);
+        Assert.Contains("resolved: true", request.Prompt, StringComparison.Ordinal);
 
         var updated = Assert.Single(provider.UpdatedComments);
         Assert.Contains("Renamed the variable.", updated.Body, StringComparison.Ordinal);

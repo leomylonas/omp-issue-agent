@@ -83,6 +83,15 @@ public sealed class CanonicalCommentMarkdownTests
     }
 
     [Fact]
+    public void IsCanonicalCommentRemainsDiscoverableWhenWarningFollowsLocator()
+    {
+        var body = "managed state\n" + CanonicalCommentMarkdown.StateLocatorMarker +
+            "\n\n> IssueAgent paused: state is corrupt.";
+
+        Assert.True(CanonicalCommentMarkdown.IsCanonicalComment(body));
+    }
+
+    [Fact]
     public void ParseThrowsCorruptExceptionWhenLocatorMarkerMissing()
     {
         Assert.Throws<CanonicalCommentCorruptException>(() => CanonicalCommentMarkdown.Parse("Some random text without the marker."));

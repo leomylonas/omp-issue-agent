@@ -131,6 +131,35 @@ public sealed class PlanningWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunReplanAsyncPersistsFailureWhenOmpErrors()
+    {
+        provider.AddIssue(Repository, 1, "Bug", "Description");
+        var state = new WorkflowState(
+            WorkflowId.New(), WorkflowPhase.Planned, WorkflowOperationalState.Waiting, WaitingReason.PlanApproval,
+            1, null, "session-1", "agent/issue-1-bug", "main", "abc123", clock.UtcNow.AddHours(-1));
+        await provider.CreateIssueCommentAsync(
+            Repository,
+            1,
+            CanonicalCommentMarkdown.Render(new CanonicalCommentContent(
+                "Original plan.", [], null, CanonicalStateSerializer.ToDocument(state, null))),
+            CancellationToken.None);
+        provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] =
+            [WorkflowLabels.PlannedPhase, WorkflowLabels.WaitingState, WorkflowCommandLabels.Replan];
+        Directory.CreateDirectory(Path.Combine(workspaceRoot, state.WorkflowId.ToString(), "worktree"));
+
+        var omp = new FakeOmpClient()
+            .EnqueueRun(new OmpErrorEvent("session-1", clock.UtcNow, "replan crashed", WasCancelled: false));
+
+        var outcome = await CreateWorkflow().RunReplanAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Failed, outcome.Status);
+        Assert.Equal(WorkflowPhase.Failed, outcome.State.Phase);
+        var persisted = CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body);
+        Assert.Equal("failed", persisted.State.Phase);
+        Assert.Contains("replan crashed", Assert.Single(notifier.Notifications).Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RunInitialPlanningAsyncScopesSubmoduleCredentialsByConfiguredHostOnly()
     {
         provider.AddIssue(Repository, 1, "Bug", "Description");
