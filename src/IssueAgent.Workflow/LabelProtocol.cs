@@ -23,6 +23,16 @@ public sealed record LabelSnapshot(
     LabelAmbiguity Ambiguity)
 {
     public bool IsAmbiguous => Ambiguity != LabelAmbiguity.None;
+
+    /// <summary>Whether only the phase/state dimensions are ambiguous. Human command labels are
+    /// parsed independently so a correctly placed command can still be admitted when a request
+    /// carries no phase labels.</summary>
+    public bool IsPhaseStateAmbiguous =>
+        Ambiguity is LabelAmbiguity.MissingPhaseLabel or LabelAmbiguity.MultiplePhaseLabels
+            or LabelAmbiguity.MissingStateLabel or LabelAmbiguity.MultipleStateLabels;
+
+    public WorkflowCommand? SingleCommand =>
+        Commands.Count == 1 ? Commands[0] : null;
 }
 
 /// <summary>Parses and computes deltas for the three independent label dimensions IssueAgent

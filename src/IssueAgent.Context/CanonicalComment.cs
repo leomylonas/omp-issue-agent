@@ -19,6 +19,12 @@ public static partial class CanonicalCommentMarkdown
 {
     public const string Header = "**IssueAgent — managed automatically**";
     public const string StateLocatorMarker = "<!-- issue-agent:state -->";
+    public const string PlanStartMarker = "<!-- issue-agent:plan:start -->";
+    public const string PlanEndMarker = "<!-- issue-agent:plan:end -->";
+    public const string DecisionsStartMarker = "<!-- issue-agent:decisions:start -->";
+    public const string DecisionsEndMarker = "<!-- issue-agent:decisions:end -->";
+    public const string ResultStartMarker = "<!-- issue-agent:result:start -->";
+    public const string ResultEndMarker = "<!-- issue-agent:result:end -->";
 
     public static string Render(CanonicalCommentContent content)
     {
@@ -27,12 +33,15 @@ public static partial class CanonicalCommentMarkdown
         var builder = new StringBuilder();
         builder.AppendLine(Header);
         builder.AppendLine();
+        builder.AppendLine(PlanStartMarker);
         builder.AppendLine("## Implementation plan");
         builder.AppendLine(content.PlanText.TrimEnd());
+        builder.AppendLine(PlanEndMarker);
 
         if (content.DecisionsAndRationale.Count > 0)
         {
             builder.AppendLine();
+            builder.AppendLine(DecisionsStartMarker);
             builder.AppendLine("### Key decisions and rationale");
             foreach (var decision in content.DecisionsAndRationale)
             {
@@ -48,14 +57,18 @@ public static partial class CanonicalCommentMarkdown
                     builder.Append("  ").AppendLine(lines[i]);
                 }
             }
+            builder.AppendLine(DecisionsEndMarker);
         }
 
         if (content.ImplementationResult is { Length: > 0 } implementationResult)
         {
             builder.AppendLine();
+            builder.AppendLine(ResultStartMarker);
             builder.AppendLine("## Implementation result");
             builder.AppendLine(implementationResult.TrimEnd());
+            builder.AppendLine(ResultEndMarker);
         }
+
 
         builder.AppendLine();
         builder.AppendLine("<details>");
@@ -72,9 +85,10 @@ public static partial class CanonicalCommentMarkdown
     }
 
     /// <summary>True when <paramref name="body"/> is a managed IssueAgent comment, identified by its
-    /// hidden locator marker. Callers use this to distinguish the canonical comment from ordinary
-    /// human comments when scanning an issue's comment list.</summary>
-    public static bool IsCanonicalComment(string body) => body.Contains(StateLocatorMarker, StringComparison.Ordinal);
+    /// hidden locator marker on its own line. Callers use this to distinguish the canonical comment
+    /// from ordinary human comments when scanning an issue's comment list.</summary>
+    public static bool IsCanonicalComment(string body) =>
+        body.TrimEnd().EndsWith(StateLocatorMarker, StringComparison.Ordinal);
 
     /// <summary>Parses a canonical comment body. Throws <see cref="CanonicalCommentCorruptException"/>
     /// when the locator marker, state fence, or YAML content cannot be recovered; callers must treat
@@ -89,11 +103,15 @@ public static partial class CanonicalCommentMarkdown
             throw new CanonicalCommentCorruptException("Comment body does not contain the canonical state locator marker.");
         }
 
-        var stateMatch = StateFencePattern().Match(body);
-        if (!stateMatch.Success)
+        var stateMatches = StateFencePattern().Matches(body);
+        if (stateMatches.Count != 1)
         {
-            throw new CanonicalCommentCorruptException("Canonical comment is missing its generated fenced YAML state block.");
+            throw new CanonicalCommentCorruptException(
+                stateMatches.Count == 0
+                    ? "Canonical comment is missing its generated fenced YAML state block."
+                    : "Canonical comment contains duplicate generated fenced YAML state blocks.");
         }
+        var stateMatch = stateMatches[0];
 
         CanonicalStateDocument state;
         try
@@ -105,44 +123,54 @@ public static partial class CanonicalCommentMarkdown
             throw new CanonicalCommentCorruptException($"Canonical comment state YAML is invalid: {ex.Message}", ex);
         }
 
-        var planMatch = PlanSectionPattern().Match(body);
-        if (!planMatch.Success)
+        var planMatches = PlanSectionPattern().Matches(body);
+        if (planMatches.Count != 1)
         {
-            throw new CanonicalCommentCorruptException("Canonical comment is missing its '## Implementation plan' section.");
+            throw new CanonicalCommentCorruptException(
+                planMatches.Count == 0
+                    ? "Canonical comment is missing its generated implementation plan section."
+                    : "Canonical comment contains duplicate generated implementation plan sections.");
         }
-
+        var planMatch = planMatches[0];
         var planText = planMatch.Groups["plan"].Value.TrimEnd();
 
-        var decisions = new List<string>();
-        var decisionsMatch = DecisionsSectionPattern().Match(body);
-        if (decisionsMatch.Success)
+        var decisionsMatches = DecisionsSectionPattern().Matches(body);
+        if (decisionsMatches.Count > 1)
         {
-            foreach (Match bullet in BulletLinePattern().Matches(decisionsMatch.Groups["decisions"].Value))
+            throw new CanonicalCommentCorruptException("Canonical comment contains duplicate generated decisions sections.");
+        }
+        var decisions = new List<string>();
+        if (decisionsMatches.Count == 1)
+        {
+            foreach (Match bullet in BulletLinePattern().Matches(decisionsMatches[0].Groups["decisions"].Value))
             {
                 decisions.Add(JoinContinuationLines(bullet.Groups["text"].Value));
             }
         }
 
-        string? implementationResult = null;
-        var implementationMatch = ImplementationResultSectionPattern().Match(body);
-        if (implementationMatch.Success)
+        var implementationMatches = ImplementationResultSectionPattern().Matches(body);
+        if (implementationMatches.Count > 1)
         {
-            implementationResult = implementationMatch.Groups["result"].Value.Trim();
+            throw new CanonicalCommentCorruptException("Canonical comment contains duplicate generated implementation-result sections.");
         }
+        string? implementationResult = implementationMatches.Count == 1
+            ? implementationMatches[0].Groups["result"].Value.Trim()
+            : null;
 
         return new CanonicalCommentContent(planText, decisions, implementationResult, state);
+
     }
 
     [GeneratedRegex(@"<details>\s*<summary>Agent state</summary>.*?```yaml\r?\n(?<yaml>.*?)```\s*</details>", RegexOptions.Singleline | RegexOptions.IgnoreCase)]
     private static partial Regex StateFencePattern();
 
-    [GeneratedRegex(@"^## Implementation plan\r?\n(?<plan>.*?)(?=\r?\n### Key decisions and rationale|\r?\n## Implementation result|\r?\n<details>|\z)", RegexOptions.Multiline | RegexOptions.Singleline)]
+    [GeneratedRegex(@"<!-- issue-agent:plan:start -->\r?\n## Implementation plan\r?\n(?<plan>.*?)\r?\n<!-- issue-agent:plan:end -->", RegexOptions.Singleline)]
     private static partial Regex PlanSectionPattern();
 
-    [GeneratedRegex(@"^### Key decisions and rationale\r?\n(?<decisions>.*?)(?=\r?\n## Implementation result|\r?\n<details>|\z)", RegexOptions.Multiline | RegexOptions.Singleline)]
+    [GeneratedRegex(@"<!-- issue-agent:decisions:start -->\r?\n### Key decisions and rationale\r?\n(?<decisions>.*?)\r?\n<!-- issue-agent:decisions:end -->", RegexOptions.Singleline)]
     private static partial Regex DecisionsSectionPattern();
 
-    [GeneratedRegex(@"^## Implementation result\r?\n(?<result>.*?)(?=\r?\n<details>|\z)", RegexOptions.Multiline | RegexOptions.Singleline)]
+    [GeneratedRegex(@"<!-- issue-agent:result:start -->\r?\n## Implementation result\r?\n(?<result>.*?)\r?\n<!-- issue-agent:result:end -->", RegexOptions.Singleline)]
     private static partial Regex ImplementationResultSectionPattern();
 
     [GeneratedRegex(@"^-\s+(?<text>.+?)(?=\r?\n-\s|\z)", RegexOptions.Multiline | RegexOptions.Singleline)]

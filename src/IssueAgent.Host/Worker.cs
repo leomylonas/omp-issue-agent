@@ -41,6 +41,8 @@ public sealed partial class Worker(
         }
         finally
         {
+            var discardedQueuedWork = pollingScheduler.StopAdmission();
+            LogShutdown(logger, configuration.ShutdownGracePeriod, discardedQueuedWork);
             var shutdown = await shutdownCoordinator.DrainAndCancelAsync(
                 configuration.ShutdownGracePeriod,
                 ShutdownCancellationHeadroom,

@@ -77,7 +77,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         }
 
         var planningResult = PlanningResult.Parse(outcome.Completed!.ResultJson);
-        PlanningResult reconciledResult;
+        ReconciledPlanningResult reconciledResult;
         try
         {
             reconciledResult = await ReconcileNewInputDuringPlanningAsync(
@@ -89,9 +89,16 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             return await FailAsync(config, issueNumber, initialState, WaitingReason.ManualIntervention, exception.Message, cancellationToken)
                 .ConfigureAwait(false);
         }
-        var latestIssue = await deps.Provider.GetIssueAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
 
-        return await PublishPlanAsync(config, issueNumber, initialState, reconciledResult, planRevision: 1, latestIssue.Title, latestIssue.Description, cancellationToken).ConfigureAwait(false);
+        return await PublishPlanAsync(
+            config,
+            issueNumber,
+            initialState,
+            reconciledResult.Result,
+            planRevision: 1,
+            reconciledResult.Input.Title,
+            reconciledResult.Input.Description,
+            cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Resumes the same OMP session with the complete relevant planning conversation and
@@ -141,15 +148,8 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         var outcome = await OmpRunCollector
             .RunToCompletionAsync(omp, new OmpRunRequest(currentState.OmpSessionId, worktreePath, prompt, config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
             .ConfigureAwait(false);
-
-        if (!outcome.Succeeded)
-        {
-            return await FailAsync(config, issueNumber, workingState, WaitingReason.ManualIntervention, outcome.Error!.Message, cancellationToken)
-                .ConfigureAwait(false);
-        }
-
         var planningResult = PlanningResult.Parse(outcome.Completed!.ResultJson);
-        PlanningResult reconciled;
+        ReconciledPlanningResult reconciled;
         try
         {
             reconciled = await ReconcileNewInputDuringPlanningAsync(
@@ -161,13 +161,21 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             return await FailAsync(config, issueNumber, workingState, WaitingReason.ManualIntervention, exception.Message, cancellationToken)
                 .ConfigureAwait(false);
         }
-        var latestIssue = await deps.Provider.GetIssueAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
-        return await PublishPlanAsync(config, issueNumber, workingState, reconciled, existingContent.State.PlanRevision + 1, latestIssue.Title, latestIssue.Description, cancellationToken)
-            .ConfigureAwait(false);
+
+        return await PublishPlanAsync(
+            config,
+            issueNumber,
+            workingState,
+            reconciled.Result,
+            existingContent.State.PlanRevision + 1,
+            reconciled.Input.Title,
+            reconciled.Input.Description,
+            cancellationToken).ConfigureAwait(false);
     }
 
     private sealed record InputSnapshot(string Title, string Description, string CommentsDigest);
 
+    private sealed record ReconciledPlanningResult(PlanningResult Result, InputSnapshot Input);
     private async Task<InputSnapshot> CaptureInputSnapshotAsync(
         RepositoryRef repository,
         long issueNumber,
@@ -187,7 +195,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         return new InputSnapshot(issue.Title, issue.Description, digest);
     }
 
-    private async Task<PlanningResult> ReconcileNewInputDuringPlanningAsync(
+    private async Task<ReconciledPlanningResult> ReconcileNewInputDuringPlanningAsync(
         WorkflowRepositoryConfig config,
         long issueNumber,
         IOmpClient omp,
@@ -207,7 +215,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             var latest = await CaptureInputSnapshotAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
             if (latest == baseline)
             {
-                return result;
+                return new ReconciledPlanningResult(result, baseline);
             }
 
             var latestPlan = new PlanContext(currentPlan?.Revision ?? 0, result.PlanText, result.DecisionsAndRationale);

@@ -85,6 +85,33 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
         }
         var worktreePath = Path.Combine(config.WorkflowsStoragePath, state.WorkflowId.ToString(), "worktree");
         var worktreeExists = Directory.Exists(worktreePath);
+        if (!worktreeExists)
+        {
+            try
+            {
+                await dependencies.Git.CreateWorktreeAsync(
+                    config.Repository.Id,
+                    state.WorkflowId.ToString(),
+                    worktreePath,
+                    state.Branch,
+                    state.BaseCommit,
+                    cancellationToken).ConfigureAwait(false);
+                worktreeExists = true;
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                return await PauseForHumanAsync(
+                    config,
+                    issueNumber,
+                    canonicalComment,
+                    content,
+                    state,
+                    WaitingReason.CorruptState,
+                    $"The retained worktree is missing and could not be recreated ({exception.GetType().Name}).",
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+
         string? localHead = null;
         var worktreeDirty = false;
         if (worktreeExists)
@@ -100,6 +127,14 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
             remoteHead is not null &&
             !string.Equals(localHead, remoteHead, StringComparison.Ordinal) &&
             await dependencies.Git.IsAncestorAsync(config.Repository.Id, localHead, remoteHead, cancellationToken).ConfigureAwait(false);
+        if (!worktreeDirty && localHeadIsAncestorOfRemote)
+        {
+            // A human may have committed directly to the published branch. Incorporate a safe
+            // fast-forward into the retained worktree before revision/continue.
+            await dependencies.Git.ResetWorktreeAsync(config.Repository.Id, worktreePath, remoteHead!, cancellationToken).ConfigureAwait(false);
+            localHead = remoteHead;
+            localHeadIsAncestorOfRemote = false;
+        }
         var labels = await dependencies.Provider
             .GetLabelsAsync(new ProviderWorkItemReference(config.Repository, ProviderWorkItemKind.Issue, issueNumber), cancellationToken)
             .ConfigureAwait(false);

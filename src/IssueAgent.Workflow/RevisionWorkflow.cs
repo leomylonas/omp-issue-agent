@@ -39,6 +39,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 config, issueNumber, workingState, existingContent, "Cannot revise: no merge request was found for this workflow's branch.", cancellationToken).ConfigureAwait(false);
         }
         await ConsumeMergeRequestCommandAsync(config, mergeRequest.Number, WorkflowCommand.Revise, cancellationToken).ConfigureAwait(false);
+        var feedbackBeforeRevision = await CaptureFeedbackSnapshotAsync(config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
         var currentPlan = new PlanContext(existingContent.State.PlanRevision, existingContent.PlanText, existingContent.DecisionsAndRationale);
 
         var worktreePath = WorktreePath(config, currentState.WorkflowId);
@@ -50,7 +51,6 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         var feedback = context.PullOrMergeRequest is { } mrContext
             ? mrContext.Comments.Concat(mrContext.ReviewThreads).Where(c => c.CreatedAt > existingContent.State.UpdatedAt).ToList()
             : [];
-        var feedbackBeforeRevision = await CaptureFeedbackSnapshotAsync(config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
         var revisionOutcome = await OmpRunCollector
             .RunToCompletionAsync(omp, new OmpRunRequest(currentState.OmpSessionId, worktreePath, config.ApplyInstructions(ImplementationPromptBuilder.BuildRevisionPrompt(context, feedback)), config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
             .ConfigureAwait(false);
@@ -168,6 +168,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
 
         await foreach (var thread in deps.Provider.GetReviewThreadsAsync(repository, mergeRequestNumber, cancellationToken).ConfigureAwait(false))
         {
+            snapshot.Add($"thread:{thread.Id}:resolved={thread.IsResolved}");
             foreach (var comment in thread.Comments)
             {
                 if (!comment.IsBot && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))

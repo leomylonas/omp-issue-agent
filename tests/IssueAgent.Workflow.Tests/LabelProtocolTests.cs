@@ -55,6 +55,15 @@ public sealed class LabelProtocolTests
         Assert.Equal(LabelAmbiguity.MultipleCommandLabels, snapshot.Ambiguity);
     }
 
+
+    [Fact]
+    public void SingleCommandIsAvailableEvenWhenPhaseLabelsAreMissing()
+    {
+        var snapshot = LabelProtocol.Analyze(["agent:cmd:revise"]);
+
+        Assert.Equal(WorkflowCommand.Revise, snapshot.SingleCommand);
+        Assert.True(snapshot.IsPhaseStateAmbiguous);
+    }
     [Fact]
     public void ComputeTransitionSwapsPhaseAndStateLabelsAndPreservesOtherLabels()
     {

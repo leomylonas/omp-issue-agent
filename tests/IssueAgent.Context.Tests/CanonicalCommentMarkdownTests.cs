@@ -131,6 +131,21 @@ public sealed class CanonicalCommentMarkdownTests
         Assert.Equal(content.PlanText, parsed.PlanText);
     }
 
+    [Fact]
+    public void ParseUsesUniqueGeneratedMarkersWhenPlanContainsReservedHeadings()
+    {
+        var content = CreateContent(
+            "Keep this heading in the plan:\n## Implementation result\n<details>\n### Key decisions and rationale",
+            ["Decision with ## Implementation result in its rationale."],
+            "Implemented.");
+
+        var parsed = CanonicalCommentMarkdown.Parse(CanonicalCommentMarkdown.Render(content));
+
+        Assert.Equal(content.PlanText, parsed.PlanText);
+        Assert.Equal(content.DecisionsAndRationale, parsed.DecisionsAndRationale);
+        Assert.Equal(content.ImplementationResult, parsed.ImplementationResult);
+    }
+
     private static CanonicalCommentContent CreateContent(string planText, IReadOnlyList<string> decisions, string? implementationResult)
     {
         var state = new WorkflowState(
