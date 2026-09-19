@@ -11,7 +11,7 @@ services:
       IssueAgent__Workspace__RootPath: /data
       IssueAgent__Omp__ExecutablePath: /usr/local/bin/omp
       IssueAgent__Omp__AuthBrokerUrl: ${ISSUE_AGENT_OMP_AUTH_BROKER_URL:-}
-      OMP_CONFIG_DIR: /etc/omp
+      PI_CONFIG_FILES: /etc/omp
     secrets:
       - github_token
     ports:

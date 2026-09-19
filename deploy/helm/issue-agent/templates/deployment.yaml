@@ -80,7 +80,7 @@ spec:
             - name: OpenTelemetry__OtlpEndpoint
               value: {{ .Values.config.otlpEndpoint | quote }}
             {{- end }}
-            - name: OMP_CONFIG_DIR
+            - name: PI_CONFIG_FILES
               value: {{ .Values.omp.config.mountPath | quote }}
           readinessProbe:
             httpGet:

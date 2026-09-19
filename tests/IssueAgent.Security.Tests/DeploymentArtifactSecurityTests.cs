@@ -13,7 +13,8 @@ public sealed class DeploymentArtifactSecurityTests
         var broker = ReadRepositoryFile("deploy/helm/issue-agent/templates/auth-broker.yaml");
 
         Assert.Contains("automountServiceAccountToken: false", deployment, StringComparison.Ordinal);
-        Assert.Contains("OMP_CONFIG_DIR", deployment, StringComparison.Ordinal);
+        Assert.Contains("PI_CONFIG_FILES", deployment, StringComparison.Ordinal);
+        Assert.DoesNotContain("OMP_CONFIG_DIR", deployment, StringComparison.Ordinal);
         Assert.Contains("mountPath: {{ .Values.omp.config.mountPath }}", deployment, StringComparison.Ordinal);
         Assert.Contains("readOnly: true", deployment, StringComparison.Ordinal);
         Assert.Contains("automountServiceAccountToken: false", broker, StringComparison.Ordinal);
@@ -35,12 +36,29 @@ public sealed class DeploymentArtifactSecurityTests
     }
 
     [Fact]
+    public void PlainDockerExamplePersistsDataAndUsesSupportedOmpConfigSetting()
+    {
+        var readme = ReadRepositoryFile("deploy/README.md");
+        var environment = ReadRepositoryFile("deploy/issue-agent.env");
+
+        Assert.Contains("--read-only", readme, StringComparison.Ordinal);
+        Assert.Contains("--cap-drop=ALL", readme, StringComparison.Ordinal);
+        Assert.Contains("--tmpfs /tmp", readme, StringComparison.Ordinal);
+        Assert.Contains("-v issue-agent-data:/data", readme, StringComparison.Ordinal);
+        Assert.Contains("-e PI_CONFIG_FILES=/etc/omp", readme, StringComparison.Ordinal);
+        Assert.Contains("PI_CONFIG_FILES=/etc/omp", environment, StringComparison.Ordinal);
+        Assert.DoesNotContain("OMP_CONFIG_DIR", readme, StringComparison.Ordinal);
+        Assert.DoesNotContain("OMP_CONFIG_DIR", environment, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ComposeExposesBrokerSetupOnlyOnLoopbackAndKeepsOmpConfigReadOnly()
     {
         var compose = ReadRepositoryFile("deploy/docker-compose.yml");
 
         Assert.Contains("127.0.0.1:${OMP_AUTH_BROKER_PORT:-8081}:8081", compose, StringComparison.Ordinal);
-        Assert.Contains("OMP_CONFIG_DIR: /etc/omp", compose, StringComparison.Ordinal);
+        Assert.Contains("PI_CONFIG_FILES: /etc/omp", compose, StringComparison.Ordinal);
+        Assert.DoesNotContain("OMP_CONFIG_DIR", compose, StringComparison.Ordinal);
         Assert.Contains("./omp:/etc/omp:ro", compose, StringComparison.Ordinal);
     }
 

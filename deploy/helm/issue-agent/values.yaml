@@ -12,7 +12,7 @@ workspace:
 
 omp:
   config:
-    # Supply either an existing ConfigMap or data for the generated ConfigMap.
+    # Config files are mounted read-only and exposed to OMP through PI_CONFIG_FILES.
     existingConfigMap: ""
     existingConfigMapChecksum: ""
     mountPath: /etc/omp

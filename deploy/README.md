@@ -35,6 +35,7 @@ Provide OMP files as key/value entries under `omp.config.data`, or reference an 
 with `omp.config.existingConfigMap`. Existing ConfigMaps and Secrets must also provide their
 content checksum (`existingConfigMapChecksum`, `omp.config.existingConfigMapChecksum`, or
 `existingSecretChecksum`) when rendering offline so changes deterministically roll the pod.
+The chart sets `PI_CONFIG_FILES` to the mounted OMP configuration directory. OMP session state remains in the `/data/omp` subdirectory of the workspace PVC.
 
 For Helm, keep the broker internal and use a local port-forward only during setup:
 
@@ -54,14 +55,15 @@ docker run --rm --name issue-agent \
   --read-only --cap-drop=ALL --security-opt=no-new-privileges \
   --tmpfs /tmp \
   -p 127.0.0.1:8080:8080 \
-  -e OMP_CONFIG_DIR=/etc/omp \
-  -v "$PWD/omp:/etc/omp:ro" \
+  -v issue-agent-data:/data \
+  -e PI_CONFIG_FILES=/etc/omp \
+  --volume "$PWD/omp:/etc/omp:ro" \
   --env-file "$PWD/issue-agent.env" \
   --mount type=bind,src="$PWD/secrets/github-token",dst=/run/secrets/github_token,readonly \
   issue-agent:local
 ```
 
-The container runs as the non-root `issueagent` user. `/data` is the only persistent writable application path; OMP configuration is read-only.
+The container runs as the non-root `issueagent` user. `/data` is the only persistent writable application path; OMP configuration is read-only. `PI_CONFIG_FILES` is the pinned OMP runtime setting that points OMP at the mounted configuration directory; OMP sessions remain under `/data/omp`.
 
 ## Optional integrations
 
