@@ -72,6 +72,8 @@ spec:
           command: ["/bin/sh", "-ec"]
           args:
             - |
+              chown -R 10001:10001 /data
+              chmod 2770 /data
               for source in /run/secrets-source/*; do
                 [ -f "$source" ] || continue
                 install -o 10001 -g 10001 -m 0400 "$source" "/run/issue-agent-secrets/$(basename "$source")"
@@ -84,7 +86,10 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
+              add: [CHOWN, FOWNER]
           volumeMounts:
+            - name: workspace
+              mountPath: /data
             - name: issue-agent-secrets
               mountPath: /run/issue-agent-secrets
             {{- if or .Values.secret.existingSecret .Values.secret.stringData }}
@@ -146,7 +151,7 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
-              add: [SETGID, SETUID]
+              add: [SETGID, SETPCAP, SETUID]
           volumeMounts:
             - name: workspace
               mountPath: /data

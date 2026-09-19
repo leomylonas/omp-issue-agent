@@ -127,8 +127,10 @@ public sealed class DeploymentArtifactSecurityTests
         Assert.Contains("PI_CODING_AGENT_DIR=/data/omp/agent", dockerfile, StringComparison.Ordinal);
         Assert.Contains("PI_CODING_AGENT_SESSION_DIR=/data/omp", dockerfile, StringComparison.Ordinal);
         Assert.Contains("mkdir --parents /data", dockerfile, StringComparison.Ordinal);
-        Assert.Contains("umask 0002", entrypoint, StringComparison.Ordinal);
+        Assert.Contains("umask 0077", entrypoint, StringComparison.Ordinal);
         Assert.Contains("--reuid=10001 --regid=10001", entrypoint, StringComparison.Ordinal);
+        Assert.Contains("--inh-caps +setuid,+setgid", entrypoint, StringComparison.Ordinal);
+        Assert.Contains("--ambient-caps +setuid,+setgid", entrypoint, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -145,13 +147,15 @@ public sealed class DeploymentArtifactSecurityTests
         Assert.Contains("--reuid=10002 --regid=10001", ompWrapper, StringComparison.Ordinal);
         Assert.Contains("umask 0002", ompWrapper, StringComparison.Ordinal);
         Assert.Contains("install --owner=10001 --group=10001 --mode=0400", entrypoint, StringComparison.Ordinal);
+        Assert.Contains("FOWNER", compose, StringComparison.Ordinal);
         Assert.Contains("/run/secrets-source", compose, StringComparison.Ordinal);
-        Assert.Contains("user: \"10001:10001\"", brokerOverlay, StringComparison.Ordinal);
+        Assert.Contains("chown -R 10001:10001 /data", brokerOverlay, StringComparison.Ordinal);
         var mainContainer = deployment[deployment.IndexOf("      containers:", StringComparison.Ordinal)..deployment.IndexOf("      volumes:", StringComparison.Ordinal)];
         Assert.Contains("copy-issue-agent-secrets", deployment, StringComparison.Ordinal);
         Assert.Contains("runAsNonRoot: true", deployment, StringComparison.Ordinal);
         Assert.Contains("runAsUser: 10001", deployment, StringComparison.Ordinal);
         Assert.Contains("runAsUser: 0", deployment, StringComparison.Ordinal);
+        Assert.Contains("FOWNER", deployment, StringComparison.Ordinal);
         Assert.DoesNotContain("issue-agent-secret-source", mainContainer, StringComparison.Ordinal);
         Assert.Contains("defaultMode: 0400", deployment, StringComparison.Ordinal);
     }

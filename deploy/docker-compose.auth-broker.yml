@@ -9,12 +9,13 @@ services:
         mode: 0444
   omp-auth-broker:
     image: ${OMP_AUTH_BROKER_IMAGE:-issue-agent:local}
-    user: "10001:10001"
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
+        chown -R 10001:10001 /data
+        chmod 2770 /data
         install -Dm 600 /run/secrets/omp_auth_broker_token /data/.omp/auth-broker.token
-        exec /usr/local/bin/omp auth-broker serve --bind=0.0.0.0:8081
+        exec /usr/bin/setpriv --reuid=10001 --regid=10001 --clear-groups --no-new-privs -- /usr/local/bin/omp auth-broker serve --bind=0.0.0.0:8081
     environment:
       HOME: /data
       PI_CODING_AGENT_DIR: /data/omp/agent
@@ -33,6 +34,11 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - SETGID
+      - SETUID
     restart: unless-stopped
 
 secrets:

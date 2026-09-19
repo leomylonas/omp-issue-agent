@@ -168,7 +168,6 @@ public sealed partial class WorkflowDispatcher(
             initialBranchName,
             initialBaseCommit,
             cancellationToken).ConfigureAwait(false);
-        // PlanningWorkflow publishes the durable checkpoint before using this retained checkout.
         await using var omp = StartOmp(runtime, issueNumber, initialWorktreePath);
         var stopwatch = Stopwatch.StartNew();
         metrics.PlanCount.Add(1, runtime.Tags);

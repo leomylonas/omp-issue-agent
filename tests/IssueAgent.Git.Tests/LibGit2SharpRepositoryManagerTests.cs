@@ -49,6 +49,27 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task EnsureBareRepositoryAsyncProtectsCanonicalRemoteConfigurationFromOmpGroupWrites()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out _));
+        await manager.EnsureBareRepositoryAsync("repo-authority-permissions", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var barePath = Path.Combine(reposRoot, "repo-authority-permissions");
+        var configPath = Path.Combine(barePath, "config");
+        File.SetUnixFileMode(configPath, File.GetUnixFileMode(configPath) | UnixFileMode.GroupWrite);
+        File.SetUnixFileMode(barePath, File.GetUnixFileMode(barePath) | UnixFileMode.GroupWrite);
+
+        await manager.EnsureBareRepositoryAsync("repo-authority-permissions", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+
+        Assert.False((File.GetUnixFileMode(configPath) & UnixFileMode.GroupWrite) != 0);
+        Assert.False((File.GetUnixFileMode(barePath) & UnixFileMode.GroupWrite) != 0);
+    }
+
+    [Fact]
     public async Task ResolveBranchCommitAsyncReturnsExactShaAndThrowsForMissingBranch()
     {
         var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out var expectedSha));
@@ -138,6 +159,29 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
         Assert.True((checkoutMode & (UnixFileMode.GroupRead | UnixFileMode.GroupWrite)) == (UnixFileMode.GroupRead | UnixFileMode.GroupWrite));
         Assert.True((checkoutDirectoryMode & (UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute)) == (UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute));
         Assert.Equal(bareHeadMode, File.GetUnixFileMode(bareHeadPath));
+    }
+
+    [Fact]
+    public async Task CreateWorktreeAsyncDoesNotFollowCheckoutSymlinksWhenAdjustingGroupPermissions()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out var baseCommit));
+        await manager.EnsureBareRepositoryAsync("repo-symlink-permissions", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
+        await manager.CreateWorktreeAsync("repo-symlink-permissions", "wt-symlink", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
+
+        var secretPath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "provider-secret"));
+        File.WriteAllText(secretPath, "secret");
+        File.SetUnixFileMode(secretPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        File.CreateSymbolicLink(Path.Combine(worktreePath, "provider-secret"), secretPath);
+
+        await manager.CreateWorktreeAsync("repo-symlink-permissions", "wt-symlink", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(secretPath));
     }
 
     [Fact]
@@ -314,6 +358,32 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
         var remoteBranch = bareRepo.Branches["agent/issue-1"];
         Assert.NotNull(remoteBranch);
         Assert.Equal(commitSha, remoteBranch.Tip.Sha);
+    }
+
+    [Fact]
+    public async Task PushAsyncUsesTheCanonicalBareRepositoryWhenOmpReplacesWorktreeGitMetadata()
+    {
+        var bareRemotePath = Track(TempGitFixtures.CreateBareRemoteRepository(out var baseCommit));
+        await manager.EnsureBareRepositoryAsync("repo-push-authority", bareRemotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
+        await manager.CreateWorktreeAsync("repo-push-authority", "wt-push-authority", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
+
+        using (var worktreeRepo = new Repository(worktreePath))
+        {
+            File.WriteAllText(Path.Combine(worktreePath, "published.txt"), "published change\n");
+            Commands.Stage(worktreeRepo, "published.txt");
+            var signature = new Signature("Test", "test@example.com", DateTimeOffset.UtcNow);
+            worktreeRepo.Commit("Publish", signature, signature);
+        }
+
+        var attackerRepositoryPath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "attacker.git"));
+        Repository.Init(attackerRepositoryPath, isBare: true);
+        File.WriteAllText(Path.Combine(worktreePath, ".git"), $"gitdir: {attackerRepositoryPath}\n");
+
+        await manager.PushAsync("repo-push-authority", worktreePath, "agent/issue-1", TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+
+        using var bareRepo = new Repository(bareRemotePath);
+        Assert.NotNull(bareRepo.Branches["agent/issue-1"]);
     }
 
     [Fact]

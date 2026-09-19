@@ -22,13 +22,34 @@ public sealed record PlanningResult(
     {
         try
         {
-            return JsonSerializer.Deserialize(resultJson, PlanningJsonContext.Default.PlanningResult)
+            var result = JsonSerializer.Deserialize(resultJson, PlanningJsonContext.Default.PlanningResult)
                 ?? throw new WorkflowContractException("OMP planning result JSON deserialized to null.");
+            if (string.IsNullOrWhiteSpace(result.PlanText) ||
+                result.DecisionsAndRationale is null ||
+                ContainsBlankItem(result.DecisionsAndRationale))
+            {
+                throw new WorkflowContractException("OMP planning result JSON contains null or blank required content.");
+            }
+
+            return result;
         }
         catch (JsonException ex)
         {
             throw new WorkflowContractException($"OMP planning result JSON was malformed: {ex.Message}", ex);
         }
+    }
+
+    private static bool ContainsBlankItem(IReadOnlyList<string> items)
+    {
+        foreach (var item in items)
+        {
+            if (string.IsNullOrWhiteSpace(item))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
 

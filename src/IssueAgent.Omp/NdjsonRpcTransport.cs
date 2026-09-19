@@ -20,6 +20,7 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task readLoopTask;
     private long nextRequestId;
+    private readonly SemaphoreSlim writeGate = new(1, 1);
     private int disposed;
 
     private NdjsonRpcTransport(Process process)
@@ -128,9 +129,17 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
 
     private async Task WriteLineAsync(JsonObject payload, CancellationToken cancellationToken)
     {
-        var line = payload.ToJsonString();
-        await process.StandardInput.WriteLineAsync(line.AsMemory(), cancellationToken).ConfigureAwait(false);
-        await process.StandardInput.FlushAsync(cancellationToken).ConfigureAwait(false);
+        await writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var line = payload.ToJsonString();
+            await process.StandardInput.WriteLineAsync(line.AsMemory(), cancellationToken).ConfigureAwait(false);
+            await process.StandardInput.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            writeGate.Release();
+        }
     }
 
     private async Task ReadLoopAsync()
@@ -267,5 +276,6 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
         }
 
         process.Dispose();
+        writeGate.Dispose();
     }
 }

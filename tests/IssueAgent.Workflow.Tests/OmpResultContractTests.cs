@@ -31,6 +31,8 @@ public sealed class OmpResultContractTests
     {
         Assert.Throws<WorkflowContractException>(() => PlanningResult.Parse("""{"planText":"Plan"}"""));
         Assert.Throws<WorkflowContractException>(() => PlanningResult.Parse("""{"planText":"Plan","decisions":[],"extra":true}"""));
+        Assert.Throws<WorkflowContractException>(() => PlanningResult.Parse("""{"planText":null,"decisions":[]}"""));
+        Assert.Throws<WorkflowContractException>(() => PlanningResult.Parse("""{"planText":"Plan","decisions":null}"""));
     }
 
     [Fact]
@@ -41,6 +43,8 @@ public sealed class OmpResultContractTests
 
         Assert.Throws<WorkflowContractException>(() => ImplementationResult.Parse(missingChecks));
         Assert.Throws<WorkflowContractException>(() => ImplementationResult.Parse(unexpectedProperty));
+        Assert.Throws<WorkflowContractException>(() => ImplementationResult.Parse("""{"summary":null,"keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+        Assert.Throws<WorkflowContractException>(() => ImplementationResult.Parse("""{"summary":"Done","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":null}"""));
     }
 
     private static void AssertOutputOnlyPlanningContract(string prompt)

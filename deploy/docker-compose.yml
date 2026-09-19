@@ -32,8 +32,11 @@ services:
     cap_drop:
       - ALL
     cap_add:
+      - CHOWN
+      - FOWNER
       - DAC_OVERRIDE
       - SETGID
+      - SETPCAP
       - SETUID
     stop_grace_period: 25s
     restart: unless-stopped

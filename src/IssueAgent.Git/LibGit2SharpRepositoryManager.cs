@@ -20,12 +20,15 @@ namespace IssueAgent.Git;
 /// </summary>
 public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRepositoryManager
 {
+    private static readonly string[] mutableBareRepositoryDirectories = ["objects", "refs", "logs", "worktrees"];
+
 
     public ValueTask EnsureBareRepositoryAsync(string repositoryId, string cloneUrl, GitAuthentication authentication, CancellationToken cancellationToken)
     {
         var path = BareRepositoryPath(repositoryId);
         if (Repository.IsValid(path))
         {
+            HardenBareRepositoryAuthority(path);
             return ValueTask.CompletedTask;
         }
 
@@ -47,6 +50,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         }
 
         DisableHooks(path);
+        HardenBareRepositoryAuthority(path);
         return ValueTask.CompletedTask;
     }
 
@@ -298,13 +302,17 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
 
     public ValueTask PushAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken)
     {
+        // OMP can edit a retained worktree, including its .git file. Resolve both the ref and
+        // remote from the canonical bare repository, which is never made group-writable, so a
+        // worktree cannot redirect a credential-bearing push.
+        var bareRepositoryPath = BareRepositoryPath(repositoryId);
         if (authentication.Mode == GitAuthenticationMode.Ssh)
         {
-            GitSshTransport.Push(worktreePath, branchName, authentication);
+            GitSshTransport.Push(bareRepositoryPath, branchName, authentication);
             return ValueTask.CompletedTask;
         }
 
-        using var repo = new Repository(worktreePath);
+        using var repo = new Repository(bareRepositoryPath);
         if (repo.Branches[branchName] is null)
         {
             throw new GitReferenceNotFoundException($"Local branch '{branchName}' was not found.");
@@ -381,6 +389,24 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
     }
 
 
+
+    private static void HardenBareRepositoryAuthority(string bareRepositoryPath)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        File.SetUnixFileMode(
+            bareRepositoryPath,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupExecute);
+        var configPath = Path.Combine(bareRepositoryPath, "config");
+        if (File.Exists(configPath))
+        {
+            File.SetUnixFileMode(configPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+    }
+
     /// <summary>Makes only the checkout writable by OMP's shared group; bare repositories retain
     /// their owner-only permissions.</summary>
     [SupportedOSPlatform("linux")]
@@ -391,15 +417,28 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
             return;
         }
 
-        SetGroupWritableMode(worktreePath, isDirectory: true);
-        foreach (var directory in Directory.EnumerateDirectories(worktreePath, "*", SearchOption.AllDirectories))
-        {
-            SetGroupWritableMode(directory, isDirectory: true);
-        }
+        MakeDirectoryTreeWritableByOmp(worktreePath);
+    }
 
-        foreach (var file in Directory.EnumerateFiles(worktreePath, "*", SearchOption.AllDirectories))
+    [SupportedOSPlatform("linux")]
+    private static void MakeDirectoryTreeWritableByOmp(string directoryPath)
+    {
+        SetGroupWritableMode(directoryPath, isDirectory: true);
+        foreach (var entryPath in Directory.EnumerateFileSystemEntries(directoryPath))
         {
-            SetGroupWritableMode(file, isDirectory: false);
+            if ((File.GetAttributes(entryPath) & FileAttributes.ReparsePoint) != 0)
+            {
+                continue;
+            }
+
+            if (Directory.Exists(entryPath))
+            {
+                MakeDirectoryTreeWritableByOmp(entryPath);
+            }
+            else
+            {
+                SetGroupWritableMode(entryPath, isDirectory: false);
+            }
         }
     }
 

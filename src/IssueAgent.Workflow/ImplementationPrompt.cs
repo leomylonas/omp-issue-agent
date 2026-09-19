@@ -30,8 +30,26 @@ public sealed record ImplementationResult(
     {
         try
         {
-            return JsonSerializer.Deserialize(resultJson, ImplementationJsonContext.Default.ImplementationResult)
+            var result = JsonSerializer.Deserialize(resultJson, ImplementationJsonContext.Default.ImplementationResult)
                 ?? throw new WorkflowContractException("OMP implementation result JSON deserialized to null.");
+            if (string.IsNullOrWhiteSpace(result.Summary) ||
+                result.KeyChanges is null ||
+                result.DecisionsAndRationale is null ||
+                result.ChecksRun is null ||
+                result.KnownFailures is null ||
+                result.Deviations is null ||
+                result.Risks is null ||
+                ContainsBlankItem(result.KeyChanges) ||
+                ContainsBlankItem(result.DecisionsAndRationale) ||
+                ContainsBlankItem(result.ChecksRun) ||
+                ContainsBlankItem(result.KnownFailures) ||
+                ContainsBlankItem(result.Deviations) ||
+                ContainsBlankItem(result.Risks))
+            {
+                throw new WorkflowContractException("OMP implementation result JSON contains null or blank required content.");
+            }
+
+            return result;
         }
         catch (JsonException ex)
         {
@@ -67,6 +85,19 @@ public sealed record ImplementationResult(
         {
             builder.Append("- ").AppendLine(item);
         }
+    }
+
+    private static bool ContainsBlankItem(IReadOnlyList<string> items)
+    {
+        foreach (var item in items)
+        {
+            if (string.IsNullOrWhiteSpace(item))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
 
