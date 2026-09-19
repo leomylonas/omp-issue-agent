@@ -51,6 +51,23 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
+    public async Task DiscoverAssignedOpenIssuesAsyncMatchesAssigneesCaseInsensitively()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues").UsingGet())
+            .RespondWith(JsonResponse("""
+                [{"number":8,"title":"Case variant","created_at":"2024-06-02T00:00:00Z",
+                  "assignees":[{"login":"Issue-Agent-Bot"}]}]
+                """));
+
+        var issues = await CollectAsync(fixture.Provider.DiscoverAssignedOpenIssuesAsync(
+            Repository, "issue-agent-bot", DateTimeOffset.MinValue, CancellationToken.None));
+
+        var issue = Assert.Single(issues);
+        Assert.Contains("Issue-Agent-Bot", issue.Assignees);
+    }
+
+    [Fact]
     public async Task DiscoverAssignedOpenIssuesAsyncFollowsLinkHeaderPaginationAcrossPages()
     {
         var page2Url = $"{fixture.Server.Url}/api/v3/repos/octo/widgets/issues?page=2";
@@ -116,6 +133,25 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
         Assert.Equal("Steps to reproduce", issue.Description);
         Assert.Contains("bug", issue.Labels);
         Assert.Contains("issue-agent-bot", issue.Assignees);
+    }
+
+    [Fact]
+    public async Task GetIssueAsyncRetriesTransientServerErrors()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7").UsingGet())
+            .InScenario("github-5xx")
+            .WillSetStateTo("retried")
+            .RespondWith(Response.Create().WithStatusCode(503).WithBody("""{"message":"temporary"}"""));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7").UsingGet())
+            .InScenario("github-5xx")
+            .WhenStateIs("retried")
+            .RespondWith(JsonResponse("""{"number":7,"title":"Recovered","body":"ok","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","labels":[],"assignees":[]}"""));
+
+        var issue = await fixture.Provider.GetIssueAsync(Repository, 7, CancellationToken.None);
+
+        Assert.Equal("Recovered", issue.Title);
     }
 
     [Fact]

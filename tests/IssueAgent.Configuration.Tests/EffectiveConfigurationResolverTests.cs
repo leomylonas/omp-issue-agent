@@ -98,7 +98,7 @@ public sealed class EffectiveConfigurationResolverTests
         var effective = EffectiveConfigurationResolver.Resolve(options, _ => "token", _ => throw new InvalidOperationException());
         var repository = Assert.Single(Assert.Single(effective.Providers).Repositories);
 
-        Assert.Equal("IssueAgent", repository.GitIdentityName);
+        Assert.Equal("bot", repository.GitIdentityName);
         Assert.Equal("issue-agent@localhost", repository.GitIdentityEmail);
     }
 

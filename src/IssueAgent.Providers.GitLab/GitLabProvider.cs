@@ -47,7 +47,7 @@ public sealed class GitLabProvider(
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (issue.CreatedAt < startDate ||
-                !issue.Assignees.Any(assignee => string.Equals(assignee.Username, identity, StringComparison.Ordinal)))
+                !issue.Assignees.Any(assignee => string.Equals(assignee.Username, identity, StringComparison.OrdinalIgnoreCase)))
             {
                 continue;
             }
@@ -56,7 +56,7 @@ public sealed class GitLabProvider(
                 issue.Iid,
                 issue.Title,
                 issue.CreatedAt,
-                issue.Assignees.Select(a => a.Username).ToHashSet(StringComparer.Ordinal));
+                issue.Assignees.Select(a => a.Username).ToHashSet(StringComparer.OrdinalIgnoreCase));
         }
     }
 
@@ -73,7 +73,7 @@ public sealed class GitLabProvider(
                 issue.Iid,
                 issue.Title,
                 issue.CreatedAt,
-                issue.Assignees.Select(assignee => assignee.Username).ToHashSet(StringComparer.Ordinal));
+                issue.Assignees.Select(assignee => assignee.Username).ToHashSet(StringComparer.OrdinalIgnoreCase));
         }
     }
 
@@ -292,7 +292,7 @@ public sealed class GitLabProvider(
         issue.CreatedAt,
         issue.UpdatedAt,
         issue.Labels.ToHashSet(StringComparer.Ordinal),
-        issue.Assignees.Select(a => a.Username).ToHashSet(StringComparer.Ordinal),
+        issue.Assignees.Select(a => a.Username).ToHashSet(StringComparer.OrdinalIgnoreCase),
         new AttachmentSource("issue-description", issue.Iid.ToString(CultureInfo.InvariantCulture)));
 
     private static ProviderComment ToProviderComment(GitLabNote note, string surface, long parentNumber, string? threadId = null) => new(

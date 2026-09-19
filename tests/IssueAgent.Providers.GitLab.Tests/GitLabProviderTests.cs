@@ -49,6 +49,24 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     }
 
     [Fact]
+    public async Task DiscoverAssignedOpenIssuesAsyncMatchesAssigneesCaseInsensitively()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/123/issues").UsingGet())
+            .RespondWith(JsonResponse("""
+                [{"iid":8,"title":"Case variant","created_at":"2024-06-02T00:00:00Z",
+                  "updated_at":"2024-06-02T00:00:00Z","labels":[],
+                  "assignees":[{"username":"Issue-Agent-Bot"}]}]
+                """));
+
+        var issues = await CollectAsync(fixture.Provider.DiscoverAssignedOpenIssuesAsync(
+            Repository, "issue-agent-bot", DateTimeOffset.MinValue, CancellationToken.None));
+
+        var issue = Assert.Single(issues);
+        Assert.Contains("Issue-Agent-Bot", issue.Assignees);
+    }
+
+    [Fact]
     public async Task DiscoverAssignedOpenIssuesAsyncFollowsLinkHeaderPagination()
     {
         fixture.Server
@@ -86,11 +104,10 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     }
 
     [Fact]
-    public async Task DiscoverManagedIssuesAsyncThrowsRatherThanPaginatingForeverAgainstAServerThatNeverStopsAdvertisingANextPage()
+    public async Task DiscoverManagedIssuesAsyncRejectsRepeatedPageUrlsInsteadOfLoopingForever()
     {
-        // Regression: a Link: rel="next" header that never stops (a misbehaving/hostile server, or
-        // an infinite-redirect-style loop) must not drive unbounded outbound requests for one
-        // workflow context (specification §27's bounded-resource intent).
+        // Repeated-URL protection prevents a malformed Link header from causing an infinite walk,
+        // while legitimate pagination remains uncapped.
         fixture.Server
             .Given(Request.Create().WithPath("/api/v4/projects/123/issues").UsingGet())
             .RespondWith(Response.Create()
@@ -102,7 +119,7 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             CollectAsync(fixture.Provider.DiscoverManagedIssuesAsync(Repository, CancellationToken.None)));
 
-        Assert.Contains("pagination limit", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("repeated page URL", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

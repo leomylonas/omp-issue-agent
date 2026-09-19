@@ -9,9 +9,6 @@ namespace IssueAgent.Providers.GitLab;
 /// and the JSON contract explicit.</summary>
 public sealed partial class GitLabApiClient(HttpClient httpClient)
 {
-    /// <summary>Hard ceiling on pages walked per paginated request (specification §27's bounded-
-    /// resource intent); exceeding it throws rather than silently truncating.</summary>
-    private const int MaxPages = 200;
 
     public async Task<GitLabProject> GetProjectAsync(string projectId, CancellationToken cancellationToken) =>
         await GetAsync($"projects/{Encode(projectId)}", GitLabJsonContext.Default.GitLabProject, cancellationToken).ConfigureAwait(false)
@@ -127,13 +124,13 @@ public sealed partial class GitLabApiClient(HttpClient httpClient)
     private async Task<IReadOnlyList<T>> GetAllPagesAsync<T>(string relativeUrl, JsonTypeInfo<T[]> typeInfo, CancellationToken cancellationToken)
     {
         var results = new List<T>();
+        var visitedUrls = new HashSet<string>(StringComparer.Ordinal);
         string? nextUrl = relativeUrl;
-        var pageCount = 0;
         while (nextUrl is not null)
         {
-            if (++pageCount > MaxPages)
+            if (!visitedUrls.Add(nextUrl))
             {
-                throw new InvalidOperationException($"GitLab request '{relativeUrl}' exceeded the {MaxPages}-page pagination limit.");
+                throw new InvalidOperationException($"GitLab request '{relativeUrl}' repeated page URL '{nextUrl}'.");
             }
 
             using var response = await ProviderRetryPolicy.SendAsync(

@@ -23,14 +23,20 @@ public sealed class GitHubProvider(
 
     public async ValueTask<ProviderIdentity> GetCurrentIdentityAsync(CancellationToken cancellationToken)
     {
-        var user = await ExecuteWithRetryAsync(() => client.User.Current(), cancellationToken).ConfigureAwait(false);
+        var user = await ExecuteReadWithCancellationAsync(
+            token => client.Connection.Get<User>(new Uri("user", UriKind.Relative), null, null, token),
+            cancellationToken).ConfigureAwait(false);
         return new ProviderIdentity(user.Login, user.Name ?? user.Login);
     }
 
     public async ValueTask<string> GetDefaultBranchAsync(RepositoryRef repository, CancellationToken cancellationToken)
     {
-        var repo = await ExecuteWithRetryAsync(
-            () => client.Repository.Get(repository.OwnerOrNamespace, repository.Name),
+        var repo = await ExecuteReadWithCancellationAsync(
+            token => client.Connection.Get<Repository>(
+                new Uri($"repos/{repository.OwnerOrNamespace}/{repository.Name}", UriKind.Relative),
+                null,
+                null,
+                token),
             cancellationToken).ConfigureAwait(false);
         return repo.DefaultBranch;
     }
@@ -59,7 +65,7 @@ public sealed class GitHubProvider(
 
             if (issue.PullRequest is not null ||
                 issue.CreatedAt < startDate ||
-                !issue.Assignees.Any(assignee => string.Equals(assignee.Login, identity, StringComparison.Ordinal)))
+                !issue.Assignees.Any(assignee => string.Equals(assignee.Login, identity, StringComparison.OrdinalIgnoreCase)))
             {
                 continue;
             }
@@ -68,7 +74,7 @@ public sealed class GitHubProvider(
                 issue.Number,
                 issue.Title,
                 issue.CreatedAt,
-                issue.Assignees.Select(a => a.Login).ToHashSet(StringComparer.Ordinal));
+                issue.Assignees.Select(a => a.Login).ToHashSet(StringComparer.OrdinalIgnoreCase));
         }
     }
 
@@ -97,7 +103,7 @@ public sealed class GitHubProvider(
                 issue.Number,
                 issue.Title,
                 issue.CreatedAt,
-                issue.Assignees.Select(assignee => assignee.Login).ToHashSet(StringComparer.Ordinal));
+                issue.Assignees.Select(assignee => assignee.Login).ToHashSet(StringComparer.OrdinalIgnoreCase));
         }
     }
 
@@ -106,8 +112,12 @@ public sealed class GitHubProvider(
         long issueNumber,
         CancellationToken cancellationToken)
     {
-        var issue = await ExecuteWithRetryAsync(
-            () => client.Issue.Get(repository.OwnerOrNamespace, repository.Name, checked((int)issueNumber)),
+        var issue = await ExecuteReadWithCancellationAsync(
+            token => client.Connection.Get<Issue>(
+                new Uri($"repos/{repository.OwnerOrNamespace}/{repository.Name}/issues/{checked((int)issueNumber)}", UriKind.Relative),
+                null,
+                null,
+                token),
             cancellationToken).ConfigureAwait(false);
 
         return new ProviderIssue(
@@ -118,7 +128,7 @@ public sealed class GitHubProvider(
             issue.CreatedAt,
             issue.UpdatedAt ?? issue.CreatedAt,
             issue.Labels.Select(l => l.Name).ToHashSet(StringComparer.Ordinal),
-            issue.Assignees.Select(a => a.Login).ToHashSet(StringComparer.Ordinal),
+            issue.Assignees.Select(a => a.Login).ToHashSet(StringComparer.OrdinalIgnoreCase),
             new AttachmentSource("issue-description", issue.Number.ToString(System.Globalization.CultureInfo.InvariantCulture)));
     }
 
@@ -146,7 +156,8 @@ public sealed class GitHubProvider(
     {
         var comment = await ExecuteWithRetryAsync(
             () => client.Issue.Comment.Create(repository.OwnerOrNamespace, repository.Name, checked((int)issueNumber), body),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            isIdempotent: false).ConfigureAwait(false);
         return ToProviderComment(comment, issueNumber);
     }
 
@@ -159,7 +170,8 @@ public sealed class GitHubProvider(
     {
         var comment = await ExecuteWithRetryAsync(
             () => client.Issue.Comment.Update(repository.OwnerOrNamespace, repository.Name, checked((int)commentId), body),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            isIdempotent: false).ConfigureAwait(false);
         return ToProviderComment(comment, issueNumber);
     }
 
@@ -180,7 +192,8 @@ public sealed class GitHubProvider(
     {
         await ExecuteWithRetryAsync(
             () => client.Issue.Labels.AddToIssue(workItem.Repository.OwnerOrNamespace, workItem.Repository.Name, checked((int)workItem.Number), [.. labels]),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            isIdempotent: false).ConfigureAwait(false);
     }
 
     public async ValueTask RemoveLabelAsync(
@@ -190,7 +203,8 @@ public sealed class GitHubProvider(
     {
         await ExecuteWithRetryAsync(
             () => client.Issue.Labels.RemoveFromIssue(workItem.Repository.OwnerOrNamespace, workItem.Repository.Name, checked((int)workItem.Number), label),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            isIdempotent: false).ConfigureAwait(false);
     }
 
     public async ValueTask EnsureLabelAsync(
@@ -208,7 +222,8 @@ public sealed class GitHubProvider(
         {
             await ExecuteWithRetryAsync(
                 () => client.Issue.Labels.Create(repository.OwnerOrNamespace, repository.Name, new NewLabel(label.Name, label.Color) { Description = label.Description }),
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                isIdempotent: false).ConfigureAwait(false);
         }
     }
 
@@ -245,7 +260,8 @@ public sealed class GitHubProvider(
 
         var created = await ExecuteWithRetryAsync(
             () => client.PullRequest.Create(request.Repository.OwnerOrNamespace, request.Repository.Name, newPullRequest),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            isIdempotent: false).ConfigureAwait(false);
 
         return ToProviderMergeRequest(request.Repository, created);
     }
@@ -255,8 +271,12 @@ public sealed class GitHubProvider(
         long number,
         CancellationToken cancellationToken)
     {
-        var pullRequest = await ExecuteWithRetryAsync(
-            () => client.PullRequest.Get(repository.OwnerOrNamespace, repository.Name, checked((int)number)),
+        var pullRequest = await ExecuteReadWithCancellationAsync(
+            token => client.Connection.Get<PullRequest>(
+                new Uri($"repos/{repository.OwnerOrNamespace}/{repository.Name}/pulls/{checked((int)number)}", UriKind.Relative),
+                null,
+                null,
+                token),
             cancellationToken).ConfigureAwait(false);
         return ToProviderMergeRequest(repository, pullRequest);
     }
@@ -345,6 +365,16 @@ public sealed class GitHubProvider(
         return new DownloadedAttachment(destinationPath, Path.GetFileName(destinationPath), totalRead);
     }
 
+    private static async Task<T> ExecuteReadWithCancellationAsync<T>(
+        Func<CancellationToken, Task<IApiResponse<T>>> execute,
+        CancellationToken cancellationToken)
+    {
+        var response = await ExecuteWithRetryAsync(
+            () => execute(cancellationToken),
+            cancellationToken).ConfigureAwait(false);
+        return response.Body;
+    }
+
     private static ProviderComment ToProviderComment(IssueComment comment, long issueNumber) => new(
         comment.Id,
         comment.User.Login,
@@ -354,10 +384,14 @@ public sealed class GitHubProvider(
         new AttachmentSource("issue-comment", issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture), comment.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)),
         comment.User.Login.EndsWith("[bot]", StringComparison.Ordinal));
 
-    private static async Task<T> ExecuteWithRetryAsync<T>(Func<Task<T>> execute, CancellationToken cancellationToken)
+    private static async Task<T> ExecuteWithRetryAsync<T>(
+        Func<Task<T>> execute,
+        CancellationToken cancellationToken,
+        bool isIdempotent = true)
     {
         for (var attempt = 1; ; attempt++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             try
             {
                 return await execute().WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -367,11 +401,43 @@ public sealed class GitHubProvider(
                 var delay = exception.GetRetryAfterTimeSpan();
                 await Task.Delay(delay > MaxRetryDelay ? MaxRetryDelay : delay, cancellationToken).ConfigureAwait(false);
             }
-            catch (SecondaryRateLimitExceededException) when (attempt < 3)
+            catch (SecondaryRateLimitExceededException exception) when (attempt < 3)
             {
-                await Task.Delay(TimeSpan.FromMilliseconds(100 + Random.Shared.Next(0, 100)), cancellationToken).ConfigureAwait(false);
+                var delay = GetSecondaryRetryAfter(exception) ?? TimeSpan.FromSeconds(1);
+                await Task.Delay(delay > MaxRetryDelay ? MaxRetryDelay : delay, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ApiException exception) when (isIdempotent && (int)exception.StatusCode >= 500 && attempt < 3)
+            {
+                var delay = TimeSpan.FromMilliseconds(100 * Math.Pow(2, attempt - 1) + Random.Shared.Next(0, 100));
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
             }
         }
+    }
+
+    private static TimeSpan? GetSecondaryRetryAfter(SecondaryRateLimitExceededException exception)
+    {
+        if (exception.HttpResponse?.Headers is { } headers &&
+            headers.TryGetValue("Retry-After", out var value))
+        {
+            if (double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var seconds))
+            {
+                if (seconds <= 0)
+                {
+                    return TimeSpan.Zero;
+                }
+                return seconds >= MaxRetryDelay.TotalSeconds
+                    ? MaxRetryDelay
+                    : TimeSpan.FromSeconds(seconds);
+            }
+
+            if (DateTimeOffset.TryParse(value, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var date))
+            {
+                var now = DateTimeOffset.UtcNow;
+                return date <= now ? TimeSpan.Zero : date >= now.Add(MaxRetryDelay) ? MaxRetryDelay : date - now;
+            }
+        }
+
+        return null;
     }
 
     private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(1);

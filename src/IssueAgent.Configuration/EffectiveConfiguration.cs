@@ -40,8 +40,8 @@ public sealed record RepositorySettingsOptions
     public GitTransportOptions? Git { get; init; }
 
     /// <summary>Commit author/committer identity for OMP-authored commits (specification §10:
-    /// "defaults to provider identity, with override"). Null means inherit; falls back to
-    /// "IssueAgent" / "issue-agent@localhost" if never configured at any level.</summary>
+    /// defaults to the authenticated provider login when an identity override is configured,
+    /// with a stable local fallback for anonymous providers).</summary>
     public GitIdentityOptions? GitIdentity { get; init; }
     public TimeSpan? OmpTimeout { get; init; }
     public IReadOnlyDictionary<string, string> OmpRoles { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -226,7 +226,7 @@ public static class EffectiveConfigurationResolver
             settings.WorkflowMode ?? ConfiguredWorkflowMode.Full,
             settings.SupplementalInstructions,
             git,
-            settings.GitIdentity?.Name ?? "IssueAgent",
+            settings.GitIdentity?.Name ?? provider.IdentityOverride ?? "IssueAgent",
             settings.GitIdentity?.Email ?? "issue-agent@localhost",
             settings.OmpTimeout ?? root.Omp.Timeout,
             roles);

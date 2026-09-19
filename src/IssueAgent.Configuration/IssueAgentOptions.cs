@@ -196,11 +196,11 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
             }
         }
 
-        if (options.Notifications.Telegram is { } telegram &&
-            (!telegram.BotToken.IsExactlyOneSource() || string.IsNullOrWhiteSpace(telegram.ChatId)))
+        if (options.Notifications.Tls is { } notificationTls)
         {
-            failures.Add("IssueAgent:Notifications:Telegram requires exactly one bot token source and a chat id.");
+            ValidateTlsTrust(notificationTls, "IssueAgent:Notifications:Tls", failures);
         }
+
 
         if (options.Notifications.Slack is { } slack && !slack.WebhookUrl.IsExactlyOneSource())
         {
@@ -227,6 +227,10 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
             {
                 failures.Add($"Provider '{provider.Name}' must define an absolute HTTP(S) BaseUri.");
             }
+            else if (provider.BaseUri.UserInfo.Length > 0)
+            {
+                failures.Add($"Provider '{provider.Name}' BaseUri must not contain credentials.");
+            }
 
             if (provider.Token is { } token && !token.IsExactlyOneSource())
             {
@@ -248,6 +252,14 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
                 ValidateLocalSettings(repository.Settings, $"Repository '{repository.Id}' settings", failures);
                 var mergedTrust = EffectiveConfigurationResolver.Merge(options.Defaults, provider.Defaults, repository.Settings);
                 ValidateMergedTrust(mergedTrust, $"Repository '{repository.Id}' (merged effective settings)", failures);
+                ValidateGitCredentials(provider, mergedTrust, $"Repository '{repository.Id}'", failures);
+                if (repository.CloneUrl is { } cloneUrl &&
+                    Uri.TryCreate(cloneUrl, UriKind.Absolute, out var parsedCloneUrl) &&
+                    ((parsedCloneUrl.Scheme is "http" or "https" && parsedCloneUrl.UserInfo.Length > 0) ||
+                     (parsedCloneUrl.Scheme == "ssh" && parsedCloneUrl.UserInfo.Contains(':', StringComparison.Ordinal))))
+                {
+                    failures.Add($"Repository '{repository.Id}' CloneUrl must not contain credentials.");
+                }
                 var hasOwner = !string.IsNullOrWhiteSpace(repository.OwnerOrNamespace) ||
                     repository.Name.Contains('/', StringComparison.Ordinal) ||
                     !string.IsNullOrWhiteSpace(provider.DefaultOwnerOrNamespace);
@@ -279,6 +291,7 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
             failures.Add($"{path} OmpTimeout must be greater than zero.");
         }
         var git = settings.Git;
+        ValidateTlsTrust(git?.Tls, $"{path} Git TLS", failures, requireMode: false);
         foreach (var (name, secret) in new[]
         {
             ("token", git?.Token),
@@ -289,6 +302,62 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
             if (secret is not null && !secret.IsExactlyOneSource())
             {
                 failures.Add($"{path} {name} must configure exactly one of env or file.");
+            }
+        }
+        if (git?.SshPrivateKeyPassphrase is not null)
+        {
+            failures.Add($"{path} SSH private-key passphrases are not supported; omit SshPrivateKeyPassphrase.");
+        }
+    }
+
+    private static void ValidateGitCredentials(
+        ProviderOptions provider,
+        RepositorySettingsOptions merged,
+        string path,
+        List<string> failures)
+    {
+        var git = merged.Git;
+        var mode = git?.Mode ?? (provider.Token is null
+            ? ConfiguredGitAuthenticationMode.Anonymous
+            : ConfiguredGitAuthenticationMode.ProviderToken);
+        switch (mode)
+        {
+            case ConfiguredGitAuthenticationMode.ProviderToken when provider.Token is null:
+                failures.Add($"{path} Git ProviderToken authentication requires a provider token.");
+                break;
+            case ConfiguredGitAuthenticationMode.Token when git?.Token is null:
+                failures.Add($"{path} Git Token authentication requires a Git token.");
+                break;
+            case ConfiguredGitAuthenticationMode.Ssh when git?.SshPrivateKey is null:
+                failures.Add($"{path} Git SSH authentication requires a private key.");
+                break;
+        }
+    }
+
+    private static void ValidateTlsTrust(
+        TlsTrustOptions? tls,
+        string path,
+        List<string> failures,
+        bool requireMode = true)
+    {
+        if (tls is null)
+        {
+            return;
+        }
+
+        if (requireMode && tls.Mode == ConfiguredTlsTrustMode.Pinned && tls.Fingerprints.Count == 0)
+        {
+            failures.Add($"{path} Pinned TLS trust requires at least one fingerprint.");
+        }
+        if (requireMode && tls.Mode == ConfiguredTlsTrustMode.SystemPlusAdditionalCa && tls.AdditionalCaCertificatePaths.Count == 0)
+        {
+            failures.Add($"{path} system-plus-additional-ca trust requires at least one CA certificate path.");
+        }
+        foreach (var certificatePath in tls.AdditionalCaCertificatePaths)
+        {
+            if (!Path.IsPathRooted(certificatePath) || !File.Exists(certificatePath))
+            {
+                failures.Add($"{path} CA certificate path '{certificatePath}' must be an existing absolute file path.");
             }
         }
     }
@@ -305,10 +374,7 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
         {
             failures.Add($"{path} SSH Git authentication requires an explicit host verification policy.");
         }
-        if (git?.Tls?.Mode == ConfiguredTlsTrustMode.Pinned && git.Tls.Fingerprints.Count == 0)
-        {
-            failures.Add($"{path} Pinned TLS trust requires at least one fingerprint.");
-        }
+        ValidateTlsTrust(git?.Tls, $"{path} TLS", failures);
         if (git?.SshTrust?.Mode == ConfiguredSshHostVerificationMode.Pinned && git.SshTrust.Fingerprints.Count == 0)
         {
             failures.Add($"{path} Pinned SSH host verification requires at least one fingerprint.");

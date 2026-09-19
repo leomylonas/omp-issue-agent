@@ -84,6 +84,7 @@ public sealed class IssueAgentOptionsValidatorTests
             {
                 Git = new GitTransportOptions
                 {
+                    SshPrivateKey = new SecretSource { Env = "SSH_KEY" },
                     SshTrust = new SshTrustOptions { Mode = ConfiguredSshHostVerificationMode.Pinned, Fingerprints = ["sha256:host"] },
                 },
             },
@@ -163,6 +164,75 @@ public sealed class IssueAgentOptionsValidatorTests
         Assert.True(result.Failed);
         Assert.Contains(result.Failures!, failure => failure.Contains("non-empty Name", StringComparison.Ordinal));
         Assert.Contains(result.Failures!, failure => failure.Contains("absolute HTTP(S) BaseUri", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ValidateRejectsCredentialsInProviderAndCloneUrls()
+    {
+        var options = CreateOptions() with
+        {
+            Providers =
+            [
+                CreateProvider() with
+                {
+                    BaseUri = new Uri("https://token:secret@example.test/"),
+                    Repositories =
+                    [
+                        new RepositoryOptions
+                        {
+                            Id = "github/example/repo",
+                            Name = "example/repo",
+                            CloneUrl = "https://token:secret@example.test/example/repo.git",
+                        },
+                    ],
+                },
+            ],
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("must not contain credentials", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ValidateRejectsUnsupportedSshPassphrasesAndMissingModeCredentials()
+    {
+        var options = CreateOptions() with
+        {
+            Defaults = new RepositorySettingsOptions
+            {
+                Git = new GitTransportOptions
+                {
+                    Mode = ConfiguredGitAuthenticationMode.Token,
+                    SshPrivateKeyPassphrase = new SecretSource { Env = "SSH_PASSPHRASE" },
+                },
+            },
+            Providers = [CreateProvider() with { Token = null }],
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("passphrases are not supported", StringComparison.Ordinal));
+        Assert.Contains(result.Failures!, failure => failure.Contains("Git Token authentication requires", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ValidateRejectsInvalidNotificationTlsTrust()
+    {
+        var options = CreateOptions() with
+        {
+            Notifications = new NotificationsOptions
+            {
+                Tls = new TlsTrustOptions { Mode = ConfiguredTlsTrustMode.Pinned },
+            },
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("pinned TLS trust requires", StringComparison.OrdinalIgnoreCase));
     }
 
     private static IssueAgentOptions CreateOptions() => new()

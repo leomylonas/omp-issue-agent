@@ -90,6 +90,14 @@ public static class ProviderRetryPolicy
             return null;
         }
 
+        // DateTimeOffset.FromUnixTimeSeconds throws outside the representable range. Treat
+        // malformed/server-controlled values as unusable rather than letting rate-limit handling
+        // fail before the policy's delay cap can be applied.
+        if (seconds < DateTimeOffset.MinValue.ToUnixTimeSeconds() || seconds > DateTimeOffset.MaxValue.ToUnixTimeSeconds())
+        {
+            return null;
+        }
+
         var resetAt = DateTimeOffset.FromUnixTimeSeconds(seconds);
         return resetAt - now;
     }
