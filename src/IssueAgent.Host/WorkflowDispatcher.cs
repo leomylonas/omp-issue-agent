@@ -188,6 +188,7 @@ public sealed partial class WorkflowDispatcher(
             {
                 // Best-effort cleanup; the original startup failure remains authoritative.
             }
+            throw;
         }
 
         await using var ompScope = omp;
