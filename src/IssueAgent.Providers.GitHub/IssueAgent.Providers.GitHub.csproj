@@ -5,6 +5,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../IssueAgent.Domain/IssueAgent.Domain.csproj" />
+    <ProjectReference Include="../IssueAgent.Git/IssueAgent.Git.csproj" />
     <ProjectReference Include="../IssueAgent.Providers/IssueAgent.Providers.csproj" />
   </ItemGroup>
 </Project>

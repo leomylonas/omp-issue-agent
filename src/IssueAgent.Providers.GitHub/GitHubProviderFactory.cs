@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using IssueAgent.Git;
 using Octokit;
 
 namespace IssueAgent.Providers.GitHub;
@@ -25,19 +26,22 @@ public static class GitHubProviderFactory
         var graphQlBaseUri = isGitHubDotCom ? new Uri("https://api.github.com/") : new Uri(configuration.ApiBaseUri, "api/");
 
         var credentials = configuration.Token is null ? Credentials.Anonymous : new Credentials(configuration.Token);
-        var restClient = new GitHubClient(new Octokit.ProductHeaderValue("IssueAgent"), configuration.ApiBaseUri)
-        {
-            Credentials = credentials,
-        };
+        var connection = new Connection(
+            new Octokit.ProductHeaderValue("IssueAgent"),
+            restRawBaseUri,
+            new Octokit.Internal.InMemoryCredentialStore(credentials),
+            new Octokit.Internal.HttpClientAdapter(() => TlsHttpHandlerFactory.Create(configuration.TlsTrust)),
+            new Octokit.Internal.SimpleJsonSerializer());
+        var restClient = new GitHubClient(connection);
 
-        var graphQlHttpClient = new HttpClient { BaseAddress = graphQlBaseUri };
-        var timelineHttpClient = new HttpClient { BaseAddress = restRawBaseUri };
+        var graphQlHttpClient = CreateHttpClient(configuration.TlsTrust, graphQlBaseUri);
+        var timelineHttpClient = CreateHttpClient(configuration.TlsTrust, restRawBaseUri);
         ConfigureGitHubHeaders(graphQlHttpClient, configuration.Token);
         ConfigureGitHubHeaders(timelineHttpClient, configuration.Token);
 
-        var authenticatedAttachmentClient = new HttpClient();
+        var authenticatedAttachmentClient = CreateHttpClient(configuration.TlsTrust);
         ConfigureGitHubHeaders(authenticatedAttachmentClient, configuration.Token);
-        var anonymousAttachmentClient = new HttpClient();
+        var anonymousAttachmentClient = new HttpClient(TlsHttpHandlerFactory.CreateForAnonymousAttachmentDownloads(configuration.TlsTrust));
 
         return new GitHubProvider(
             restClient,
@@ -48,6 +52,9 @@ public static class GitHubProviderFactory
             configuration.TrustedAttachmentHostSuffixes,
             configuration.Name);
     }
+
+    private static HttpClient CreateHttpClient(TlsTrust tlsTrust, Uri? baseAddress = null) =>
+        new(TlsHttpHandlerFactory.Create(tlsTrust)) { BaseAddress = baseAddress };
 
     private static void ConfigureGitHubHeaders(HttpClient httpClient, string? token)
     {
@@ -64,4 +71,8 @@ public sealed record GitHubProviderConfiguration(
     string Name,
     Uri ApiBaseUri,
     string? Token,
-    IReadOnlyList<string> TrustedAttachmentHostSuffixes);
+    IReadOnlyList<string> TrustedAttachmentHostSuffixes,
+    TlsTrust? Trust = null)
+{
+    public TlsTrust TlsTrust { get; init; } = Trust ?? IssueAgent.Git.TlsTrust.System;
+}

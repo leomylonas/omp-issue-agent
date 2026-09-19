@@ -12,5 +12,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/IssueAgent.Providers.GitHub/IssueAgent.Providers.GitHub.csproj" />
+    <ProjectReference Include="../../src/IssueAgent.Git/IssueAgent.Git.csproj" />
+    <ProjectReference Include="../IssueAgent.Providers.Tests/IssueAgent.Providers.Tests.csproj" />
   </ItemGroup>
 </Project>

@@ -23,8 +23,16 @@ public sealed class GitHubProvider(
 
     public async ValueTask<ProviderIdentity> GetCurrentIdentityAsync(CancellationToken cancellationToken)
     {
-        var user = await client.User.Current().ConfigureAwait(false);
+        var user = await ExecuteWithRetryAsync(() => client.User.Current(), cancellationToken).ConfigureAwait(false);
         return new ProviderIdentity(user.Login, user.Name ?? user.Login);
+    }
+
+    public async ValueTask<string> GetDefaultBranchAsync(RepositoryRef repository, CancellationToken cancellationToken)
+    {
+        var repo = await ExecuteWithRetryAsync(
+            () => client.Repository.Get(repository.OwnerOrNamespace, repository.Name),
+            cancellationToken).ConfigureAwait(false);
+        return repo.DefaultBranch;
     }
 
     public async IAsyncEnumerable<IssueSummary> DiscoverAssignedOpenIssuesAsync(
@@ -41,20 +49,17 @@ public sealed class GitHubProvider(
             SortDirection = SortDirection.Ascending,
         };
 
-        var issues = await client.Issue
-            .GetAllForRepository(repository.OwnerOrNamespace, repository.Name, request)
-            .ConfigureAwait(false);
+        var issues = await ExecuteWithRetryAsync(
+            () => client.Issue.GetAllForRepository(repository.OwnerOrNamespace, repository.Name, request),
+            cancellationToken).ConfigureAwait(false);
 
         foreach (var issue in issues)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (issue.PullRequest is not null)
-            {
-                continue;
-            }
-
-            if (issue.CreatedAt < startDate)
+            if (issue.PullRequest is not null ||
+                issue.CreatedAt < startDate ||
+                !issue.Assignees.Any(assignee => string.Equals(assignee.Login, identity, StringComparison.Ordinal)))
             {
                 continue;
             }
@@ -67,14 +72,43 @@ public sealed class GitHubProvider(
         }
     }
 
+    public async IAsyncEnumerable<IssueSummary> DiscoverManagedIssuesAsync(
+        RepositoryRef repository,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var request = new RepositoryIssueRequest
+        {
+            State = ItemStateFilter.All,
+            SortProperty = IssueSort.Updated,
+            SortDirection = SortDirection.Ascending,
+        };
+        var issues = await ExecuteWithRetryAsync(
+            () => client.Issue.GetAllForRepository(repository.OwnerOrNamespace, repository.Name, request),
+            cancellationToken).ConfigureAwait(false);
+        foreach (var issue in issues)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (issue.PullRequest is not null ||
+                !issue.Labels.Any(label => label.Name.StartsWith("agent:phase:", StringComparison.Ordinal)))
+            {
+                continue;
+            }
+            yield return new IssueSummary(
+                issue.Number,
+                issue.Title,
+                issue.CreatedAt,
+                issue.Assignees.Select(assignee => assignee.Login).ToHashSet(StringComparer.Ordinal));
+        }
+    }
+
     public async ValueTask<ProviderIssue> GetIssueAsync(
         RepositoryRef repository,
         long issueNumber,
         CancellationToken cancellationToken)
     {
-        var issue = await client.Issue
-            .Get(repository.OwnerOrNamespace, repository.Name, checked((int)issueNumber))
-            .ConfigureAwait(false);
+        var issue = await ExecuteWithRetryAsync(
+            () => client.Issue.Get(repository.OwnerOrNamespace, repository.Name, checked((int)issueNumber)),
+            cancellationToken).ConfigureAwait(false);
 
         return new ProviderIssue(
             repository,
@@ -93,9 +127,9 @@ public sealed class GitHubProvider(
         long issueNumber,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var comments = await client.Issue.Comment
-            .GetAllForIssue(repository.OwnerOrNamespace, repository.Name, checked((int)issueNumber))
-            .ConfigureAwait(false);
+        var comments = await ExecuteWithRetryAsync(
+            () => client.Issue.Comment.GetAllForIssue(repository.OwnerOrNamespace, repository.Name, checked((int)issueNumber)),
+            cancellationToken).ConfigureAwait(false);
 
         foreach (var comment in comments)
         {
@@ -110,9 +144,9 @@ public sealed class GitHubProvider(
         string body,
         CancellationToken cancellationToken)
     {
-        var comment = await client.Issue.Comment
-            .Create(repository.OwnerOrNamespace, repository.Name, checked((int)issueNumber), body)
-            .ConfigureAwait(false);
+        var comment = await ExecuteWithRetryAsync(
+            () => client.Issue.Comment.Create(repository.OwnerOrNamespace, repository.Name, checked((int)issueNumber), body),
+            cancellationToken).ConfigureAwait(false);
         return ToProviderComment(comment, issueNumber);
     }
 
@@ -123,9 +157,9 @@ public sealed class GitHubProvider(
         string body,
         CancellationToken cancellationToken)
     {
-        var comment = await client.Issue.Comment
-            .Update(repository.OwnerOrNamespace, repository.Name, checked((int)commentId), body)
-            .ConfigureAwait(false);
+        var comment = await ExecuteWithRetryAsync(
+            () => client.Issue.Comment.Update(repository.OwnerOrNamespace, repository.Name, checked((int)commentId), body),
+            cancellationToken).ConfigureAwait(false);
         return ToProviderComment(comment, issueNumber);
     }
 
@@ -133,9 +167,9 @@ public sealed class GitHubProvider(
         ProviderWorkItemReference workItem,
         CancellationToken cancellationToken)
     {
-        var labels = await client.Issue.Labels
-            .GetAllForIssue(workItem.Repository.OwnerOrNamespace, workItem.Repository.Name, checked((int)workItem.Number))
-            .ConfigureAwait(false);
+        var labels = await ExecuteWithRetryAsync(
+            () => client.Issue.Labels.GetAllForIssue(workItem.Repository.OwnerOrNamespace, workItem.Repository.Name, checked((int)workItem.Number)),
+            cancellationToken).ConfigureAwait(false);
         return labels.Select(l => l.Name).ToHashSet(StringComparer.Ordinal);
     }
 
@@ -144,9 +178,9 @@ public sealed class GitHubProvider(
         IReadOnlyCollection<string> labels,
         CancellationToken cancellationToken)
     {
-        await client.Issue.Labels
-            .AddToIssue(workItem.Repository.OwnerOrNamespace, workItem.Repository.Name, checked((int)workItem.Number), [.. labels])
-            .ConfigureAwait(false);
+        await ExecuteWithRetryAsync(
+            () => client.Issue.Labels.AddToIssue(workItem.Repository.OwnerOrNamespace, workItem.Repository.Name, checked((int)workItem.Number), [.. labels]),
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask RemoveLabelAsync(
@@ -154,9 +188,9 @@ public sealed class GitHubProvider(
         string label,
         CancellationToken cancellationToken)
     {
-        await client.Issue.Labels
-            .RemoveFromIssue(workItem.Repository.OwnerOrNamespace, workItem.Repository.Name, checked((int)workItem.Number), label)
-            .ConfigureAwait(false);
+        await ExecuteWithRetryAsync(
+            () => client.Issue.Labels.RemoveFromIssue(workItem.Repository.OwnerOrNamespace, workItem.Repository.Name, checked((int)workItem.Number), label),
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask EnsureLabelAsync(
@@ -166,15 +200,15 @@ public sealed class GitHubProvider(
     {
         try
         {
-            await client.Issue.Labels
-                .Get(repository.OwnerOrNamespace, repository.Name, label.Name)
-                .ConfigureAwait(false);
+            await ExecuteWithRetryAsync(
+                () => client.Issue.Labels.Get(repository.OwnerOrNamespace, repository.Name, label.Name),
+                cancellationToken).ConfigureAwait(false);
         }
         catch (NotFoundException)
         {
-            await client.Issue.Labels
-                .Create(repository.OwnerOrNamespace, repository.Name, new NewLabel(label.Name, label.Color) { Description = label.Description })
-                .ConfigureAwait(false);
+            await ExecuteWithRetryAsync(
+                () => client.Issue.Labels.Create(repository.OwnerOrNamespace, repository.Name, new NewLabel(label.Name, label.Color) { Description = label.Description }),
+                cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -191,9 +225,9 @@ public sealed class GitHubProvider(
             State = ItemStateFilter.All,
         };
 
-        var pullRequests = await client.PullRequest
-            .GetAllForRepository(repository.OwnerOrNamespace, repository.Name, request)
-            .ConfigureAwait(false);
+        var pullRequests = await ExecuteWithRetryAsync(
+            () => client.PullRequest.GetAllForRepository(repository.OwnerOrNamespace, repository.Name, request),
+            cancellationToken).ConfigureAwait(false);
 
         var match = pullRequests.Count > 0 ? pullRequests[0] : null;
         return match is null ? null : ToProviderMergeRequest(repository, match);
@@ -209,9 +243,9 @@ public sealed class GitHubProvider(
             Draft = true,
         };
 
-        var created = await client.PullRequest
-            .Create(request.Repository.OwnerOrNamespace, request.Repository.Name, newPullRequest)
-            .ConfigureAwait(false);
+        var created = await ExecuteWithRetryAsync(
+            () => client.PullRequest.Create(request.Repository.OwnerOrNamespace, request.Repository.Name, newPullRequest),
+            cancellationToken).ConfigureAwait(false);
 
         return ToProviderMergeRequest(request.Repository, created);
     }
@@ -221,9 +255,9 @@ public sealed class GitHubProvider(
         long number,
         CancellationToken cancellationToken)
     {
-        var pullRequest = await client.PullRequest
-            .Get(repository.OwnerOrNamespace, repository.Name, checked((int)number))
-            .ConfigureAwait(false);
+        var pullRequest = await ExecuteWithRetryAsync(
+            () => client.PullRequest.Get(repository.OwnerOrNamespace, repository.Name, checked((int)number)),
+            cancellationToken).ConfigureAwait(false);
         return ToProviderMergeRequest(repository, pullRequest);
     }
 
@@ -286,6 +320,10 @@ public sealed class GitHubProvider(
         var httpClient = IsTrustedAttachmentHost(attachment.Url) ? authenticatedAttachmentClient : anonymousAttachmentClient;
 
         using var request = new HttpRequestMessage(HttpMethod.Get, attachment.Url);
+        if (httpClient == anonymousAttachmentClient)
+        {
+            request.Options.Set(IssueAgent.Git.TlsHttpHandlerFactory.ValidatedAddressesOptionKey, attachment.ValidatedAddresses!);
+        }
         using var response = await httpClient
             .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
             .ConfigureAwait(false);
@@ -298,28 +336,12 @@ public sealed class GitHubProvider(
         }
 
         var destinationPath = AttachmentFileNames.ResolveSafeDestination(destinationDirectory, attachment.SuggestedFileName);
-        Directory.CreateDirectory(destinationDirectory);
-
-        await using var sourceStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        await using var destinationStream = new FileStream(destinationPath, System.IO.FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.None);
-
-        var buffer = new byte[81920];
-        long totalRead = 0;
-        int read;
-        while ((read = await sourceStream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
-        {
-            totalRead += read;
-            if (totalRead > maxSizeBytes)
-            {
-                destinationStream.Close();
-                File.Delete(destinationPath);
-                throw new AttachmentTooLargeException(
-                    $"Attachment '{attachment.SuggestedFileName}' exceeded the {maxSizeBytes}-byte limit while streaming.");
-            }
-
-            await destinationStream.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-        }
-
+        var totalRead = await AttachmentDownloadWriter.WriteAsync(
+            response.Content,
+            destinationPath,
+            maxSizeBytes,
+            attachment.SuggestedFileName,
+            cancellationToken).ConfigureAwait(false);
         return new DownloadedAttachment(destinationPath, Path.GetFileName(destinationPath), totalRead);
     }
 
@@ -331,6 +353,28 @@ public sealed class GitHubProvider(
         comment.UpdatedAt ?? comment.CreatedAt,
         new AttachmentSource("issue-comment", issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture), comment.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)),
         comment.User.Login.EndsWith("[bot]", StringComparison.Ordinal));
+
+    private static async Task<T> ExecuteWithRetryAsync<T>(Func<Task<T>> execute, CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await execute().WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (RateLimitExceededException exception) when (attempt < 3)
+            {
+                var delay = exception.GetRetryAfterTimeSpan();
+                await Task.Delay(delay > MaxRetryDelay ? MaxRetryDelay : delay, cancellationToken).ConfigureAwait(false);
+            }
+            catch (SecondaryRateLimitExceededException) when (attempt < 3)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(100 + Random.Shared.Next(0, 100)), cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(1);
 
     private static ProviderMergeRequest ToProviderMergeRequest(RepositoryRef repository, PullRequest pullRequest) => new(
         repository,

@@ -8,6 +8,10 @@ namespace IssueAgent.Providers.GitHub;
 /// no REST equivalent. All other GitHub access in this provider uses the REST API via Octokit.</summary>
 public sealed partial class GitHubGraphQlClient(HttpClient httpClient)
 {
+    /// <summary>Hard ceiling on review-thread pages walked per pull request (specification §27's
+    /// bounded-resource intent); exceeding it throws rather than silently truncating.</summary>
+    private const int MaxPages = 200;
+
     private const string ReviewThreadsQuery = """
         query($owner: String!, $name: String!, $number: Int!, $after: String) {
           repository(owner: $owner, name: $name) {
@@ -40,11 +44,19 @@ public sealed partial class GitHubGraphQlClient(HttpClient httpClient)
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         string? cursor = null;
+        var page = 0;
         do
         {
+            if (++page > MaxPages)
+            {
+                throw new InvalidOperationException(
+                    $"GitHub GraphQL review threads for {owner}/{name}#{number} exceeded the {MaxPages}-page pagination limit.");
+            }
+
             var payload = new GraphQlRequest(ReviewThreadsQuery, new GraphQlVariables(owner, name, number, cursor));
-            using var response = await httpClient.PostAsJsonAsync("graphql", payload, GraphQlJsonContext.Default.GraphQlRequest, cancellationToken)
-                .ConfigureAwait(false);
+            using var response = await ProviderRetryPolicy.SendAsync(
+                token => httpClient.PostAsJsonAsync("graphql", payload, GraphQlJsonContext.Default.GraphQlRequest, token),
+                cancellationToken).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
 
             var result = await response.Content

@@ -51,6 +51,52 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
+    public async Task DiscoverAssignedOpenIssuesAsyncFollowsLinkHeaderPaginationAcrossPages()
+    {
+        var page2Url = $"{fixture.Server.Url}/api/v3/repos/octo/widgets/issues?page=2";
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues").WithParam("page", "2").UsingGet())
+            .RespondWith(JsonResponse("""
+                [
+                  {"number":21,"title":"Second page issue","created_at":"2024-06-03T00:00:00Z","assignees":[{"login":"issue-agent-bot"}]}
+                ]
+                """));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues").UsingGet())
+            .RespondWith(Response.Create()
+                .WithStatusCode(200)
+                .WithHeader("Content-Type", "application/json")
+                .WithHeader("Link", $"<{page2Url}>; rel=\"next\"")
+                .WithBody("""
+                    [
+                      {"number":20,"title":"First page issue","created_at":"2024-06-02T00:00:00Z","assignees":[{"login":"issue-agent-bot"}]}
+                    ]
+                    """));
+
+        var issues = await CollectAsync(fixture.Provider.DiscoverAssignedOpenIssuesAsync(
+            Repository, "issue-agent-bot", new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero), CancellationToken.None));
+
+        Assert.Equal([20, 21], issues.Select(i => i.Number).OrderBy(n => n).ToArray());
+    }
+
+    [Fact]
+    public async Task DiscoverManagedIssuesAsyncIncludesClosedLabeledIssuesOnly()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues").UsingGet())
+            .RespondWith(JsonResponse("""
+                [
+                  {"number":4,"title":"Ordinary closed issue","created_at":"2024-06-01T00:00:00Z","labels":[],"assignees":[]},
+                  {"number":5,"title":"Managed closed issue","created_at":"2024-06-02T00:00:00Z","labels":[{"name":"agent:phase:review"}],"assignees":[]}
+                ]
+                """));
+
+        var issues = await CollectAsync(fixture.Provider.DiscoverManagedIssuesAsync(Repository, CancellationToken.None));
+
+        Assert.Equal(5, Assert.Single(issues).Number);
+    }
+
+    [Fact]
     public async Task GetIssueAsyncMapsLabelsAssigneesAndBody()
     {
         fixture.Server
@@ -70,6 +116,18 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
         Assert.Equal("Steps to reproduce", issue.Description);
         Assert.Contains("bug", issue.Labels);
         Assert.Contains("issue-agent-bot", issue.Assignees);
+    }
+
+    [Fact]
+    public async Task GetDefaultBranchAsyncReturnsTheRepositorysConfiguredDefaultBranch()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets").UsingGet())
+            .RespondWith(JsonResponse("""{"id":1,"name":"widgets","full_name":"octo/widgets","default_branch":"develop"}"""));
+
+        var defaultBranch = await fixture.Provider.GetDefaultBranchAsync(Repository, CancellationToken.None);
+
+        Assert.Equal("develop", defaultBranch);
     }
 
     [Fact]
@@ -238,19 +296,28 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     [Fact]
     public async Task DownloadAttachmentAsyncSendsAuthorizationOnlyForTrustedHosts()
     {
+        var serverUri = new Uri(fixture.Server.Url!);
         var provider = GitHubProviderFactory.Create(new GitHubProviderConfiguration(
-            "github", new Uri(fixture.Server.Url! + "/"), "secret-token", [new Uri(fixture.Server.Url!).Host]));
+            "github", new Uri(fixture.Server.Url! + "/"), "secret-token", [serverUri.Host]));
         fixture.Server
             .Given(Request.Create().WithPath("/files/report.pdf").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/pdf").WithBody("pdf-bytes"));
 
-        var destination = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var attachment = new ProviderAttachment(new Uri(fixture.Server.Url! + "/files/report.pdf"), "report.pdf", null, new AttachmentSource("issue-description", "7"), true);
+        var trustedDestination = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var trustedAttachment = new ProviderAttachment(new Uri(fixture.Server.Url! + "/files/report.pdf"), "report.pdf", null, new AttachmentSource("issue-description", "7"), true);
+        await provider.DownloadAttachmentAsync(trustedAttachment, trustedDestination, 1024, CancellationToken.None);
+        var trustedRequest = fixture.Server.LogEntries.Single(e => e.RequestMessage!.Path == "/files/report.pdf");
+        Assert.True(trustedRequest.RequestMessage!.Headers!.ContainsKey("Authorization"));
 
-        await provider.DownloadAttachmentAsync(attachment, destination, 1024, CancellationToken.None);
-
-        var request = fixture.Server.LogEntries.Single(e => e.RequestMessage!.Path == "/files/report.pdf");
-        Assert.True(request.RequestMessage!.Headers!.ContainsKey("Authorization"));
+        // Same server, an untrusted hostname alias (127.0.0.1 vs "localhost"): the suffix list only
+        // trusts serverUri.Host, so a request to the loopback IP literal must never receive the token.
+        var untrustedHost = serverUri.Host == "127.0.0.1" ? "localhost" : "127.0.0.1";
+        var untrustedUri = new UriBuilder(serverUri) { Host = untrustedHost, Path = "/files/report.pdf" }.Uri;
+        var untrustedDestination = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var untrustedAttachment = new ProviderAttachment(untrustedUri, "report.pdf", null, new AttachmentSource("issue-description", "7"), false, System.Net.Dns.GetHostAddresses(untrustedHost).ToHashSet());
+        await provider.DownloadAttachmentAsync(untrustedAttachment, untrustedDestination, 1024, CancellationToken.None);
+        var untrustedRequest = fixture.Server.LogEntries.Last(e => e.RequestMessage!.Path == "/files/report.pdf");
+        Assert.False(untrustedRequest.RequestMessage!.Headers!.ContainsKey("Authorization"));
     }
 
     [Fact]
@@ -261,7 +328,7 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
             .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/zip").WithBody(new string('a', 2000)));
 
         var destination = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var attachment = new ProviderAttachment(new Uri(fixture.Server.Url! + "/files/huge.zip"), "huge.zip", null, new AttachmentSource("issue-description", "7"), false);
+        var attachment = new ProviderAttachment(new Uri(fixture.Server.Url! + "/files/huge.zip"), "huge.zip", null, new AttachmentSource("issue-description", "7"), false, System.Net.Dns.GetHostAddresses(new Uri(fixture.Server.Url!).Host).ToHashSet());
 
         await Assert.ThrowsAsync<AttachmentTooLargeException>(() =>
             fixture.Provider.DownloadAttachmentAsync(attachment, destination, 1024, CancellationToken.None).AsTask());
