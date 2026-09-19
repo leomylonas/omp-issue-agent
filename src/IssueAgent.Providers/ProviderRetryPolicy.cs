@@ -48,6 +48,66 @@ public static class ProviderRetryPolicy
             }
         }
     }
+    /// <summary>
+    /// Sends an idempotent request and materializes its successful response within the same retry
+    /// attempt. A connection that fails while streaming a response body therefore retries the whole
+    /// download rather than treating headers as a completed request.
+    /// </summary>
+    public static async Task<T> SendAndMaterializeAsync<T>(
+        Func<CancellationToken, Task<HttpResponseMessage>> send,
+        Func<HttpResponseMessage, CancellationToken, Task<T>> materialize,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(send);
+        ArgumentNullException.ThrowIfNull(materialize);
+
+        for (var attempt = 1; ; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            HttpResponseMessage response;
+            try
+            {
+                response = await send(cancellationToken).ConfigureAwait(false);
+            }
+            catch (HttpRequestException) when (attempt < MaxAttempts)
+            {
+                await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && attempt < MaxAttempts)
+            {
+                await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            using (response)
+            {
+                if (IsRetryable(response, isIdempotent: true) && attempt < MaxAttempts)
+                {
+                    await Task.Delay(GetRetryDelay(response, attempt), cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                response.EnsureSuccessStatusCode();
+                try
+                {
+                    return await materialize(response, cancellationToken).ConfigureAwait(false);
+                }
+                catch (HttpRequestException) when (attempt < MaxAttempts)
+                {
+                    await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                }
+                catch (IOException) when (attempt < MaxAttempts)
+                {
+                    await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && attempt < MaxAttempts)
+                {
+                    await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+    }
 
     private static bool IsRetryable(HttpResponseMessage response, bool isIdempotent)
     {

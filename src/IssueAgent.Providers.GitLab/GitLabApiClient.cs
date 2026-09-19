@@ -154,17 +154,28 @@ public sealed partial class GitLabApiClient(HttpClient httpClient)
             return null;
         }
 
-        foreach (var link in linkValues.SelectMany(v => v.Split(',', StringSplitOptions.TrimEntries)))
+        foreach (var link in linkValues.SelectMany(value => value.Split(',', StringSplitOptions.TrimEntries)))
         {
             var parts = link.Split(';', StringSplitOptions.TrimEntries);
-            if (parts.Length == 2 && parts[1] == "rel=\"next\"")
+            if (parts.Length <= 1 || !parts.Skip(1).Any(part => part == "rel=\"next\""))
             {
-                var next = parts[0].Trim('<', '>');
-                if (Uri.TryCreate(baseAddress, next, out var nextUri) && Uri.Compare(nextUri, baseAddress, UriComponents.SchemeAndServer, UriFormat.Unescaped, StringComparison.OrdinalIgnoreCase) == 0)
-                {
-                    return nextUri.PathAndQuery;
-                }
+                continue;
             }
+
+            var target = parts[0];
+            if (target.Length < 3 || target[0] != '<' || target[^1] != '>' ||
+                !Uri.IsWellFormedUriString(target[1..^1], UriKind.RelativeOrAbsolute) ||
+                !Uri.TryCreate(baseAddress, target[1..^1], out var nextUri))
+            {
+                throw new InvalidOperationException($"GitLab pagination contained a malformed next-page URI '{target}'.");
+            }
+
+            if (Uri.Compare(nextUri, baseAddress, UriComponents.SchemeAndServer, UriFormat.Unescaped, StringComparison.OrdinalIgnoreCase) != 0)
+            {
+                throw new InvalidOperationException($"GitLab pagination next-page URI '{nextUri}' has a different authority than '{baseAddress}'.");
+            }
+
+            return nextUri.PathAndQuery;
         }
 
         return null;

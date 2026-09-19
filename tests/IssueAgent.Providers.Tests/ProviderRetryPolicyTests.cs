@@ -144,4 +144,30 @@ public sealed class ProviderRetryPolicyTests
         Assert.IsAssignableFrom<OperationCanceledException>(exception);
         Assert.Equal(1, attempt);
     }
+
+    [Fact]
+    public async Task SendAndMaterializeAsyncRetriesWhenTheResponseBodyFailsAfterHeaders()
+    {
+        var sends = 0;
+        var materializations = 0;
+
+        var result = await ProviderRetryPolicy.SendAndMaterializeAsync(
+            _ =>
+            {
+                sends++;
+                return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
+            },
+            (_, _) =>
+            {
+                materializations++;
+                return materializations == 1
+                    ? Task.FromException<string>(new HttpRequestException("body connection reset"))
+                    : Task.FromResult("downloaded");
+            },
+            CancellationToken.None);
+
+        Assert.Equal("downloaded", result);
+        Assert.Equal(2, materializations);
+        Assert.Equal(2, sends);
+    }
 }

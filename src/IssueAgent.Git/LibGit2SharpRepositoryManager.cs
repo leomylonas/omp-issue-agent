@@ -180,6 +180,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
                 if (OperatingSystem.IsLinux())
                 {
                     MakeWorktreeWritableByOmp(worktreePath);
+                    MakeLinkedWorktreeMetadataWritableByOmp(barePath, worktreeId);
                 }
                 return ValueTask.CompletedTask;
             }
@@ -200,6 +201,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         if (OperatingSystem.IsLinux())
         {
             MakeWorktreeWritableByOmp(worktreePath);
+            MakeLinkedWorktreeMetadataWritableByOmp(barePath, worktreeId);
         }
         return ValueTask.CompletedTask;
     }
@@ -418,6 +420,24 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         }
 
         MakeDirectoryTreeWritableByOmp(worktreePath);
+    }
+
+    /// <summary>Git stores a linked checkout's HEAD, index, and per-worktree config below the
+    /// canonical bare repository. OMP must update that metadata while the bare repository itself
+    /// remains outside its writable checkout authority.</summary>
+    [SupportedOSPlatform("linux")]
+    private static void MakeLinkedWorktreeMetadataWritableByOmp(string barePath, string worktreeId)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        var metadataPath = Path.Combine(barePath, "worktrees", worktreeId);
+        if (Directory.Exists(metadataPath))
+        {
+            MakeDirectoryTreeWritableByOmp(metadataPath);
+        }
     }
 
     [SupportedOSPlatform("linux")]

@@ -33,7 +33,10 @@ public sealed class GitHubProvider(
         var user = await ExecuteReadWithCancellationAsync(
             token => client.Connection.Get<User>(new Uri("user", UriKind.Relative), null, null, token),
             cancellationToken).ConfigureAwait(false);
-        return new ProviderIdentity(user.Login, user.Name ?? user.Login, user.Email ?? $"{user.Login}@users.noreply.github.com");
+        return new ProviderIdentity(
+            user.Login,
+            user.Name ?? user.Login,
+            user.Email ?? (trustsGitHubDotComAttachmentHosts ? $"{user.Login}@users.noreply.github.com" : null));
     }
 
     public async ValueTask<string> GetDefaultBranchAsync(RepositoryRef repository, CancellationToken cancellationToken)
@@ -352,7 +355,8 @@ public sealed class GitHubProvider(
     {
         var httpClient = IsTrustedAttachmentHost(attachment.Url) ? authenticatedAttachmentClient : anonymousAttachmentClient;
 
-        using var response = await ProviderRetryPolicy.SendAsync(
+        var destinationPath = AttachmentFileNames.ResolveSafeDestination(destinationDirectory, attachment.SuggestedFileName);
+        var totalRead = await ProviderRetryPolicy.SendAndMaterializeAsync(
             async token =>
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, attachment.Url);
@@ -363,21 +367,21 @@ public sealed class GitHubProvider(
 
                 return await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
             },
-            cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+            async (response, token) =>
+            {
+                if (response.Content.Headers.ContentLength is { } declaredLength && declaredLength > maxSizeBytes)
+                {
+                    throw new AttachmentTooLargeException(
+                        $"Attachment '{attachment.SuggestedFileName}' declares {declaredLength} bytes, exceeding the {maxSizeBytes}-byte limit.");
+                }
 
-        if (response.Content.Headers.ContentLength is { } declaredLength && declaredLength > maxSizeBytes)
-        {
-            throw new AttachmentTooLargeException(
-                $"Attachment '{attachment.SuggestedFileName}' declares {declaredLength} bytes, exceeding the {maxSizeBytes}-byte limit.");
-        }
-
-        var destinationPath = AttachmentFileNames.ResolveSafeDestination(destinationDirectory, attachment.SuggestedFileName);
-        var totalRead = await AttachmentDownloadWriter.WriteAsync(
-            response.Content,
-            destinationPath,
-            maxSizeBytes,
-            attachment.SuggestedFileName,
+                return await AttachmentDownloadWriter.WriteAsync(
+                    response.Content,
+                    destinationPath,
+                    maxSizeBytes,
+                    attachment.SuggestedFileName,
+                    token).ConfigureAwait(false);
+            },
             cancellationToken).ConfigureAwait(false);
         return new DownloadedAttachment(destinationPath, Path.GetFileName(destinationPath), totalRead);
     }
@@ -414,7 +418,6 @@ public sealed class GitHubProvider(
 
         return results;
     }
-
     private static Uri? GetNextPageUri(IReadOnlyDictionary<string, string> headers, Uri baseAddress)
     {
         if (!headers.TryGetValue("Link", out var links))
@@ -422,18 +425,31 @@ public sealed class GitHubProvider(
             return null;
         }
 
-        var next = links.Split(',', StringSplitOptions.TrimEntries)
-            .Select(link => link.Split(';', StringSplitOptions.TrimEntries))
-            .Where(parts => parts.Length > 1 && parts.Skip(1).Any(part => part == "rel=\"next\""))
-            .Select(parts => parts[0].Trim('<', '>'))
-            .FirstOrDefault();
-        if (next is null || !Uri.TryCreate(baseAddress, next, out var nextUri) ||
-            Uri.Compare(nextUri, baseAddress, UriComponents.SchemeAndServer, UriFormat.Unescaped, StringComparison.OrdinalIgnoreCase) != 0)
+        foreach (var link in links.Split(',', StringSplitOptions.TrimEntries))
         {
-            return null;
+            var parts = link.Split(';', StringSplitOptions.TrimEntries);
+            if (parts.Length <= 1 || !parts.Skip(1).Any(part => part == "rel=\"next\""))
+            {
+                continue;
+            }
+
+            var target = parts[0];
+            if (target.Length < 3 || target[0] != '<' || target[^1] != '>' ||
+                !Uri.IsWellFormedUriString(target[1..^1], UriKind.RelativeOrAbsolute) ||
+                !Uri.TryCreate(baseAddress, target[1..^1], out var nextUri))
+            {
+                throw new InvalidOperationException($"GitHub REST pagination contained a malformed next-page URI '{target}'.");
+            }
+
+            if (Uri.Compare(nextUri, baseAddress, UriComponents.SchemeAndServer, UriFormat.Unescaped, StringComparison.OrdinalIgnoreCase) != 0)
+            {
+                throw new InvalidOperationException($"GitHub REST pagination next-page URI '{nextUri}' has a different authority than '{baseAddress}'.");
+            }
+
+            return nextUri;
         }
 
-        return nextUri;
+        return null;
     }
 
     private static ProviderComment ToProviderComment(IssueComment comment, long issueNumber) => new(

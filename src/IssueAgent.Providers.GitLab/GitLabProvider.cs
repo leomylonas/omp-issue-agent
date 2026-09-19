@@ -259,7 +259,8 @@ public sealed class GitLabProvider(
     {
         var httpClient = IsTrustedAttachmentHost(attachment.Url) ? authenticatedAttachmentClient : anonymousAttachmentClient;
 
-        using var response = await ProviderRetryPolicy.SendAsync(
+        var destinationPath = AttachmentFileNames.ResolveSafeDestination(destinationDirectory, attachment.SuggestedFileName);
+        var totalRead = await ProviderRetryPolicy.SendAndMaterializeAsync(
             async token =>
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, attachment.Url);
@@ -270,21 +271,21 @@ public sealed class GitLabProvider(
 
                 return await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
             },
-            cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+            async (response, token) =>
+            {
+                if (response.Content.Headers.ContentLength is { } declaredLength && declaredLength > maxSizeBytes)
+                {
+                    throw new AttachmentTooLargeException(
+                        $"Attachment '{attachment.SuggestedFileName}' declares {declaredLength} bytes, exceeding the {maxSizeBytes}-byte limit.");
+                }
 
-        if (response.Content.Headers.ContentLength is { } declaredLength && declaredLength > maxSizeBytes)
-        {
-            throw new AttachmentTooLargeException(
-                $"Attachment '{attachment.SuggestedFileName}' declares {declaredLength} bytes, exceeding the {maxSizeBytes}-byte limit.");
-        }
-
-        var destinationPath = AttachmentFileNames.ResolveSafeDestination(destinationDirectory, attachment.SuggestedFileName);
-        var totalRead = await AttachmentDownloadWriter.WriteAsync(
-            response.Content,
-            destinationPath,
-            maxSizeBytes,
-            attachment.SuggestedFileName,
+                return await AttachmentDownloadWriter.WriteAsync(
+                    response.Content,
+                    destinationPath,
+                    maxSizeBytes,
+                    attachment.SuggestedFileName,
+                    token).ConfigureAwait(false);
+            },
             cancellationToken).ConfigureAwait(false);
         return new DownloadedAttachment(destinationPath, Path.GetFileName(destinationPath), totalRead);
     }

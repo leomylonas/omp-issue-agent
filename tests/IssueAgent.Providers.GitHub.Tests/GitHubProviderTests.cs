@@ -31,7 +31,7 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
-    public async Task GetCurrentIdentityAsyncUsesStableNoreplyEmailWhenEmailIsHidden()
+    public async Task GetCurrentIdentityAsyncRequiresExplicitEmailWhenEnterpriseHidesIt()
     {
         fixture.Server
             .Given(Request.Create().WithPath("/api/v3/user").UsingGet())
@@ -39,7 +39,7 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
 
         var identity = await fixture.Provider.GetCurrentIdentityAsync(CancellationToken.None);
 
-        Assert.Equal("issue-agent-bot@users.noreply.github.com", identity.Email);
+        Assert.Null(identity.Email);
     }
     [Fact]
     public async Task DiscoverAssignedOpenIssuesAsyncExcludesPullRequestsAndIssuesBeforeStartDate()
@@ -126,6 +126,28 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
             Repository, "issue-agent-bot", DateTimeOffset.MinValue, CancellationToken.None)));
 
         Assert.Contains("repeated page URI", exception.Message);
+        Assert.Single(fixture.Server.LogEntries);
+    }
+
+    [Theory]
+    [InlineData("<%%%>; rel=\"next\"", "format")]
+    [InlineData("<https://attacker.example/api/v3/repos/octo/widgets/issues?page=2>; rel=\"next\"", "different authority")]
+    public async Task DiscoverAssignedOpenIssuesAsyncRejectsUnsafePaginationLinks(string link, string reason)
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues").UsingGet())
+            .RespondWith(Response.Create()
+                .WithStatusCode(200)
+                .WithHeader("Content-Type", "application/json")
+                .WithHeader("Link", link)
+                .WithBody("[]"));
+
+        var exception = await Record.ExceptionAsync(() => CollectAsync(fixture.Provider.DiscoverAssignedOpenIssuesAsync(
+            Repository, "issue-agent-bot", DateTimeOffset.MinValue, CancellationToken.None)));
+
+        Assert.NotNull(exception);
+        Assert.True(exception is InvalidOperationException or UriFormatException);
+        Assert.Contains(reason, exception.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Single(fixture.Server.LogEntries);
     }
 

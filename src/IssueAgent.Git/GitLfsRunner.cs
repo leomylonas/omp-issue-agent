@@ -139,15 +139,17 @@ public static class GitLfsRunner
         switch (authentication.Mode)
         {
             case GitAuthenticationMode.ProviderToken or GitAuthenticationMode.Token:
-                var originHost = GitUrlHost.TryGetHost(GetOriginUrl(startInfo.WorkingDirectory));
-                var effectiveHost = ResolveLfsEndpointHost(startInfo.WorkingDirectory) ?? originHost;
-                if (originHost is null || !string.Equals(effectiveHost, originHost, StringComparison.OrdinalIgnoreCase))
+                var origin = TryGetHttpsUri(GetOriginUrl(startInfo.WorkingDirectory));
+                var endpoint = ResolveLfsEndpointUri(startInfo.WorkingDirectory) ?? origin;
+                if (origin is null || endpoint is null ||
+                    !string.Equals(endpoint.Authority, origin.Authority, StringComparison.OrdinalIgnoreCase))
                 {
                     // The effective LFS endpoint (possibly overridden by a committed .lfsconfig)
-                    // does not match the trusted origin host: never forward credentials
-                    // (specification §11 "unknown host → never forward credentials").
+                    // is not the trusted HTTPS origin authority: never forward credentials.
                     break;
                 }
+
+                ApplyHttpsTlsTrust(startInfo, authentication.TlsTrust);
 
                 var askPassPath = Path.Combine(isolatedHome, "askpass.sh");
                 File.WriteAllText(askPassPath, "#!/bin/sh\nprintf '%s\\n' \"$ISSUEAGENT_GIT_TOKEN\"\n");
@@ -185,10 +187,9 @@ public static class GitLfsRunner
         return url;
     }
 
-    /// <summary>Resolves the LFS endpoint host git-lfs will actually use: a committed
-    /// <c>.lfsconfig</c> <c>lfs.url</c> override when present, otherwise <see langword="null"/> (the
-    /// caller then trusts the origin remote host instead of forwarding credentials blindly).</summary>
-    private static string? ResolveLfsEndpointHost(string workingDirectory)
+    /// <summary>Resolves the LFS endpoint git-lfs will use. A configured endpoint must be an
+    /// absolute HTTPS URI so token credentials cannot be offered to an ambiguous transport.</summary>
+    private static Uri? ResolveLfsEndpointUri(string workingDirectory)
     {
         var lfsConfigPath = Path.Combine(workingDirectory, ".lfsconfig");
         if (!File.Exists(lfsConfigPath))
@@ -205,7 +206,35 @@ public static class GitLfsRunner
         }) ?? throw new InvalidOperationException("Failed to start git process.");
         var url = process.StandardOutput.ReadToEnd().Trim();
         process.WaitForExit();
-        return string.IsNullOrEmpty(url) ? null : GitUrlHost.TryGetHost(url);
+        if (string.IsNullOrEmpty(url))
+        {
+            return null;
+        }
+
+        return TryGetHttpsUri(url) ?? throw new InvalidOperationException(
+            "The configured Git LFS endpoint must be an absolute HTTPS URI before credentials can be used.");
+    }
+
+    private static Uri? TryGetHttpsUri(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
+        uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
+        !string.IsNullOrEmpty(uri.Host)
+            ? uri
+            : null;
+
+    private static void ApplyHttpsTlsTrust(ProcessStartInfo startInfo, TlsTrust tlsTrust)
+    {
+        switch (tlsTrust.Mode)
+        {
+            case TlsTrustMode.System:
+                return;
+            case TlsTrustMode.None:
+                startInfo.Environment["GIT_SSL_NO_VERIFY"] = "true";
+                return;
+            default:
+                throw new InvalidOperationException(
+                    $"git-lfs cannot safely enforce the configured TLS trust mode '{tlsTrust.Mode}'.");
+        }
     }
 }
 

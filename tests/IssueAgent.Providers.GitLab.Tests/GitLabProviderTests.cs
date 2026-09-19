@@ -87,6 +87,26 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
         Assert.Equal([1L, 2L], issues.Select(i => i.Number).OrderBy(n => n));
     }
 
+    [Theory]
+    [InlineData("<%%%>; rel=\"next\"", "malformed")]
+    [InlineData("<https://attacker.example/api/v4/projects/123/issues?page=2>; rel=\"next\"", "different authority")]
+    public async Task DiscoverAssignedOpenIssuesAsyncRejectsUnsafePaginationLinks(string link, string reason)
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/123/issues").UsingGet())
+            .RespondWith(Response.Create()
+                .WithStatusCode(200)
+                .WithHeader("Content-Type", "application/json")
+                .WithHeader("Link", link)
+                .WithBody("[]"));
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => CollectAsync(fixture.Provider.DiscoverAssignedOpenIssuesAsync(
+            Repository, "issue-agent-bot", DateTimeOffset.MinValue, CancellationToken.None)));
+
+        Assert.Contains(reason, exception.Message, StringComparison.Ordinal);
+        Assert.Single(fixture.Server.LogEntries);
+    }
+
     [Fact]
     public async Task DiscoverManagedIssuesAsyncIncludesClosedLabeledIssuesWithoutAssigneeFilter()
     {
