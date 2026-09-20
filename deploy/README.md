@@ -128,6 +128,7 @@ docker run --rm --name issue-agent \
   -p 127.0.0.1:8080:8080 \
   -v issue-agent-data:/data \
   -e PI_CONFIG_FILES=/etc/omp/config.yml \
+  -e IssueAgent__Omp__ExecutablePath=/usr/local/bin/omp-unprivileged \
   --volume "$PWD/omp:/etc/omp:ro" \
   --env-file "$PWD/issue-agent.env" \
   --mount type=bind,src="$PWD/secrets/github-token",dst=/run/secrets-source/github_token,readonly \
@@ -136,11 +137,12 @@ docker run --rm --name issue-agent \
 
 The listed capabilities are required only while the root entrypoint repairs a mounted data volume,
 copies root-owned secret sources, and switches the host and OMP to their unprivileged UIDs. The
-entrypoint then enables `no-new-privileges`; OMP drops the UID/GID ambient capabilities before it
-executes. Point file-backed provider and notification settings at
-`/run/issue-agent-secrets/<secret-name>`; only `/data` is persistent writable application storage.
-OMP configuration is read-only. `PI_CONFIG_FILES` is the pinned OMP runtime setting that points to
-the mounted `/etc/omp/config.yml` file; OMP sessions and native state remain under `/data/omp`.
+entrypoint then enables `no-new-privileges`; the explicit OMP executable selects the wrapper that
+drops the UID/GID ambient capabilities before OMP executes. Point file-backed provider and
+notification settings at `/run/issue-agent-secrets/<secret-name>`; only `/data` is persistent
+writable application storage. OMP configuration is read-only. `PI_CONFIG_FILES` is the pinned OMP
+runtime setting that points to the mounted `/etc/omp/config.yml` file; OMP sessions and native
+state remain under `/data/omp`.
 
 ## Optional integrations
 

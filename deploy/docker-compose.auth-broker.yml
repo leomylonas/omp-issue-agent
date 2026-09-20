@@ -2,11 +2,11 @@ services:
   issue-agent:
     environment:
       IssueAgent__Omp__AuthBrokerUrl: http://omp-auth-broker:8081
-      IssueAgent__Omp__ExecutionSecrets__OMP_AUTH_BROKER_TOKEN__File: /run/omp-execution-secrets/omp_auth_broker_token
+      IssueAgent__Omp__ExecutionSecrets__OMP_AUTH_BROKER_TOKEN__File: /run/issue-agent-secrets/omp_auth_broker_token
     secrets:
       - source: omp_auth_broker_token
-        target: /run/omp-execution-secrets/omp_auth_broker_token
-        mode: 0444
+        target: /run/secrets-source/omp_auth_broker_token
+        mode: 0400
   omp-auth-broker:
     image: ${OMP_AUTH_BROKER_IMAGE:-issue-agent:local}
     entrypoint: ["/bin/sh", "-ec"]
@@ -39,6 +39,7 @@ services:
       - FOWNER
       - SETGID
       - SETUID
+      - DAC_OVERRIDE
     restart: unless-stopped
 
 secrets:

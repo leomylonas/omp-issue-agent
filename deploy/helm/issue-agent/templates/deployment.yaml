@@ -90,7 +90,7 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
-              add: [CHOWN, FOWNER]
+              add: [CHOWN, FOWNER, DAC_OVERRIDE]
           volumeMounts:
             - name: workspace
               mountPath: /data

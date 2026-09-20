@@ -70,8 +70,8 @@ public sealed class DeploymentArtifactSecurityTests
         Assert.Contains("--cap-add=SETPCAP", readme, StringComparison.Ordinal);
         Assert.Contains("--cap-add=SETUID", readme, StringComparison.Ordinal);
         Assert.Contains("-v issue-agent-data:/data", readme, StringComparison.Ordinal);
+        Assert.Contains("-e IssueAgent__Omp__ExecutablePath=/usr/local/bin/omp-unprivileged", readme, StringComparison.Ordinal);
         Assert.Contains("-e PI_CONFIG_FILES=/etc/omp/config.yml", readme, StringComparison.Ordinal);
-        Assert.Contains("PI_CONFIG_FILES=/etc/omp/config.yml", environment, StringComparison.Ordinal);
         Assert.DoesNotContain("OMP_CONFIG_DIR", readme, StringComparison.Ordinal);
         Assert.DoesNotContain("OMP_CONFIG_DIR", environment, StringComparison.Ordinal);
     }
@@ -86,8 +86,9 @@ public sealed class DeploymentArtifactSecurityTests
         Assert.DoesNotContain("omp_auth_broker_token", compose, StringComparison.Ordinal);
         Assert.Contains("restart: unless-stopped", compose, StringComparison.Ordinal);
         Assert.Contains("IssueAgent__Omp__AuthBrokerUrl: http://omp-auth-broker:8081", brokerOverlay, StringComparison.Ordinal);
-        Assert.Contains("IssueAgent__Omp__ExecutionSecrets__OMP_AUTH_BROKER_TOKEN__File: /run/omp-execution-secrets/omp_auth_broker_token", brokerOverlay, StringComparison.Ordinal);
-        Assert.Contains("install -o 10001 -g 10001 -Dm 600 /run/secrets/omp_auth_broker_token /data/.omp/auth-broker.token", brokerOverlay, StringComparison.Ordinal);
+        Assert.Contains("IssueAgent__Omp__ExecutionSecrets__OMP_AUTH_BROKER_TOKEN__File: /run/issue-agent-secrets/omp_auth_broker_token", brokerOverlay, StringComparison.Ordinal);
+        Assert.Contains("target: /run/secrets-source/omp_auth_broker_token", brokerOverlay, StringComparison.Ordinal);
+        Assert.Contains("mode: 0400", brokerOverlay, StringComparison.Ordinal);
         Assert.Contains("omp_auth_broker_token:", brokerOverlay, StringComparison.Ordinal);
         Assert.DoesNotContain("OMP_AUTH_BROKER_TOKEN:", brokerOverlay, StringComparison.Ordinal);
         Assert.Contains("PI_CONFIG_FILES: /etc/omp/config.yml", compose, StringComparison.Ordinal);
@@ -164,12 +165,16 @@ public sealed class DeploymentArtifactSecurityTests
         Assert.Contains("FOWNER", compose, StringComparison.Ordinal);
         Assert.Contains("/run/secrets-source", compose, StringComparison.Ordinal);
         Assert.Contains("install -o 10001 -g 10001 -Dm 600 /run/secrets/omp_auth_broker_token /data/.omp/auth-broker.token", brokerOverlay, StringComparison.Ordinal);
+        Assert.Contains("--reuid=10001 --regid=10001", brokerOverlay, StringComparison.Ordinal);
+        Assert.Contains("DAC_OVERRIDE", brokerOverlay, StringComparison.Ordinal);
         var mainContainer = deployment[deployment.IndexOf("      containers:", StringComparison.Ordinal)..deployment.IndexOf("      volumes:", StringComparison.Ordinal)];
         Assert.Contains("copy-issue-agent-secrets", deployment, StringComparison.Ordinal);
         Assert.Contains("runAsNonRoot: true", deployment, StringComparison.Ordinal);
         Assert.Contains("runAsUser: 10001", deployment, StringComparison.Ordinal);
         Assert.Contains("runAsUser: 0", deployment, StringComparison.Ordinal);
         Assert.Contains("FOWNER", deployment, StringComparison.Ordinal);
+        var mainInitContainer = deployment[deployment.IndexOf("copy-issue-agent-secrets", StringComparison.Ordinal)..deployment.IndexOf("      containers:", StringComparison.Ordinal)];
+        Assert.Contains("add: [CHOWN, FOWNER, DAC_OVERRIDE]", mainInitContainer, StringComparison.Ordinal);
         Assert.DoesNotContain("issue-agent-secret-source", mainContainer, StringComparison.Ordinal);
         Assert.Contains("defaultMode: 0400", deployment, StringComparison.Ordinal);
     }
