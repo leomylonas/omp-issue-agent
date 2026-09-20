@@ -86,7 +86,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
 
         var reviewFeedbackCutoff = existingContent.State.ReviewFeedbackCutoff.Value;
         var feedback = context.PullOrMergeRequest is { } mrContext
-            ? mrContext.Comments.Concat(mrContext.ReviewThreads).Where(c => c.CreatedAt > reviewFeedbackCutoff).ToList()
+            ? mrContext.Comments.Concat(mrContext.ReviewThreads).Where(c => (c.UpdatedAt ?? c.CreatedAt) > reviewFeedbackCutoff).ToList()
             : [];
         await omp.SelectRoleAsync(config.RevisionRole, cancellationToken).ConfigureAwait(false);
         var revisionOutcome = await OmpRunCollector
@@ -125,7 +125,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         CanonicalCommentContent workingContent,
         string resultMarkdown,
         ProviderMergeRequest mergeRequest,
-        HashSet<string> feedbackBeforeRevision,
+        FeedbackSnapshot feedbackBeforeRevision,
         IOmpClient omp,
         CancellationToken cancellationToken)
     {
@@ -176,7 +176,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         }
 
         var feedbackAfterRevision = await CaptureFeedbackSnapshotAsync(config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
-        if (!feedbackAfterRevision.SetEquals(feedbackBeforeRevision))
+        if (!feedbackAfterRevision.Entries.SetEquals(feedbackBeforeRevision.Entries))
         {
             return await PauseForNewFeedbackAsync(
                 config,
@@ -195,15 +195,17 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         }
         await deps.Git.PushAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
 
-        var publishedAt = deps.Clock.UtcNow;
         var publishedState = workingState with
         {
             Phase = WorkflowPhase.Review,
             OperationalState = WorkflowOperationalState.Waiting,
             WaitingReason = WaitingReason.ReviewRequested,
             InterruptedPhase = null,
-            UpdatedAt = publishedAt,
-            ReviewFeedbackCutoff = publishedAt,
+            UpdatedAt = deps.Clock.UtcNow,
+            // This is the actual end of the feedback observation used for the publication gate.
+            // Advancing it to a later write time could silently skip feedback that arrives while
+            // publishing the branch.
+            ReviewFeedbackCutoff = feedbackAfterRevision.Cutoff,
         };
 
         var content = new CanonicalCommentContent(
@@ -240,7 +242,9 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         }
     }
 
-    private async Task<HashSet<string>> CaptureFeedbackSnapshotAsync(
+    private sealed record FeedbackSnapshot(HashSet<string> Entries, DateTimeOffset Cutoff);
+
+    private async Task<FeedbackSnapshot> CaptureFeedbackSnapshotAsync(
         RepositoryRef repository,
         long mergeRequestNumber,
         CancellationToken cancellationToken)
@@ -266,7 +270,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             }
         }
 
-        return snapshot;
+        return new FeedbackSnapshot(snapshot, deps.Clock.UtcNow);
     }
 
     private Task<WorkflowOutcome> PauseForMaterialDeviationAsync(

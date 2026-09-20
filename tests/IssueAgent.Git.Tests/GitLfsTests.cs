@@ -22,6 +22,18 @@ public sealed class GitLfsTests : IDisposable
     }
 
     [Fact]
+    public void RepositoryRequiresLfsDetectsCommittedNestedAttributes()
+    {
+        var worktreePath = Track(TempGitFixtures.CreateTempDirectory());
+        Directory.CreateDirectory(Path.Combine(worktreePath, "assets", "generated"));
+        File.WriteAllText(
+            Path.Combine(worktreePath, "assets", "generated", ".gitattributes"),
+            "*.bin filter=lfs diff=lfs merge=lfs -text\n");
+
+        Assert.True(GitLfsRunner.RepositoryRequiresLfs(worktreePath));
+    }
+
+    [Fact]
     public async Task MaterializeLfsContentAsyncNeverInstallsHooks()
     {
         var bareRemotePath = Track(CreateBareRemoteRepositoryWithLfsAsset(out var baseCommit, out _));

@@ -13,7 +13,7 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
     private readonly List<string> cleanupPaths = [];
 
     [Fact]
-    public void ApplyAuthenticationNeverForwardsTokenWhenLfsConfigNamesADifferentHost()
+    public void ApplyAuthenticationUsesTokenForTrustedCanonicalRemoteDespiteMutableLfsConfig()
     {
         var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example/octo/widgets.git");
         File.WriteAllText(Path.Combine(worktreePath, ".lfsconfig"), "[lfs]\n\turl = https://attacker.example/lfs\n");
@@ -21,8 +21,8 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
 
         InvokeApplyAuthentication(startInfo, new GitAuthentication { Mode = GitAuthenticationMode.Token, HttpsToken = "super-secret-token" }, Track());
 
-        Assert.False(startInfo.Environment.ContainsKey("GIT_ASKPASS"));
-        Assert.False(startInfo.Environment.ContainsKey("ISSUEAGENT_GIT_TOKEN"));
+        Assert.True(startInfo.Environment.ContainsKey("GIT_ASKPASS"));
+        Assert.Equal("super-secret-token", startInfo.Environment["ISSUEAGENT_GIT_TOKEN"]);
     }
 
     [Fact]
@@ -38,74 +38,19 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
     }
 
     [Fact]
-    public void ApplyAuthenticationNeverForwardsTokenWhenWorktreeOriginDiffersFromProtectedCanonicalRemote()
+    public void TrustedLfsConfigurationOverridesMutableWorktreeEndpoints()
     {
-        var worktreePath = CreateWorktreeWithOrigin("https://attacker.example/octo/widgets.git");
-        var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
+        var startInfo = new ProcessStartInfo();
 
-        InvokeApplyAuthentication(
+        InvokeAddTrustedLfsEndpointConfiguration(
             startInfo,
             "https://git.trusted.example/octo/widgets.git",
-            new GitAuthentication { Mode = GitAuthenticationMode.Token, HttpsToken = "super-secret-token" },
-            Track());
+            new GitAuthentication { Mode = GitAuthenticationMode.Token, HttpsToken = "super-secret-token" });
 
-        Assert.False(startInfo.Environment.ContainsKey("GIT_ASKPASS"));
-        Assert.False(startInfo.Environment.ContainsKey("ISSUEAGENT_GIT_TOKEN"));
-    }
-
-    [Fact]
-    public void ApplyAuthenticationForwardsTokenWhenLfsConfigMatchesOriginHost()
-    {
-        var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example/octo/widgets.git");
-        File.WriteAllText(Path.Combine(worktreePath, ".lfsconfig"), "[lfs]\n\turl = https://git.trusted.example/octo/widgets.git/info/lfs\n");
-        var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
-
-        InvokeApplyAuthentication(startInfo, new GitAuthentication { Mode = GitAuthenticationMode.Token, HttpsToken = "super-secret-token" }, Track());
-
-        Assert.True(startInfo.Environment.ContainsKey("GIT_ASKPASS"));
-    }
-
-    [Fact]
-    public void ApplyAuthenticationNeverForwardsTokenWhenLfsEndpointChangesTheOriginPort()
-    {
-        var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example:8443/octo/widgets.git");
-        File.WriteAllText(Path.Combine(worktreePath, ".lfsconfig"), "[lfs]\n\turl = https://git.trusted.example/octo/widgets.git/info/lfs\n");
-        var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
-
-        InvokeApplyAuthentication(startInfo, new GitAuthentication { Mode = GitAuthenticationMode.Token, HttpsToken = "super-secret-token" }, Track());
-
-        Assert.False(startInfo.Environment.ContainsKey("ISSUEAGENT_GIT_TOKEN"));
-    }
-
-    [Fact]
-    public void ApplyAuthenticationNeverForwardsTokenToAnHttpLfsEndpointOnTheOriginHost()
-    {
-        var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example/octo/widgets.git");
-        File.WriteAllText(Path.Combine(worktreePath, ".lfsconfig"), "[lfs]\n\turl = http://git.trusted.example/octo/widgets.git/info/lfs\n");
-        var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
-
-        var exception = Assert.Throws<TargetInvocationException>(() =>
-            InvokeApplyAuthentication(startInfo, new GitAuthentication { Mode = GitAuthenticationMode.Token, HttpsToken = "super-secret-token" }, Track()));
-
-        Assert.IsType<InvalidOperationException>(exception.InnerException);
-        Assert.False(startInfo.Environment.ContainsKey("ISSUEAGENT_GIT_TOKEN"));
-    }
-
-    [Theory]
-    [InlineData("lfs.pushurl", "https://attacker.example/lfs")]
-    [InlineData("remote.origin.lfsurl", "https://attacker.example/lfs")]
-    [InlineData("remote.origin.lfspushurl", "https://attacker.example/lfs")]
-    [InlineData("remote.origin.pushurl", "https://attacker.example/widgets.git")]
-    public void ApplyAuthenticationNeverForwardsTokenWhenAnyLfsPullOrPushOverrideNamesADifferentAuthority(string key, string endpoint)
-    {
-        var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example/octo/widgets.git");
-        RunGitCli(worktreePath, "config", key, endpoint);
-        var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
-
-        InvokeApplyAuthentication(startInfo, new GitAuthentication { Mode = GitAuthenticationMode.Token, HttpsToken = "super-secret-token" }, Track());
-
-        Assert.False(startInfo.Environment.ContainsKey("GIT_ASKPASS"));
-        Assert.False(startInfo.Environment.ContainsKey("ISSUEAGENT_GIT_TOKEN"));
+        Assert.Equal(
+            ["-c", "lfs.url=https://git.trusted.example/octo/widgets.git/info/lfs",
+             "-c", "lfs.pushurl=https://git.trusted.example/octo/widgets.git/info/lfs"],
+            startInfo.ArgumentList);
     }
 
     [Fact]
@@ -132,6 +77,31 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
         Assert.Contains(File.ReadAllText("/etc/ssl/certs/ca-certificates.crt"), bundle, StringComparison.Ordinal);
         Assert.Contains(File.ReadAllText(certificatePath), bundle, StringComparison.Ordinal);
         Assert.Equal("super-secret-token", startInfo.Environment["ISSUEAGENT_GIT_TOKEN"]);
+    }
+
+    [Fact]
+    public void ApplyAuthenticationPreservesEveryCertificateInAdditionalPemChain()
+    {
+        var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example/octo/widgets.git");
+        var certificatePath = WriteAdditionalCertificate(X509ContentType.Cert, "additional-chain.pem");
+        var secondCertificatePath = WriteAdditionalCertificate(X509ContentType.Cert, "additional-intermediate.pem");
+        var secondCertificate = File.ReadAllText(secondCertificatePath);
+        File.AppendAllText(certificatePath, secondCertificate);
+        var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
+
+        InvokeApplyAuthentication(startInfo, new GitAuthentication
+        {
+            Mode = GitAuthenticationMode.Token,
+            HttpsToken = "super-secret-token",
+            TlsTrust = new TlsTrust
+            {
+                Mode = TlsTrustMode.SystemPlusAdditionalCa,
+                AdditionalCaCertificatePaths = [certificatePath],
+            },
+        }, Track());
+
+        var bundle = File.ReadAllText(Assert.IsType<string>(startInfo.Environment["GIT_SSL_CAINFO"]));
+        Assert.Contains(File.ReadAllText(certificatePath), bundle, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -201,32 +171,24 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
     }
 
     [Fact]
-    public void ApplyAuthenticationNeverForwardsTokenWhenOriginUsesHttp()
-    {
-        var worktreePath = CreateWorktreeWithOrigin("http://git.trusted.example/octo/widgets.git");
-        var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
-
-        InvokeApplyAuthentication(startInfo, new GitAuthentication { Mode = GitAuthenticationMode.Token, HttpsToken = "super-secret-token" }, Track());
-
-        Assert.False(startInfo.Environment.ContainsKey("ISSUEAGENT_GIT_TOKEN"));
-    }
-
-    [Fact]
-    public void ApplyAuthenticationFailsClosedWhenGitLfsCannotEnforceConfiguredTlsTrust()
+    public void AskPassReturnsUsernameOnlyForUsernamePrompts()
     {
         var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example/octo/widgets.git");
         var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
+        var isolatedHome = Track();
 
-        var exception = Assert.Throws<TargetInvocationException>(() =>
-            InvokeApplyAuthentication(startInfo, new GitAuthentication
+        InvokeApplyAuthentication(
+            startInfo,
+            new GitAuthentication
             {
                 Mode = GitAuthenticationMode.Token,
+                HttpsUsername = "issue-agent",
                 HttpsToken = "super-secret-token",
-                TlsTrust = new TlsTrust { Mode = TlsTrustMode.Pinned, Fingerprints = ["sha256/fingerprint"] },
-            }, Track()));
+            },
+            isolatedHome);
 
-        Assert.IsType<InvalidOperationException>(exception.InnerException);
-        Assert.False(startInfo.Environment.ContainsKey("ISSUEAGENT_GIT_TOKEN"));
+        Assert.Equal("issue-agent", RunAskPass(startInfo, "Username for 'https://git.trusted.example':"));
+        Assert.Equal("super-secret-token", RunAskPass(startInfo, "Password for 'https://git.trusted.example':"));
     }
 
     private string CreateWorktreeWithOrigin(string originUrl)
@@ -251,6 +213,37 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
     {
         var method = typeof(GitLfsRunner).GetMethod("ApplyAuthentication", BindingFlags.NonPublic | BindingFlags.Static)!;
         method.Invoke(null, [startInfo, canonicalRemoteUrl, authentication, isolatedHome]);
+    }
+
+    private static void InvokeAddTrustedLfsEndpointConfiguration(
+        ProcessStartInfo startInfo,
+        string canonicalRemoteUrl,
+        GitAuthentication authentication)
+    {
+        var method = typeof(GitLfsRunner).GetMethod(
+            "AddTrustedLfsEndpointConfiguration",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+        method.Invoke(null, [startInfo, canonicalRemoteUrl, authentication]);
+    }
+
+    private static string RunAskPass(ProcessStartInfo authenticationStartInfo, string prompt)
+    {
+        var startInfo = new ProcessStartInfo(authenticationStartInfo.Environment["GIT_ASKPASS"]!)
+        {
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+        };
+        startInfo.ArgumentList.Add(prompt);
+        foreach (var variable in authenticationStartInfo.Environment)
+        {
+            startInfo.Environment[variable.Key] = variable.Value;
+        }
+
+        using var process = Process.Start(startInfo)!;
+        var result = process.StandardOutput.ReadToEnd().TrimEnd();
+        process.WaitForExit();
+        Assert.Equal(0, process.ExitCode);
+        return result;
     }
 
     private string WriteAdditionalCertificate(X509ContentType contentType, string fileName, bool pem = true)

@@ -255,6 +255,86 @@ public sealed class ObservableOmpClientTests
     }
 
     [Fact]
+    public async Task RunAsyncRedactsExecutionSecretsFromArrayValuesAndPropertyNames()
+    {
+        const string secret = "array-and-key-secret";
+        using var metrics = new IssueAgentMetrics();
+        var logger = new RecordingLogger<ObservableOmpClient>();
+        var decorated = new ObservableOmpClient(
+            new FakeOmpClient { ToolResult = $"[\"{secret}\",{{\"{secret}\":\"value\"}}]" },
+            metrics,
+            logger);
+        var request = new OmpRunRequest(
+            "session-1",
+            "/tmp",
+            "prompt",
+            new Dictionary<string, string> { ["EXECUTION_TOKEN"] = secret });
+
+        await foreach (var _ in decorated.RunAsync(request, CancellationToken.None))
+        {
+        }
+
+        var logs = string.Join(Environment.NewLine, logger.Messages);
+        Assert.DoesNotContain(secret, logs, StringComparison.Ordinal);
+        Assert.Contains("[REDACTED]", logs, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunAsyncRedactsExecutionSecretsBeforeYieldingErrorEvents()
+    {
+        const string secret = "error-event-secret";
+        using var metrics = new IssueAgentMetrics();
+        var decorated = new ObservableOmpClient(
+            new FakeOmpClient { ErrorMessage = $"OMP error: {secret}" },
+            metrics,
+            NullLogger<ObservableOmpClient>.Instance);
+        var request = new OmpRunRequest(
+            "session-1",
+            "/tmp",
+            "prompt",
+            new Dictionary<string, string> { ["EXECUTION_TOKEN"] = secret });
+        var error = default(OmpErrorEvent);
+        await foreach (var domainEvent in decorated.RunAsync(request, CancellationToken.None))
+        {
+            if (domainEvent is OmpErrorEvent observedError)
+            {
+                error = observedError;
+            }
+        }
+
+        Assert.NotNull(error);
+
+        Assert.DoesNotContain(secret, error.Message, StringComparison.Ordinal);
+        Assert.Contains("[REDACTED]", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunAsyncRedactsExecutionSecretsFromThrownFailures()
+    {
+        const string secret = "thrown-failure-secret";
+        using var metrics = new IssueAgentMetrics();
+        var decorated = new ObservableOmpClient(
+            new FakeOmpClient { ThrowDuringRun = true, RunFailureMessage = $"failure: {secret}" },
+            metrics,
+            NullLogger<ObservableOmpClient>.Instance);
+        var request = new OmpRunRequest(
+            "session-1",
+            "/tmp",
+            "prompt",
+            new Dictionary<string, string> { ["EXECUTION_TOKEN"] = secret });
+
+        var exception = await Assert.ThrowsAsync<OmpRpcException>(async () =>
+        {
+            await foreach (var _ in decorated.RunAsync(request, CancellationToken.None))
+            {
+            }
+        });
+
+        Assert.DoesNotContain(secret, exception.Message, StringComparison.Ordinal);
+        Assert.Contains("[REDACTED]", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RunAsyncRecordsErrorMetricsAndRethrowsOnFailure()
     {
         using var capture = new MetricCapture();

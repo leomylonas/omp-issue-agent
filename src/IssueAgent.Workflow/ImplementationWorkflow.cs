@@ -231,16 +231,40 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             var correctiveOutcome = await OmpRunCollector
                 .RunToCompletionAsync(omp, new OmpRunRequest(workingState.OmpSessionId, worktreePath, config.ApplyInstructions(ImplementationPromptBuilder.BuildCorrectivePrompt()), config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
                 .ConfigureAwait(false);
-            if (correctiveOutcome.Succeeded)
+            if (!correctiveOutcome.Succeeded)
             {
-                try
+                return await FailAsync(
+                    config,
+                    issueNumber,
+                    workingState,
+                    "Corrective implementation pass failed; publication was not attempted.",
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            try
+            {
+                var correctiveResult = ImplementationResult.Parse(correctiveOutcome.Completed!.ResultJson);
+                if (correctiveResult.IsMaterialDeviation)
                 {
-                    resultMarkdown = ImplementationResult.Parse(correctiveOutcome.Completed!.ResultJson).RenderMarkdown();
+                    return await PauseForMaterialDeviationAsync(
+                        config, issueNumber, workingState, workingContent, correctiveResult, cancellationToken).ConfigureAwait(false);
                 }
-                catch (WorkflowContractException exception)
-                {
-                    return await FailAsync(config, issueNumber, workingState, exception.Message, cancellationToken).ConfigureAwait(false);
-                }
+
+                resultMarkdown = correctiveResult.RenderMarkdown();
+            }
+            catch (WorkflowContractException exception)
+            {
+                return await FailAsync(config, issueNumber, workingState, exception.Message, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (await deps.Git.HasUncommittedChangesAsync(config.Repository.Id, worktreePath, cancellationToken).ConfigureAwait(false))
+            {
+                return await FailAsync(
+                    config,
+                    issueNumber,
+                    workingState,
+                    "Corrective implementation pass left uncommitted changes; publication was not attempted.",
+                    cancellationToken).ConfigureAwait(false);
             }
         }
 

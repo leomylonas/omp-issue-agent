@@ -78,4 +78,22 @@ public static class WorkflowCommandRouting
             _ => null,
         };
     }
+
+    /// <summary>Commands are accepted only at the workflow milestone they control. This prevents
+    /// a stale label from restarting an unrelated phase.</summary>
+    public static bool IsPhaseCompatible(WorkflowCommand command, WorkflowState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        return command switch
+        {
+            WorkflowCommand.Replan => state.Phase == WorkflowPhase.Planned,
+            WorkflowCommand.Implement => state.Phase == WorkflowPhase.Planned,
+            WorkflowCommand.Revise => state.Phase == WorkflowPhase.Review,
+            WorkflowCommand.Continue => ContinueRoute(state, state) is not null,
+            WorkflowCommand.Cancel => state.Phase is WorkflowPhase.Planning or WorkflowPhase.Planned or
+                WorkflowPhase.Implementing or WorkflowPhase.Review or WorkflowPhase.Revising,
+            _ => false,
+        };
+    }
 }

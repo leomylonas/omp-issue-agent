@@ -58,6 +58,8 @@ internal sealed class FakeOmpClient : IOmpClient
     public bool ThrowDuringRun { get; set; }
 
     public string? ToolResult { get; set; }
+    public string? ErrorMessage { get; set; }
+    public string RunFailureMessage { get; set; } = "Simulated run failure.";
     public ValueTask<OmpSession> CreateSessionAsync(string role, CancellationToken cancellationToken) => ValueTask.FromResult(new OmpSession("session-1", role));
 
     public ValueTask<OmpSession> ResumeSessionAsync(string sessionId, string sessionFile, CancellationToken cancellationToken) => ValueTask.FromResult(new OmpSession(sessionId, "task", sessionFile));
@@ -70,9 +72,14 @@ internal sealed class FakeOmpClient : IOmpClient
         {
             yield return new OmpToolResultEvent(request.SessionId, DateTimeOffset.UtcNow, "call-1", false, ToolResult);
         }
+        if (ErrorMessage is not null)
+        {
+            yield return new OmpErrorEvent(request.SessionId, DateTimeOffset.UtcNow, ErrorMessage, false);
+            yield break;
+        }
         if (ThrowDuringRun)
         {
-            throw new InvalidOperationException("Simulated run failure.");
+            throw new InvalidOperationException(RunFailureMessage);
         }
 
         yield return new OmpCompletedEvent(request.SessionId, DateTimeOffset.UtcNow, "{}");

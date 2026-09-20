@@ -7,7 +7,8 @@ umask 0077
 # can repair an existing volume and copy root-owned secret sources.
 if [ "$(id -u)" -eq 0 ]; then
     mkdir -p /data/omp/agent
-    chown -R 10001:10001 /data
+    # OMP owns 0600 native state beneath /data/omp; repair only shared directories.
+    chown 10001:10001 /data /data/omp /data/omp/agent
     chmod 2770 /data /data/omp /data/omp/agent
 
     if [ -d /run/secrets-source ]; then

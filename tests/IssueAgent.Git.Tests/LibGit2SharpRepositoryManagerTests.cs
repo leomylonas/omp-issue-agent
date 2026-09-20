@@ -99,6 +99,38 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task EnsureBareRepositoryAsyncRemovesOmpGroupWriteFromBareRepositoryAncestors()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        var workspace = Track(TempGitFixtures.CreateTempDirectory());
+        var workspaceRepos = Path.Combine(workspace, "repos");
+        var providerDirectory = Path.Combine(workspaceRepos, "provider");
+        Directory.CreateDirectory(providerDirectory);
+        foreach (var directory in new[] { workspace, workspaceRepos, providerDirectory })
+        {
+            File.SetUnixFileMode(directory, File.GetUnixFileMode(directory) | UnixFileMode.GroupWrite);
+        }
+        var authorityManager = new LibGit2SharpRepositoryManager(workspaceRepos);
+        var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out _));
+
+        await authorityManager.EnsureBareRepositoryAsync(
+            "provider/repository",
+            remotePath,
+            TempGitFixtures.AnonymousAuthentication(),
+            CancellationToken.None);
+
+        foreach (var directory in new[] { workspace, workspaceRepos, providerDirectory })
+        {
+            Assert.False((File.GetUnixFileMode(directory) & UnixFileMode.GroupWrite) != 0);
+            Assert.True((File.GetUnixFileMode(directory) & UnixFileMode.GroupExecute) != 0);
+        }
+    }
+
+    [Fact]
     public async Task FetchAsyncRestoresOmpPermissionsForNewBareRepositoryEntries()
     {
         if (!OperatingSystem.IsLinux())

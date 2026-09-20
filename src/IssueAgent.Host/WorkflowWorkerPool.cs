@@ -63,6 +63,11 @@ public sealed partial class WorkflowWorkerPool(
                             CancelActiveAttempt(candidate.Key);
                         }
                     }
+                    else if (deferredCancellations.TryRemove(candidate.Key, out var deferred) &&
+                        admission.TryEnqueue(deferred))
+                    {
+                        available.Release();
+                    }
                 }
                 continue;
             }

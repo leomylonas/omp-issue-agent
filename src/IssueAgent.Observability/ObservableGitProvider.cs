@@ -11,12 +11,27 @@ namespace IssueAgent.Observability;
 /// provider API calls.</summary>
 public sealed class ObservableGitProvider(IGitProvider inner, IssueAgentMetrics metrics, ILogger<ObservableGitProvider> logger) : IGitProvider
 {
+
+    private readonly object identityLock = new();
+    private Task<ProviderIdentity>? cachedIdentity;
     public string Name => inner.Name;
 
     public bool IsTrustedAttachmentHost(Uri url) => inner.IsTrustedAttachmentHost(url);
 
-    public async ValueTask<ProviderIdentity> GetCurrentIdentityAsync(CancellationToken cancellationToken) =>
-        await RunAsync("get-current-identity", () => inner.GetCurrentIdentityAsync(cancellationToken).AsTask(), cancellationToken).ConfigureAwait(false);
+    public ValueTask<ProviderIdentity> GetCurrentIdentityAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        Task<ProviderIdentity> identity;
+        lock (identityLock)
+        {
+            identity = cachedIdentity ??= RunAsync(
+                "get-current-identity",
+                () => inner.GetCurrentIdentityAsync(CancellationToken.None).AsTask(),
+                CancellationToken.None);
+        }
+
+        return new ValueTask<ProviderIdentity>(AwaitIdentityAsync(identity, cancellationToken));
+    }
 
     public async ValueTask<string> GetDefaultBranchAsync(RepositoryRef repository, CancellationToken cancellationToken) =>
         await RunAsync("get-default-branch", () => inner.GetDefaultBranchAsync(repository, cancellationToken).AsTask(), cancellationToken).ConfigureAwait(false);
@@ -137,6 +152,29 @@ public sealed class ObservableGitProvider(IGitProvider inner, IssueAgentMetrics 
 
     public async ValueTask<DownloadedAttachment> DownloadAttachmentAsync(ProviderAttachment attachment, string destinationDirectory, long maxSizeBytes, CancellationToken cancellationToken) =>
         await RunAsync("download-attachment", () => inner.DownloadAttachmentAsync(attachment, destinationDirectory, maxSizeBytes, cancellationToken).AsTask(), cancellationToken).ConfigureAwait(false);
+
+    private async Task<ProviderIdentity> AwaitIdentityAsync(
+        Task<ProviderIdentity> identity,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await identity.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (identity.IsFaulted || identity.IsCanceled)
+            {
+                lock (identityLock)
+                {
+                    if (ReferenceEquals(cachedIdentity, identity))
+                    {
+                        cachedIdentity = null;
+                    }
+                }
+            }
+        }
+    }
 
     private async Task<T> RunAsync<T>(string operation, Func<Task<T>> action, CancellationToken cancellationToken)
     {

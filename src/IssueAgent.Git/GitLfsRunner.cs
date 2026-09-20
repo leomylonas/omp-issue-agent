@@ -30,14 +30,16 @@ public static class GitLfsRunner
         }
     }
 
-    /// <summary>True when the worktree's committed <c>.gitattributes</c> declares an LFS filter,
-    /// meaning LFS materialization/upload is required rather than optional.</summary>
-    public static bool RepositoryRequiresLfs(string worktreePath)
-    {
-        var attributesPath = Path.Combine(worktreePath, ".gitattributes");
-        return File.Exists(attributesPath) &&
-            File.ReadAllLines(attributesPath).Any(line => line.Contains("filter=lfs", StringComparison.Ordinal));
-    }
+    /// <summary>True when any committed <c>.gitattributes</c> in the worktree declares an LFS
+    /// filter, meaning LFS materialization/upload is required rather than optional.</summary>
+    public static bool RepositoryRequiresLfs(string worktreePath) =>
+        Directory.EnumerateFiles(worktreePath, ".gitattributes", new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            AttributesToSkip = FileAttributes.ReparsePoint,
+        }).Any(attributesPath =>
+            File.ReadLines(attributesPath).Any(line =>
+                line.Contains("filter=lfs", StringComparison.Ordinal)));
 
     /// <summary>Replaces LFS pointer files in the worktree with their real content.</summary>
     public static async Task MaterializeContentAsync(
@@ -65,13 +67,8 @@ public static class GitLfsRunner
         await RunAsync(worktreePath, canonicalRemoteUrl, authentication, cancellationToken, "lfs", "push", "origin", "--", branchName).ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// Registers the <c>filter.lfs.*</c> config git-lfs itself expects to see before it will treat
-    /// pull/checkout as "opted in" (git-lfs otherwise silently skips checkout with "Git LFS is not
-    /// installed for this repository", which it detects independently of the filter config already
-    /// set on the worktree). <c>--skip-repo</c> guarantees no hook is written, keeping hooks
-    /// disabled everywhere else in this codebase.
-    /// </summary>
+
+    /// <summary>Registers git-lfs's repository marker without installing hooks.</summary>
     private static Task EnsureFiltersRegisteredAsync(
         string worktreePath,
         string canonicalRemoteUrl,
@@ -103,12 +100,19 @@ public static class GitLfsRunner
             };
             startInfo.ArgumentList.Add("-c");
             startInfo.ArgumentList.Add("core.hooksPath=/dev/null");
+            // git-lfs uses this marker to recognize the explicitly provisioned filters. Supply
+            // it per process rather than writing `git lfs install` state into the worktree.
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add("lfs.repositoryformatversion=0");
+            AddTrustedLfsEndpointConfiguration(startInfo, canonicalRemoteUrl, authentication);
+
             foreach (var argument in arguments)
             {
                 startInfo.ArgumentList.Add(argument);
             }
 
             startInfo.Environment["GIT_CONFIG_NOSYSTEM"] = "1";
+            startInfo.Environment["GIT_CONFIG_GLOBAL"] = OperatingSystem.IsWindows() ? "NUL" : "/dev/null";
             startInfo.Environment["HOME"] = isolatedHome;
             startInfo.Environment["XDG_CONFIG_HOME"] = isolatedHome;
             startInfo.Environment["GIT_TERMINAL_PROMPT"] = "0";
@@ -149,28 +153,19 @@ public static class GitLfsRunner
         {
             case GitAuthenticationMode.ProviderToken or GitAuthenticationMode.Token:
                 var canonicalRemote = TryGetHttpsUri(canonicalRemoteUrl);
-                var worktreeOrigin = TryGetHttpsUri(GetWorktreeOriginUrl(startInfo.WorkingDirectory));
-                var endpoints = GetConfiguredLfsEndpoints(startInfo.WorkingDirectory);
-                if (endpoints.Any(endpoint => TryGetHttpsUri(endpoint) is null))
+                if (canonicalRemote is null)
                 {
-                    throw new InvalidOperationException(
-                        "Every configured Git LFS pull or push endpoint must be an absolute HTTPS URI before credentials can be used.");
-                }
-                if (canonicalRemote is null ||
-                    worktreeOrigin is null ||
-                    !string.Equals(worktreeOrigin.Authority, canonicalRemote.Authority, StringComparison.OrdinalIgnoreCase) ||
-                    endpoints.Any(endpoint => !IsHttpsEndpointAtAuthority(endpoint, canonicalRemote.Authority)))
-                {
-                    // A worktree or committed LFS override can redirect either pulls or pushes.
-                    // Never offer the repository token unless every configured endpoint is HTTPS at
-                    // the exact protected canonical remote authority.
+                    // The authenticated LFS endpoint is explicitly derived from the configured,
+                    // canonical clone URL below. Never consult mutable worktree config for it.
                     break;
                 }
 
                 ApplyHttpsTlsTrust(startInfo, authentication.TlsTrust, isolatedHome);
 
                 var askPassPath = Path.Combine(isolatedHome, "askpass.sh");
-                File.WriteAllText(askPassPath, "#!/bin/sh\nprintf '%s\\n' \"$ISSUEAGENT_GIT_TOKEN\"\n");
+                File.WriteAllText(
+                    askPassPath,
+                    "#!/bin/sh\ncase \"$1\" in\n  *Username*|*username*) printf '%s\\n' \"$ISSUEAGENT_GIT_USERNAME\" ;;\n  *) printf '%s\\n' \"$ISSUEAGENT_GIT_TOKEN\" ;;\nesac\n");
                 if (!OperatingSystem.IsWindows())
                 {
                     File.SetUnixFileMode(askPassPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
@@ -178,7 +173,7 @@ public static class GitLfsRunner
 
                 startInfo.Environment["GIT_ASKPASS"] = askPassPath;
                 startInfo.Environment["ISSUEAGENT_GIT_TOKEN"] = authentication.HttpsToken!;
-                startInfo.Environment["GIT_USERNAME"] = authentication.HttpsUsername ?? "x-access-token";
+                startInfo.Environment["ISSUEAGENT_GIT_USERNAME"] = authentication.HttpsUsername ?? "x-access-token";
                 break;
 
             case GitAuthenticationMode.Ssh:
@@ -195,84 +190,26 @@ public static class GitLfsRunner
         }
     }
 
-    private static string GetWorktreeOriginUrl(string workingDirectory)
+    private static void AddTrustedLfsEndpointConfiguration(
+        ProcessStartInfo startInfo,
+        string canonicalRemoteUrl,
+        GitAuthentication authentication)
     {
-        using var process = Process.Start(new ProcessStartInfo("git")
+        if (authentication.Mode is not (GitAuthenticationMode.ProviderToken or GitAuthenticationMode.Token) ||
+            TryGetHttpsUri(canonicalRemoteUrl) is not { } remote)
         {
-            ArgumentList = { "-c", "core.hooksPath=/dev/null", "-C", workingDirectory, "remote", "get-url", "origin" },
-            RedirectStandardOutput = true,
-            UseShellExecute = false,
-        }) ?? throw new InvalidOperationException("Failed to start git process.");
-        var url = process.StandardOutput.ReadToEnd().Trim();
-        process.WaitForExit();
-        return url;
-    }
-
-
-    /// <summary>Gets every endpoint override that can redirect an LFS pull or push. Both the
-    /// worktree config and a committed <c>.lfsconfig</c> participate in git-lfs resolution.</summary>
-    private static List<string> GetConfiguredLfsEndpoints(string workingDirectory)
-    {
-        string[] keys =
-        [
-            "lfs.url",
-            "lfs.pushurl",
-            "remote.origin.lfsurl",
-            "remote.origin.lfspushurl",
-            "remote.origin.pushurl",
-        ];
-
-        var endpoints = new List<string>();
-        foreach (var key in keys)
-        {
-            endpoints.AddRange(GetConfigValues(workingDirectory, key, filePath: null));
-
-            var lfsConfigPath = Path.Combine(workingDirectory, ".lfsconfig");
-            if (File.Exists(lfsConfigPath))
-            {
-                endpoints.AddRange(GetConfigValues(workingDirectory, key, lfsConfigPath));
-            }
+            return;
         }
-        return endpoints;
-    }
 
-    private static string[] GetConfigValues(string workingDirectory, string key, string? filePath)
-    {
-        var startInfo = new ProcessStartInfo("git")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-        };
+        // git-lfs reads repository-local lfs.url/lfs.pushurl, which OMP can modify while working.
+        // Command-line config has precedence, so force both operations to the configured remote
+        // rather than accepting a same-host path redirect from mutable worktree config.
+        var endpoint = new Uri(remote.GetLeftPart(UriPartial.Path).TrimEnd('/') + "/info/lfs").AbsoluteUri;
         startInfo.ArgumentList.Add("-c");
-        startInfo.ArgumentList.Add("core.hooksPath=/dev/null");
-        if (filePath is null)
-        {
-            startInfo.ArgumentList.Add("-C");
-            startInfo.ArgumentList.Add(workingDirectory);
-            startInfo.ArgumentList.Add("config");
-            startInfo.ArgumentList.Add("--local");
-        }
-        else
-        {
-            startInfo.ArgumentList.Add("config");
-            startInfo.ArgumentList.Add("--file");
-            startInfo.ArgumentList.Add(filePath);
-        }
-        startInfo.ArgumentList.Add("--get-all");
-        startInfo.ArgumentList.Add(key);
-        startInfo.Environment["GIT_CONFIG_NOSYSTEM"] = "1";
-
-        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start git process.");
-        var values = process.StandardOutput.ReadToEnd()
-            .Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-        process.WaitForExit();
-        return values;
+        startInfo.ArgumentList.Add($"lfs.url={endpoint}");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add($"lfs.pushurl={endpoint}");
     }
-
-    private static bool IsHttpsEndpointAtAuthority(string endpoint, string authority) =>
-        TryGetHttpsUri(endpoint) is { } uri &&
-        string.Equals(uri.Authority, authority, StringComparison.OrdinalIgnoreCase);
 
     private static Uri? TryGetHttpsUri(string url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
@@ -280,6 +217,7 @@ public static class GitLfsRunner
         !string.IsNullOrEmpty(uri.Host)
             ? uri
             : null;
+
 
     private static void ApplyHttpsTlsTrust(ProcessStartInfo startInfo, TlsTrust tlsTrust, string isolatedHome)
     {
@@ -329,6 +267,18 @@ public static class GitLfsRunner
 
     private static void CopyAdditionalCertificateAsPem(string certificatePath, Stream destination)
     {
+        var bytes = File.ReadAllBytes(certificatePath);
+        if (System.Text.Encoding.ASCII.GetString(bytes).Contains(
+                "-----BEGIN CERTIFICATE-----",
+                StringComparison.Ordinal))
+        {
+            // A PEM input can intentionally contain the issuing intermediate(s). Preserve that
+            // chain verbatim rather than loading/exporting only the first certificate.
+            destination.Write(bytes);
+            destination.WriteByte((byte)'\n');
+            return;
+        }
+
         using var certificate = X509CertificateLoader.LoadCertificateFromFile(certificatePath);
         destination.Write(System.Text.Encoding.ASCII.GetBytes(certificate.ExportCertificatePem()));
         destination.WriteByte((byte)'\n');

@@ -70,7 +70,7 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
                 continue;
             }
 
-            humanComments.Add(new HumanComment(comment.AuthorLogin, comment.CreatedAt, comment.Body));
+            humanComments.Add(new HumanComment(comment.AuthorLogin, comment.CreatedAt, comment.Body, UpdatedAt: comment.UpdatedAt));
             attachments.AddRange(await attachmentPipeline
                 .ProcessAsync(comment.Body, comment.Source, attachmentsDestinationDirectory, remainingBudget, cancellationToken)
                 .ConfigureAwait(false));
@@ -148,7 +148,7 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
                 continue;
             }
 
-            comments.Add(new HumanComment(comment.AuthorLogin, comment.CreatedAt, comment.Body));
+            comments.Add(new HumanComment(comment.AuthorLogin, comment.CreatedAt, comment.Body, UpdatedAt: comment.UpdatedAt));
             attachments.AddRange(await attachmentPipeline
                 .ProcessAsync(comment.Body, comment.Source, attachmentsDestinationDirectory, remainingBudget, cancellationToken)
                 .ConfigureAwait(false));
@@ -164,7 +164,7 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
                     continue;
                 }
 
-                reviewThreads.Add(new HumanComment(comment.AuthorLogin, comment.CreatedAt, comment.Body, thread.Id, thread.IsResolved));
+                reviewThreads.Add(new HumanComment(comment.AuthorLogin, comment.CreatedAt, comment.Body, thread.Id, thread.IsResolved, comment.UpdatedAt));
                 attachments.AddRange(await attachmentPipeline
                     .ProcessAsync(comment.Body, comment.Source, attachmentsDestinationDirectory, remainingBudget, cancellationToken)
                     .ConfigureAwait(false));

@@ -116,9 +116,15 @@ public sealed class ObservableOmpClient(IOmpClient inner, IssueAgentMetrics metr
                     metrics.OmpErrors.Add(1, tags);
                     activity?.SetStatus(ActivityStatusCode.Error);
                     OmpLogMessages.RunFailed(logger, ex.GetType().Name, request.SessionId);
+                    var redactedMessage = RedactExecutionSecrets(ex.Message, request.ExecutionEnvironment.Values);
+                    if (!string.Equals(redactedMessage, ex.Message, StringComparison.Ordinal))
+                    {
+                        throw new OmpRpcException(redactedMessage);
+                    }
                     throw;
                 }
 
+                domainEvent = RedactEvent(domainEvent, request.ExecutionEnvironment.Values);
                 OmpLogMessages.EventObserved(logger, domainEvent.GetType().Name, request.SessionId);
                 if (logger.IsEnabled(LogLevel.Debug))
                 {
@@ -166,6 +172,17 @@ public sealed class ObservableOmpClient(IOmpClient inner, IssueAgentMetrics metr
     }
 
     public ValueTask DisposeAsync() => inner.DisposeAsync();
+
+    private static OmpEvent RedactEvent(OmpEvent domainEvent, IEnumerable<string> executionSecretValues) =>
+        domainEvent switch
+        {
+            OmpMessageEvent message => message with { Text = RedactExecutionSecrets(message.Text, executionSecretValues) },
+            OmpToolCallEvent toolCall => toolCall with { ArgumentsJson = RedactJson(toolCall.ArgumentsJson, executionSecretValues) },
+            OmpToolResultEvent toolResult => toolResult with { ResultJson = RedactJson(toolResult.ResultJson, executionSecretValues) },
+            OmpCompletedEvent completed => completed with { ResultJson = RedactJson(completed.ResultJson, executionSecretValues) },
+            OmpErrorEvent error => error with { Message = RedactExecutionSecrets(error.Message, executionSecretValues) },
+            _ => throw new ArgumentOutOfRangeException(nameof(domainEvent)),
+        };
 
     private static string SerializeRedactedEvent(OmpEvent domainEvent, IEnumerable<string> executionSecretValues) =>
         domainEvent switch
@@ -226,16 +243,29 @@ public sealed class ObservableOmpClient(IOmpClient inner, IssueAgentMetrics metr
     {
         if (node is JsonObject obj)
         {
-            foreach (var (_, child) in obj)
+            foreach (var (key, child) in obj.ToArray())
             {
                 RedactJsonNode(child, executionSecretValues);
+                var redactedKey = RedactExecutionSecrets(key, executionSecretValues);
+                if (!string.Equals(redactedKey, key, StringComparison.Ordinal))
+                {
+                    obj.Remove(key);
+                    obj[redactedKey] = child;
+                }
             }
         }
         else if (node is JsonArray array)
         {
-            foreach (var child in array)
+            for (var index = 0; index < array.Count; index++)
             {
-                RedactJsonNode(child, executionSecretValues);
+                if (array[index] is JsonValue value && value.TryGetValue<string>(out var text))
+                {
+                    array[index] = RedactExecutionSecrets(text, executionSecretValues);
+                }
+                else
+                {
+                    RedactJsonNode(array[index], executionSecretValues);
+                }
             }
         }
         else if (node is JsonValue value && value.TryGetValue<string>(out var text))

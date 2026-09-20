@@ -493,7 +493,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         for (var directory = Directory.GetParent(normalizedPath); directory is not null; directory = directory.Parent)
         {
             var mode = File.GetUnixFileMode(directory.FullName);
-            File.SetUnixFileMode(directory.FullName, mode | UnixFileMode.GroupExecute);
+            File.SetUnixFileMode(directory.FullName, (mode | UnixFileMode.GroupExecute) & ~UnixFileMode.GroupWrite);
             if (string.Equals(directory.FullName, normalizedWorkspaceRoot, StringComparison.Ordinal))
             {
                 break;

@@ -350,6 +350,19 @@ public sealed partial class WorkflowDispatcher(
         {
             return;
         }
+        if (command != WorkflowCommand.Continue && !WorkflowCommandRouting.IsPhaseCompatible(command.Value, state))
+        {
+            await reconciliation.PauseForHumanAsync(
+                runtime.Config,
+                issueNumber,
+                canonical,
+                reconciled.Content!,
+                state,
+                WaitingReason.ManualIntervention,
+                $"The `{command.Value.ToString().ToLowerInvariant()}` command is not valid while the workflow is in the {state.Phase} phase.",
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
         if (command == WorkflowCommand.Cancel)
         {
             await new CancellationWorkflow(runtime.Dependencies)
@@ -374,7 +387,13 @@ public sealed partial class WorkflowDispatcher(
         {
             var durableState = CanonicalStateSerializer.ToWorkflowState(reconciled.Content!.State);
             var routedCommand = WorkflowCommandRouting.ContinueRoute(state, durableState);
-            await RecoverContinueWorkspaceAsync(runtime.Dependencies, runtime.Config, state, cancellationToken).ConfigureAwait(false);
+            var preservesRetainedContinuation = state.WaitingReason is
+                WaitingReason.NewInputDuringImplementation or WaitingReason.MaterialPlanDeviation or
+                WaitingReason.NewFeedbackDuringRevision;
+            if (!preservesRetainedContinuation)
+            {
+                await RecoverContinueWorkspaceAsync(runtime.Dependencies, runtime.Config, state, cancellationToken).ConfigureAwait(false);
+            }
             if (routedCommand is null)
             {
                 await ConsumeCommandAsync(
@@ -387,8 +406,6 @@ public sealed partial class WorkflowDispatcher(
             // continuation provenance. Leave that durable pause intact until the owning workflow
             // has resumed it; otherwise a crash between this acknowledgement and RunAsync loses
             // the gate and can restart or discard retained work.
-            var preservesRetainedContinuation = state.WaitingReason is
-                WaitingReason.NewInputDuringImplementation or WaitingReason.MaterialPlanDeviation;
             if (!preservesRetainedContinuation)
             {
                 await PersistContinueAcceptanceAsync(
@@ -496,8 +513,11 @@ public sealed partial class WorkflowDispatcher(
                 remoteHead ?? state.BaseCommit,
                 cancellationToken).ConfigureAwait(false);
         }
-        else if (remoteHead is not null && !await dependencies.Git.HasUncommittedChangesAsync(
-            config.Repository.Id, worktreePath, cancellationToken).ConfigureAwait(false))
+        else if (state.WaitingReason is not (WaitingReason.NewInputDuringImplementation or
+                     WaitingReason.MaterialPlanDeviation or WaitingReason.NewFeedbackDuringRevision) &&
+                 remoteHead is not null &&
+                 !await dependencies.Git.HasUncommittedChangesAsync(
+                     config.Repository.Id, worktreePath, cancellationToken).ConfigureAwait(false))
         {
             await dependencies.Git.ResetWorktreeAsync(
                 config.Repository.Id, worktreePath, remoteHead, cancellationToken).ConfigureAwait(false);

@@ -138,6 +138,21 @@ public sealed class WorkflowCommandRoutingTests
         Assert.Equal(expectedCommand, WorkflowCommandRouting.ContinueRoute(failed, failed));
     }
 
+    [Theory]
+    [InlineData(WorkflowPhase.Review, WorkflowCommand.Implement, false)]
+    [InlineData(WorkflowPhase.Planned, WorkflowCommand.Revise, false)]
+    [InlineData(WorkflowPhase.Planned, WorkflowCommand.Implement, true)]
+    [InlineData(WorkflowPhase.Review, WorkflowCommand.Revise, true)]
+    public void IsPhaseCompatibleRejectsCommandsForOtherWorkflowMilestones(
+        WorkflowPhase phase,
+        WorkflowCommand command,
+        bool expected)
+    {
+        var state = CreateState(phase, WorkflowOperationalState.Waiting);
+
+        Assert.Equal(expected, WorkflowCommandRouting.IsPhaseCompatible(command, state));
+    }
+
     [Fact]
     public async Task ReviewContinueRecoveryResetsCleanRetainedWorkspaceToRemoteHead()
     {
@@ -154,6 +169,32 @@ public sealed class WorkflowCommandRoutingTests
 
             Assert.Equal([("repo", worktreePath, "remote-rewrite")], git.ResetWorktrees);
             Assert.Empty(git.CreatedWorktrees);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RevisionContinueRecoveryPreservesCheckpointedLocalRevision()
+    {
+        var state = ReviewState() with
+        {
+            Phase = WorkflowPhase.Revising,
+            WaitingReason = WaitingReason.NewFeedbackDuringRevision,
+        };
+        var root = Path.Combine(Path.GetTempPath(), $"issue-agent-{Guid.NewGuid():N}");
+        var worktreePath = Path.Combine(root, state.WorkflowId.ToString(), "worktree");
+        Directory.CreateDirectory(worktreePath);
+        try
+        {
+            var git = new ContinueRecoveryGit { RemoteHead = "remote-rewrite" };
+
+            await WorkflowDispatcher.RecoverContinueWorkspaceAsync(
+                Dependencies(git), Config(root), state, CancellationToken.None);
+
+            Assert.Empty(git.ResetWorktrees);
         }
         finally
         {

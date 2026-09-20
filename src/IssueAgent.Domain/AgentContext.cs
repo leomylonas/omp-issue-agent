@@ -29,7 +29,8 @@ public sealed record HumanComment(
     DateTimeOffset CreatedAt,
     string Body,
     string? ThreadId = null,
-    bool IsResolved = false);
+    bool IsResolved = false,
+    DateTimeOffset? UpdatedAt = null);
 
 /// <summary>Downloaded attachment metadata and its safe local location outside the worktree.</summary>
 public sealed record AttachmentReference(

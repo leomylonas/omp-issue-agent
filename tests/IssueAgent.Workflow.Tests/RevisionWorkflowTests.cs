@@ -64,6 +64,25 @@ public sealed class RevisionWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsyncIncludesFeedbackEditedAfterThePriorCutoff()
+    {
+        var state = await SeedReviewStateAsync();
+        provider.MergeRequestComments[(Repository.Id, 1)] =
+        [
+            new ProviderComment(1, "bob", "Edited feedback.", clock.UtcNow.AddHours(-2), clock.UtcNow,
+                new AttachmentSource("merge-request-comment", "1"), false),
+        ];
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1", clock.UtcNow,
+            """{"summary":"Addressed the edit.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
+
+        Assert.Contains("Edited feedback.", Assert.Single(omp.RunRequests).Prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RunAsyncPersistsFailureWhenOmpResultViolatesContract()
     {
         var state = await SeedReviewStateAsync();

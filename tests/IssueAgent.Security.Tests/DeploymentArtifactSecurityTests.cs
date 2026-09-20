@@ -162,6 +162,7 @@ public sealed class DeploymentArtifactSecurityTests
         var dockerfile = ReadRepositoryFile("Dockerfile");
         var entrypoint = ReadRepositoryFile("docker/issue-agent-entrypoint.sh");
         var ompWrapper = ReadRepositoryFile("docker/omp-unprivileged.sh");
+        var helmDeployment = ReadRepositoryFile("deploy/helm/issue-agent/templates/deployment.yaml");
 
         Assert.Contains("ENV HOME=/data", dockerfile, StringComparison.Ordinal);
         Assert.Contains("PI_CODING_AGENT_DIR=/data/omp/agent", dockerfile, StringComparison.Ordinal);
@@ -171,7 +172,11 @@ public sealed class DeploymentArtifactSecurityTests
         Assert.Contains("umask 0077", entrypoint, StringComparison.Ordinal);
         Assert.Contains("if [ \"$(id -u)\" -eq 0 ]; then", entrypoint, StringComparison.Ordinal);
         Assert.Contains("mkdir -p /data/omp/agent", entrypoint, StringComparison.Ordinal);
+        Assert.Contains("chown 10001:10001 /data /data/omp /data/omp/agent", entrypoint, StringComparison.Ordinal);
+        Assert.DoesNotContain("chown -R 10001:10001 /data", entrypoint, StringComparison.Ordinal);
         Assert.Contains("chmod 2770 /data /data/omp /data/omp/agent", entrypoint, StringComparison.Ordinal);
+        Assert.Contains("install -o 10001 -g 10001 -d -m 2770 /data /data/omp /data/omp/agent", helmDeployment, StringComparison.Ordinal);
+        Assert.DoesNotContain("chown -R 10001:10001 /data", helmDeployment, StringComparison.Ordinal);
         Assert.Contains("--reuid=10001 --regid=10001", entrypoint, StringComparison.Ordinal);
         Assert.True(
             entrypoint.IndexOf("umask 0002", StringComparison.Ordinal)
@@ -253,6 +258,11 @@ public sealed class DeploymentArtifactSecurityTests
         var resources = ReadRepositoryFile("deploy/helm/issue-agent/templates/resources.yaml");
 
         Assert.Contains("v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)", release, StringComparison.Ordinal);
+        Assert.Contains("/actions/workflows/ci.yml/runs?event=push&head_sha=${GITHUB_SHA}", release, StringComparison.Ordinal);
+        Assert.Contains("actions: read", release, StringComparison.Ordinal);
+        Assert.Contains(".head_branch == env.GITHUB_REF_NAME", release, StringComparison.Ordinal);
+        Assert.Contains(".head_sha == env.GITHUB_SHA", release, StringComparison.Ordinal);
+        Assert.DoesNotContain("/commits/${GITHUB_SHA}/check-runs", release, StringComparison.Ordinal);
         Assert.Contains("absent(up{", resources, StringComparison.Ordinal);
         Assert.Contains("absent(issueagent_poll_count_total", resources, StringComparison.Ordinal);
         Assert.Contains("cancel-in-progress: true", ci, StringComparison.Ordinal);

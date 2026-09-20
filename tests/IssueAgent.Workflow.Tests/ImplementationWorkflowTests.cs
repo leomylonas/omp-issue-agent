@@ -126,6 +126,58 @@ public sealed class ImplementationWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsyncCorrectiveMaterialDeviationPausesWithoutPublishing()
+    {
+        var state = await SeedApprovedPlanAsync();
+        var omp = new FakeOmpClient()
+            .EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """{"summary":"First pass.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""))
+            .EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """{"summary":"Corrective pass needs a migration.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":["Requires a migration."],"risks":[],"isMaterialDeviation":true,"materialDeviationExplanation":"The remaining changes require an unapproved migration."}"""));
+        var workflow = new ImplementationWorkflow(new WorkflowDependencies(
+            provider, new UncommittedThenCleanGitManager(git), CreateContextBuilder(), notifier, clock));
+
+        var outcome = await workflow.RunAsync(CreateConfig(), WorkflowMode.Full, 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WaitingReason.MaterialPlanDeviation, outcome.State.WaitingReason);
+        Assert.Equal(0, git.PushCallCount);
+        Assert.Empty(provider.MergeRequests);
+    }
+
+
+    [Fact]
+    public async Task RunAsyncFailsWithoutPublishingWhenCorrectivePassFails()
+    {
+        var state = await SeedApprovedPlanAsync();
+        var omp = new FakeOmpClient()
+            .EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """{"summary":"First pass.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""))
+            .EnqueueRun(new OmpErrorEvent("session-1", clock.UtcNow, "Corrective pass failed", WasCancelled: false));
+        var workflow = new ImplementationWorkflow(new WorkflowDependencies(
+            provider, new UncommittedThenCleanGitManager(git), CreateContextBuilder(), notifier, clock));
+
+        var outcome = await workflow.RunAsync(CreateConfig(), WorkflowMode.Full, 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Failed, outcome.Status);
+        Assert.Equal(0, git.PushCallCount);
+        Assert.Empty(provider.MergeRequests);
+    }
+
+    [Fact]
+    public async Task RunAsyncFailsWithoutPublishingWhenCorrectivePassLeavesWorktreeDirty()
+    {
+        var state = await SeedApprovedPlanAsync();
+        var omp = new FakeOmpClient()
+            .EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """{"summary":"First pass.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""))
+            .EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """{"summary":"Corrective pass.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+        var workflow = new ImplementationWorkflow(new WorkflowDependencies(
+            provider, new UncommittedThenCleanGitManager(git, dirtyReports: 2), CreateContextBuilder(), notifier, clock));
+
+        var outcome = await workflow.RunAsync(CreateConfig(), WorkflowMode.Full, 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Failed, outcome.Status);
+        Assert.Equal(0, git.PushCallCount);
+        Assert.Empty(provider.MergeRequests);
+    }
+    [Fact]
     public async Task RunAsyncBlocksImplementationWhenPlanIsStale()
     {
         var state = await SeedApprovedPlanAsync();
@@ -329,11 +381,11 @@ public sealed class ImplementationWorkflowTests : IDisposable
         }
     }
 
-    /// <summary>Wraps a real <see cref="FakeGitRepositoryManager"/> but reports uncommitted changes
-    /// exactly once, so the workflow's corrective-pass path is exercised deterministically.</summary>
-    private sealed class UncommittedThenCleanGitManager(FakeGitRepositoryManager inner) : IGitRepositoryManager
+    /// <summary>Wraps a real <see cref="FakeGitRepositoryManager"/> and reports uncommitted changes
+    /// for a controlled number of probes, so publication gates can be exercised deterministically.</summary>
+    private sealed class UncommittedThenCleanGitManager(FakeGitRepositoryManager inner, int dirtyReports = 1) : IGitRepositoryManager
     {
-        private bool reported;
+        private int reported;
 
         public ValueTask EnsureBareRepositoryAsync(string repositoryId, string cloneUrl, GitAuthentication authentication, CancellationToken cancellationToken) => inner.EnsureBareRepositoryAsync(repositoryId, cloneUrl, authentication, cancellationToken);
         public ValueTask FetchAsync(string repositoryId, GitAuthentication authentication, CancellationToken cancellationToken) => inner.FetchAsync(repositoryId, authentication, cancellationToken);
@@ -345,9 +397,8 @@ public sealed class ImplementationWorkflowTests : IDisposable
 
         public ValueTask<bool> HasUncommittedChangesAsync(string repositoryId, string worktreePath, CancellationToken cancellationToken)
         {
-            if (!reported)
+            if (reported++ < dirtyReports)
             {
-                reported = true;
                 return ValueTask.FromResult(true);
             }
 
