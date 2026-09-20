@@ -368,12 +368,27 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
 
     public async ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, CancellationToken cancellationToken)
     {
-        await GitLfsRunner.MaterializeContentAsync(worktreePath, authentication, cancellationToken).ConfigureAwait(false);
+        await GitLfsRunner.MaterializeContentAsync(
+            worktreePath,
+            GetCanonicalOriginUrl(repositoryId),
+            authentication,
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask UploadLfsObjectsAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken)
     {
-        await GitLfsRunner.UploadObjectsAsync(worktreePath, branchName, authentication, cancellationToken).ConfigureAwait(false);
+        await GitLfsRunner.UploadObjectsAsync(
+            worktreePath,
+            GetCanonicalOriginUrl(repositoryId),
+            branchName,
+            authentication,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private string GetCanonicalOriginUrl(string repositoryId)
+    {
+        using var repository = new Repository(BareRepositoryPath(repositoryId));
+        return repository.Network.Remotes["origin"].Url;
     }
 
     private string BareRepositoryPath(string repositoryId) => Path.Combine(reposRootPath, repositoryId);
@@ -464,11 +479,22 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
     [SupportedOSPlatform("linux")]
     private static void MakeAncestorDirectoriesTraversableByOmp(string path, string workspaceRootPath)
     {
-        for (var directory = Directory.GetParent(path); directory is not null; directory = directory.Parent)
+        var normalizedPath = Path.GetFullPath(path);
+        var normalizedWorkspaceRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workspaceRootPath));
+        var relativePath = Path.GetRelativePath(normalizedWorkspaceRoot, normalizedPath);
+        if (Path.IsPathRooted(relativePath) ||
+            string.Equals(relativePath, "..", StringComparison.Ordinal) ||
+            relativePath.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Path '{path}' escapes workspace root '{workspaceRootPath}'.");
+        }
+
+        for (var directory = Directory.GetParent(normalizedPath); directory is not null; directory = directory.Parent)
         {
             var mode = File.GetUnixFileMode(directory.FullName);
             File.SetUnixFileMode(directory.FullName, mode | UnixFileMode.GroupExecute);
-            if (string.Equals(directory.FullName, workspaceRootPath, StringComparison.Ordinal))
+            if (string.Equals(directory.FullName, normalizedWorkspaceRoot, StringComparison.Ordinal))
             {
                 break;
             }

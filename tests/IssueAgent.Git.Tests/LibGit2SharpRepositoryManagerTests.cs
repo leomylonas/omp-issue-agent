@@ -49,6 +49,35 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task EnsureBareRepositoryAsyncDoesNotMakeDirectoriesAboveNormalizedWorkspaceTraversable()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        var outerDirectory = Track(TempGitFixtures.CreateTempDirectory());
+        var workspaceDirectory = Path.Combine(outerDirectory, "workspace");
+        var relativeReposRoot = Path.GetRelativePath(
+            Environment.CurrentDirectory,
+            Path.Combine(workspaceDirectory, "repos"));
+        Directory.CreateDirectory(relativeReposRoot);
+        File.SetUnixFileMode(
+            outerDirectory,
+            File.GetUnixFileMode(outerDirectory) & ~UnixFileMode.GroupExecute);
+        var relativePathManager = new LibGit2SharpRepositoryManager(relativeReposRoot);
+        var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out _));
+
+        await relativePathManager.EnsureBareRepositoryAsync(
+            "repo-normalized-boundary",
+            remotePath,
+            TempGitFixtures.AnonymousAuthentication(),
+            CancellationToken.None);
+
+        Assert.False((File.GetUnixFileMode(outerDirectory) & UnixFileMode.GroupExecute) != 0);
+    }
+
+    [Fact]
     public async Task EnsureBareRepositoryAsyncProtectsCanonicalRemoteConfigurationFromOmpGroupWrites()
     {
         if (!OperatingSystem.IsLinux())

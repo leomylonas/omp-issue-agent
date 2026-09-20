@@ -152,6 +152,36 @@ public sealed class RevisionWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsyncStartsNewRevisionForNewFeedbackInsteadOfPublishingRetainedResult()
+    {
+        var state = await SeedReviewStateAsync();
+        var workflow = new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock));
+        var firstOmp = new FakeOmpClient().EnqueueRun(
+            onStart: () => provider.MergeRequestComments[(Repository.Id, 1)] =
+            [
+                new ProviderComment(9, "bob", "Please account for this new feedback.", clock.UtcNow.AddMinutes(1), clock.UtcNow.AddMinutes(1),
+                    new AttachmentSource("merge-request-comment", "9"), false),
+            ],
+            new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"summary":"First revision.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var paused = await workflow.RunAsync(CreateConfig(), 1, state, firstOmp, CancellationToken.None);
+        var secondOmp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"summary":"Feedback revision.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await workflow.RunAsync(CreateConfig(), 1, paused.State, secondOmp, CancellationToken.None);
+
+        Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
+        Assert.Single(secondOmp.RunRequests);
+        Assert.Contains("Please account for this new feedback.", secondOmp.RunRequests[0].Prompt, StringComparison.Ordinal);
+        Assert.Contains("Feedback revision.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RunAsyncFailsClosedWhenReviewFeedbackCheckpointIsMissing()
     {
         var state = await SeedReviewStateAsync();
@@ -185,7 +215,8 @@ public sealed class RevisionWorkflowTests : IDisposable
         var workflow = new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock));
 
         var paused = await workflow.RunAsync(CreateConfig(), 1, state, materialDeviation, CancellationToken.None);
-        var continued = await workflow.RunAsync(CreateConfig(), 1, paused.State, new FakeOmpClient(), CancellationToken.None);
+        var continued = await workflow.RunAsync(
+            CreateConfig(), 1, paused.State, new FakeOmpClient(), CancellationToken.None, publishRetainedResult: true);
 
         Assert.Equal(WorkflowPhase.Review, continued.State.Phase);
         Assert.Equal(WaitingReason.ReviewRequested, continued.State.WaitingReason);

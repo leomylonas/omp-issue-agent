@@ -54,6 +54,32 @@ public sealed class OmpProcessClient(
     }
 
 
+    internal async ValueTask<OmpModel> GetSelectedModelAsync(CancellationToken cancellationToken)
+    {
+        var state = RequireData(
+            await transport.SendCommandAsync("get_state", null, cancellationToken).ConfigureAwait(false));
+        var model = state["model"] as JsonObject
+            ?? throw new OmpRpcException("OMP state was missing the selected model.");
+        return new OmpModel(
+            RequireString(model, "provider"),
+            model["id"]?.GetValue<string>()
+                ?? RequireString(model, "modelId"));
+    }
+
+    internal async ValueTask SelectModelAsync(OmpModel model, CancellationToken cancellationToken)
+    {
+        await RequireSuccessAsync(
+            await transport.SendCommandAsync(
+                "set_model",
+                new JsonObject
+                {
+                    ["provider"] = model.Provider,
+                    ["modelId"] = model.Id,
+                },
+                cancellationToken).ConfigureAwait(false))
+            .ConfigureAwait(false);
+    }
+
     public async IAsyncEnumerable<OmpEvent> RunAsync(
         OmpRunRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -314,7 +340,9 @@ public sealed class OmpProcessClient(
     private static string RequireString(JsonObject obj, string property) =>
         obj[property]?.GetValue<string>()
         ?? throw new InvalidOperationException($"OMP payload was missing required property '{property}'.");
+
 }
+internal sealed record OmpModel(string Provider, string Id);
 
 
 public sealed class OmpRpcException(string message) : Exception(message);

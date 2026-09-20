@@ -1,5 +1,5 @@
 using System.Diagnostics;
-
+using System.Security.Cryptography.X509Certificates;
 namespace IssueAgent.Git;
 
 /// <summary>
@@ -42,11 +42,12 @@ public static class GitLfsRunner
     /// <summary>Replaces LFS pointer files in the worktree with their real content.</summary>
     public static async Task MaterializeContentAsync(
         string worktreePath,
+        string canonicalRemoteUrl,
         GitAuthentication authentication,
         CancellationToken cancellationToken)
     {
-        await EnsureFiltersRegisteredAsync(worktreePath, authentication, cancellationToken).ConfigureAwait(false);
-        await RunAsync(worktreePath, authentication, cancellationToken, "lfs", "pull").ConfigureAwait(false);
+        await EnsureFiltersRegisteredAsync(worktreePath, canonicalRemoteUrl, authentication, cancellationToken).ConfigureAwait(false);
+        await RunAsync(worktreePath, canonicalRemoteUrl, authentication, cancellationToken, "lfs", "pull").ConfigureAwait(false);
     }
 
     /// <summary>Uploads every LFS object referenced by <paramref name="branchName"/> that the remote
@@ -55,12 +56,13 @@ public static class GitLfsRunner
     /// would have succeeded.</summary>
     public static async Task UploadObjectsAsync(
         string worktreePath,
+        string canonicalRemoteUrl,
         string branchName,
         GitAuthentication authentication,
         CancellationToken cancellationToken)
     {
-        await EnsureFiltersRegisteredAsync(worktreePath, authentication, cancellationToken).ConfigureAwait(false);
-        await RunAsync(worktreePath, authentication, cancellationToken, "lfs", "push", "origin", "--", branchName).ConfigureAwait(false);
+        await EnsureFiltersRegisteredAsync(worktreePath, canonicalRemoteUrl, authentication, cancellationToken).ConfigureAwait(false);
+        await RunAsync(worktreePath, canonicalRemoteUrl, authentication, cancellationToken, "lfs", "push", "origin", "--", branchName).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -72,12 +74,14 @@ public static class GitLfsRunner
     /// </summary>
     private static Task EnsureFiltersRegisteredAsync(
         string worktreePath,
+        string canonicalRemoteUrl,
         GitAuthentication authentication,
         CancellationToken cancellationToken) =>
-        RunAsync(worktreePath, authentication, cancellationToken, "lfs", "install", "--local", "--skip-repo");
+        RunAsync(worktreePath, canonicalRemoteUrl, authentication, cancellationToken, "lfs", "install", "--local", "--skip-repo");
 
     private static async Task RunAsync(
         string worktreePath,
+        string canonicalRemoteUrl,
         GitAuthentication authentication,
         CancellationToken cancellationToken,
         params string[] arguments)
@@ -110,7 +114,7 @@ public static class GitLfsRunner
             startInfo.Environment["GIT_TERMINAL_PROMPT"] = "0";
             startInfo.Environment["GIT_LFS_SKIP_SMUDGE"] = "0";
 
-            ApplyAuthentication(startInfo, authentication, isolatedHome);
+            ApplyAuthentication(startInfo, canonicalRemoteUrl, authentication, isolatedHome);
 
             using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start git process for LFS operation.");
             var stderr = process.StandardError.ReadToEndAsync(cancellationToken);
@@ -134,24 +138,32 @@ public static class GitLfsRunner
         }
     }
 
-    private static void ApplyAuthentication(ProcessStartInfo startInfo, GitAuthentication authentication, string isolatedHome)
+    private static void ApplyAuthentication(
+        ProcessStartInfo startInfo,
+        string canonicalRemoteUrl,
+        GitAuthentication authentication,
+        string isolatedHome)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(canonicalRemoteUrl);
         switch (authentication.Mode)
         {
             case GitAuthenticationMode.ProviderToken or GitAuthenticationMode.Token:
-                var origin = TryGetHttpsUri(GetOriginUrl(startInfo.WorkingDirectory));
+                var canonicalRemote = TryGetHttpsUri(canonicalRemoteUrl);
+                var worktreeOrigin = TryGetHttpsUri(GetWorktreeOriginUrl(startInfo.WorkingDirectory));
                 var endpoints = GetConfiguredLfsEndpoints(startInfo.WorkingDirectory);
                 if (endpoints.Any(endpoint => TryGetHttpsUri(endpoint) is null))
                 {
                     throw new InvalidOperationException(
                         "Every configured Git LFS pull or push endpoint must be an absolute HTTPS URI before credentials can be used.");
                 }
-                if (origin is null ||
-                    endpoints.Any(endpoint => !IsHttpsEndpointAtAuthority(endpoint, origin.Authority)))
+                if (canonicalRemote is null ||
+                    worktreeOrigin is null ||
+                    !string.Equals(worktreeOrigin.Authority, canonicalRemote.Authority, StringComparison.OrdinalIgnoreCase) ||
+                    endpoints.Any(endpoint => !IsHttpsEndpointAtAuthority(endpoint, canonicalRemote.Authority)))
                 {
-                    // A local or committed LFS override can redirect either pulls or pushes. Never
-                    // offer the repository token unless every configured endpoint is HTTPS at the
-                    // exact trusted origin authority.
+                    // A worktree or committed LFS override can redirect either pulls or pushes.
+                    // Never offer the repository token unless every configured endpoint is HTTPS at
+                    // the exact protected canonical remote authority.
                     break;
                 }
 
@@ -174,7 +186,7 @@ public static class GitLfsRunner
                 // Hybrid LFS authentication obtains credentials over SSH and then transfers the
                 // objects over HTTPS. Apply the same HTTPS CA policy before git-lfs starts.
                 ApplyHttpsTlsTrust(startInfo, authentication.TlsTrust, isolatedHome);
-                var remoteUrl = GetOriginUrl(startInfo.WorkingDirectory);
+                var remoteUrl = canonicalRemoteUrl;
                 startInfo.Environment["GIT_SSH_COMMAND"] = GitSshTransport.BuildSshCommandForLfs(authentication, trust, remoteUrl, isolatedHome);
                 break;
 
@@ -183,7 +195,7 @@ public static class GitLfsRunner
         }
     }
 
-    private static string GetOriginUrl(string workingDirectory)
+    private static string GetWorktreeOriginUrl(string workingDirectory)
     {
         using var process = Process.Start(new ProcessStartInfo("git")
         {
@@ -195,6 +207,7 @@ public static class GitLfsRunner
         process.WaitForExit();
         return url;
     }
+
 
     /// <summary>Gets every endpoint override that can redirect an LFS pull or push. Both the
     /// worktree config and a committed <c>.lfsconfig</c> participate in git-lfs resolution.</summary>
@@ -301,11 +314,26 @@ public static class GitLfsRunner
         CopyCertificateFile(systemBundlePath, destination);
         foreach (var certificatePath in certificatePaths)
         {
-            CopyCertificateFile(certificatePath, destination);
+            CopyAdditionalCertificateAsPem(certificatePath, destination);
         }
 
         return bundlePath;
     }
+
+    private static void CopyCertificateFile(string certificatePath, Stream destination)
+    {
+        using var source = File.OpenRead(certificatePath);
+        source.CopyTo(destination);
+        destination.WriteByte((byte)'\n');
+    }
+
+    private static void CopyAdditionalCertificateAsPem(string certificatePath, Stream destination)
+    {
+        using var certificate = X509CertificateLoader.LoadCertificateFromFile(certificatePath);
+        destination.Write(System.Text.Encoding.ASCII.GetBytes(certificate.ExportCertificatePem()));
+        destination.WriteByte((byte)'\n');
+    }
+
 
     private static string GetSystemCaBundlePath()
     {
@@ -322,12 +350,6 @@ public static class GitLfsRunner
             "git-lfs cannot locate the system CA bundle required for system-plus-additional-ca trust.");
     }
 
-    private static void CopyCertificateFile(string certificatePath, Stream destination)
-    {
-        using var source = File.OpenRead(certificatePath);
-        source.CopyTo(destination);
-        destination.WriteByte((byte)'\n');
-    }
 }
 
 public sealed class GitLfsUnavailableException(string message) : Exception(message);

@@ -78,10 +78,10 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
 
         if (state.Phase is WorkflowPhase.Done or WorkflowPhase.Cancelled)
         {
-            await new CancellationWorkflow(dependencies)
-                .CleanupLocalStateAsync(config, state, cancellationToken)
-                .ConfigureAwait(false);
-            return new WorkflowReconciliationResult(ReconciliationDisposition.Completed, state, content, canonicalComment, "Terminal workflow local state is clean.");
+            var cancellation = new CancellationWorkflow(dependencies);
+            await cancellation.ReconcileTerminalLabelsAsync(config, issueNumber, state, cancellationToken).ConfigureAwait(false);
+            await cancellation.CleanupLocalStateAsync(config, state, cancellationToken).ConfigureAwait(false);
+            return new WorkflowReconciliationResult(ReconciliationDisposition.Completed, state, content, canonicalComment, "Terminal workflow local state and labels are clean.");
         }
         var worktreePath = Path.Combine(config.WorkflowsStoragePath, state.WorkflowId.ToString(), "worktree");
         var worktreeExists = Directory.Exists(worktreePath);
@@ -96,7 +96,6 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
                     state.Branch,
                     state.BaseCommit,
                     cancellationToken).ConfigureAwait(false);
-                worktreeExists = true;
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -110,6 +109,16 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
                     $"The retained worktree is missing and could not be recreated ({exception.GetType().Name}).",
                     cancellationToken).ConfigureAwait(false);
             }
+
+            return await PauseForHumanAsync(
+                config,
+                issueNumber,
+                canonicalComment,
+                content,
+                state,
+                WaitingReason.ManualIntervention,
+                "The retained worktree was missing and has been recreated from durable Git state. Review it before explicitly continuing.",
+                cancellationToken).ConfigureAwait(false);
         }
 
         string? localHead = null;
@@ -250,6 +259,7 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
         CancellationToken cancellationToken)
     {
         var workItem = new ProviderWorkItemReference(config.Repository, ProviderWorkItemKind.Issue, issueNumber);
+        await LabelCatalog.EnsureAllAsync(dependencies.Provider, config.Repository, cancellationToken).ConfigureAwait(false);
         var labels = await dependencies.Provider.GetLabelsAsync(workItem, cancellationToken).ConfigureAwait(false);
         if (!labels.Contains(WorkflowLabels.WaitingState))
         {

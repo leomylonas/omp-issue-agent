@@ -113,6 +113,15 @@ public sealed class CancellationWorkflow(WorkflowDependencies deps)
         if (Directory.Exists(workflowPath)) Directory.Delete(workflowPath, recursive: true);
     }
 
+    /// <summary>Retries the idempotent terminal label transition during later reconciliation when
+    /// a prior terminal cleanup reached durable state but was interrupted before labels converged.</summary>
+    public Task ReconcileTerminalLabelsAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState state,
+        CancellationToken cancellationToken) =>
+        TransitionTerminalLabelsAsync(config, issueNumber, state.Phase, [], cancellationToken);
+
     private async Task TransitionTerminalLabelsAsync(
         WorkflowRepositoryConfig config,
         long issueNumber,

@@ -208,6 +208,11 @@ public sealed class ObservableOmpClient(IOmpClient inner, IssueAgentMetrics metr
         try
         {
             var valueNode = JsonNode.Parse(value);
+            if (valueNode is JsonValue rootValue && rootValue.TryGetValue<string>(out var rootText))
+            {
+                return JsonSerializer.Serialize(RedactExecutionSecrets(rootText, executionSecretValues));
+            }
+
             RedactJsonNode(valueNode, executionSecretValues);
             return valueNode?.ToJsonString() ?? "null";
         }

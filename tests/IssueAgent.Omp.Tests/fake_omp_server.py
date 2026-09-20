@@ -33,6 +33,11 @@ def main():
     if argument_log:
         with open(argument_log, "a", encoding="utf-8") as log:
             log.write(" ".join(sys.argv[1:]) + "\n")
+    startup_model = None
+    if "--model" in sys.argv:
+        startup_model = sys.argv[sys.argv.index("--model") + 1]
+    model = {"provider": "configured", "id": startup_model or "default"}
+    command_log = os.environ.get("OMP_COMMAND_LOG")
     session_id = "fake-session-1"
     session_file = "/tmp/fake-session-1.jsonl"
     hang_abort = False
@@ -43,11 +48,15 @@ def main():
         request = json.loads(line)
         command = request.get("type")
         request_id = request.get("id")
+        if command_log:
+            with open(command_log, "a", encoding="utf-8") as log:
+                log.write(command + " " + json.dumps(request) + "\n")
 
         if command == "new_session":
             response(request_id, command, {"cancelled": False})
         elif command == "set_model":
-            response(request_id, command, {"provider": request.get("provider"), "id": request.get("modelId")})
+            model = {"provider": request.get("provider"), "id": request.get("modelId")}
+            response(request_id, command, model)
         elif command == "switch_session":
             session_file = request.get("sessionPath", session_file)
             session_id = (
@@ -55,9 +64,10 @@ def main():
                 else "fake-session-1" if "fake-session-1" in session_file
                 else "existing-session"
             )
+            model = {"provider": "configured", "id": "plan"}
             response(request_id, command, {"cancelled": False})
         elif command == "get_state":
-            response(request_id, command, {"sessionId": session_id, "sessionFile": session_file})
+            response(request_id, command, {"sessionId": session_id, "sessionFile": session_file, "model": model})
         elif command == "prompt":
             if "prompt dispatch hang" in request.get("message", ""):
                 continue

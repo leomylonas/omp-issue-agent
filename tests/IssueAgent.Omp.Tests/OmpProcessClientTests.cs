@@ -65,14 +65,16 @@ public sealed class OmpProcessClientTests
     }
 
     [Fact]
-    public async Task FactoryResolvesSemanticRolesAtStartup()
+    public async Task FactoryAppliesResolvedRoleModelAfterSwitchingDurableSession()
     {
         var argumentLog = Path.Combine(Path.GetTempPath(), $"issue-agent-omp-args-{Guid.NewGuid():N}.log");
+        var commandLog = Path.Combine(Path.GetTempPath(), $"issue-agent-omp-commands-{Guid.NewGuid():N}.log");
         try
         {
             var environment = new Dictionary<string, string>
             {
                 ["OMP_ARGUMENT_LOG"] = argumentLog,
+                ["OMP_COMMAND_LOG"] = commandLog,
             };
             await using var client = OmpProcessClientFactory.Start(
                 "python3",
@@ -83,14 +85,19 @@ public sealed class OmpProcessClientTests
             var session = await client.CreateSessionAsync("plan", CancellationToken.None);
             await client.SelectRoleAsync("task", CancellationToken.None);
 
-            Assert.Equal("fake-session-1", session.SessionId);
             var startups = await File.ReadAllLinesAsync(argumentLog, TestContext.Current.CancellationToken);
-            Assert.Contains(startups, startup => startup.Contains("--model plan", StringComparison.Ordinal));
+            var commands = await File.ReadAllLinesAsync(commandLog, TestContext.Current.CancellationToken);
             Assert.Contains(startups, startup => startup.Contains("--model task", StringComparison.Ordinal));
+            Assert.Contains(commands, command =>
+                command.StartsWith("set_model ", StringComparison.Ordinal) &&
+                command.Contains("\"provider\": \"configured\"", StringComparison.Ordinal) &&
+                command.Contains("\"modelId\": \"task\"", StringComparison.Ordinal));
+            Assert.Equal("fake-session-1", session.SessionId);
         }
         finally
         {
             File.Delete(argumentLog);
+            File.Delete(commandLog);
         }
     }
 

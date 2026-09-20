@@ -173,6 +173,47 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
         Assert.Equal(WorkflowNotificationKind.HumanActionRequired, Assert.Single(notifier.Notifications).Kind);
     }
 
+    [Fact]
+    public async Task TerminalReconciliationRetriesLabelCleanupBeforeRemovingLocalState()
+    {
+        var (state, canonical) = SeedWorkflow(WorkflowPhase.Done, WorkflowOperationalState.Waiting, WaitingReason.ManualIntervention);
+        var labels = provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)];
+        labels.Remove(WorkflowLabels.Phase(WorkflowPhase.Done));
+        labels.Add(WorkflowLabels.Phase(WorkflowPhase.Implementing));
+        labels.Add(WorkflowLabels.WorkingState);
+
+        var result = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
+
+        Assert.Equal(ReconciliationDisposition.Completed, result.Disposition);
+        Assert.Equal([WorkflowLabels.Phase(WorkflowPhase.Done)], labels);
+        Assert.Contains(WorkflowLabels.Phase(WorkflowPhase.Done), provider.CreatedLabels);
+    }
+
+    [Fact]
+    public async Task RecreatedMissingWorktreePausesForExplicitHumanReview()
+    {
+        var (state, canonical) = SeedWorkflow(WorkflowPhase.Planned, WorkflowOperationalState.Waiting, WaitingReason.PlanApproval);
+        Directory.Delete(Path.Combine(workspaceRoot, state.WorkflowId.ToString()), recursive: true);
+
+        var result = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
+
+        Assert.Equal(ReconciliationDisposition.Waiting, result.Disposition);
+        Assert.Equal(WaitingReason.ManualIntervention, result.State!.WaitingReason);
+        Assert.Single(git.CreatedWorktrees);
+        Assert.Contains("recreated", result.Explanation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CorruptRecoveryEnsuresTheFullManagedLabelCatalog()
+    {
+        var (_, canonical) = SeedWorkflow(WorkflowPhase.Planned, WorkflowOperationalState.Working, waitingReason: null);
+        var corrupt = canonical with { Body = CanonicalCommentMarkdown.StateLocatorMarker };
+
+        _ = await CreateService().ReconcileAsync(CreateConfig(), 1, corrupt, CancellationToken.None);
+
+        Assert.All(LabelCatalog.All, label => Assert.Contains(label.Name, provider.CreatedLabels));
+    }
+
     private (WorkflowState State, ProviderComment Canonical) SeedWorkflow(
         WorkflowPhase phase,
         WorkflowOperationalState operationalState,

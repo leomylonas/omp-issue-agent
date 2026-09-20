@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Reflection;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using LibGit2Sharp;
 
 namespace IssueAgent.Git.Tests;
@@ -33,6 +35,22 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
 
         Assert.True(startInfo.Environment.ContainsKey("GIT_ASKPASS"));
         Assert.Equal("super-secret-token", startInfo.Environment["ISSUEAGENT_GIT_TOKEN"]);
+    }
+
+    [Fact]
+    public void ApplyAuthenticationNeverForwardsTokenWhenWorktreeOriginDiffersFromProtectedCanonicalRemote()
+    {
+        var worktreePath = CreateWorktreeWithOrigin("https://attacker.example/octo/widgets.git");
+        var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
+
+        InvokeApplyAuthentication(
+            startInfo,
+            "https://git.trusted.example/octo/widgets.git",
+            new GitAuthentication { Mode = GitAuthenticationMode.Token, HttpsToken = "super-secret-token" },
+            Track());
+
+        Assert.False(startInfo.Environment.ContainsKey("GIT_ASKPASS"));
+        Assert.False(startInfo.Environment.ContainsKey("ISSUEAGENT_GIT_TOKEN"));
     }
 
     [Fact]
@@ -91,11 +109,10 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
     }
 
     [Fact]
-    public void ApplyAuthenticationBundlesSystemAndAdditionalCaForHttpsLfs()
+    public void ApplyAuthenticationBundlesSystemAndPemAdditionalCaForHttpsLfs()
     {
         var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example/octo/widgets.git");
-        var certificatePath = Path.Combine(Track(), "additional-ca.pem");
-        File.WriteAllText(certificatePath, "additional test certificate");
+        var certificatePath = WriteAdditionalCertificate(X509ContentType.Cert, "additional-ca.pem");
         var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
 
         InvokeApplyAuthentication(startInfo, new GitAuthentication
@@ -113,16 +130,38 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
         Assert.NotEqual(certificatePath, bundlePath);
         var bundle = File.ReadAllText(bundlePath);
         Assert.Contains(File.ReadAllText("/etc/ssl/certs/ca-certificates.crt"), bundle, StringComparison.Ordinal);
-        Assert.Contains("additional test certificate", bundle, StringComparison.Ordinal);
+        Assert.Contains(File.ReadAllText(certificatePath), bundle, StringComparison.Ordinal);
         Assert.Equal("super-secret-token", startInfo.Environment["ISSUEAGENT_GIT_TOKEN"]);
+    }
+
+    [Fact]
+    public void ApplyAuthenticationNormalizesDerAdditionalCaToPemForHttpsLfs()
+    {
+        var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example/octo/widgets.git");
+        var certificatePath = WriteAdditionalCertificate(X509ContentType.Cert, "additional-ca.der", pem: false);
+        var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
+
+        InvokeApplyAuthentication(startInfo, new GitAuthentication
+        {
+            Mode = GitAuthenticationMode.Token,
+            HttpsToken = "super-secret-token",
+            TlsTrust = new TlsTrust
+            {
+                Mode = TlsTrustMode.SystemPlusAdditionalCa,
+                AdditionalCaCertificatePaths = [certificatePath],
+            },
+        }, Track());
+
+        var bundle = File.ReadAllText(Assert.IsType<string>(startInfo.Environment["GIT_SSL_CAINFO"]));
+        using var certificate = X509CertificateLoader.LoadCertificateFromFile(certificatePath);
+        Assert.Contains(certificate.ExportCertificatePem(), bundle, StringComparison.Ordinal);
     }
 
     [Fact]
     public void ApplyAuthenticationBundlesSystemAndAdditionalCaForSshAuthenticatedHttpsLfs()
     {
         var worktreePath = CreateWorktreeWithOrigin("ssh://git.trusted.example/octo/widgets.git");
-        var certificatePath = Path.Combine(Track(), "additional-ca.pem");
-        File.WriteAllText(certificatePath, "test certificate");
+        var certificatePath = WriteAdditionalCertificate(X509ContentType.Cert, "additional-ca.pem");
         var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
 
         InvokeApplyAuthentication(startInfo, new GitAuthentication
@@ -198,10 +237,34 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
         return worktreePath;
     }
 
-    private static void InvokeApplyAuthentication(ProcessStartInfo startInfo, GitAuthentication authentication, string isolatedHome)
+    private static void InvokeApplyAuthentication(
+        ProcessStartInfo startInfo,
+        GitAuthentication authentication,
+        string isolatedHome) =>
+        InvokeApplyAuthentication(startInfo, "https://git.trusted.example/octo/widgets.git", authentication, isolatedHome);
+
+    private static void InvokeApplyAuthentication(
+        ProcessStartInfo startInfo,
+        string canonicalRemoteUrl,
+        GitAuthentication authentication,
+        string isolatedHome)
     {
         var method = typeof(GitLfsRunner).GetMethod("ApplyAuthentication", BindingFlags.NonPublic | BindingFlags.Static)!;
-        method.Invoke(null, [startInfo, authentication, isolatedHome]);
+        method.Invoke(null, [startInfo, canonicalRemoteUrl, authentication, isolatedHome]);
+    }
+
+    private string WriteAdditionalCertificate(X509ContentType contentType, string fileName, bool pem = true)
+    {
+        using var key = RSA.Create(2048);
+        var request = new CertificateRequest("CN=additional-ca", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        using var certificate = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+        var path = Path.Combine(Track(), fileName);
+        File.WriteAllBytes(path, certificate.Export(contentType));
+        if (pem)
+        {
+            File.WriteAllText(path, certificate.ExportCertificatePem());
+        }
+        return path;
     }
 
     private static void RunGitCli(string workingDirectory, params string[] arguments)

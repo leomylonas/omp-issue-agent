@@ -15,7 +15,8 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         long issueNumber,
         WorkflowState currentState,
         IOmpClient omp,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool publishRetainedResult = false)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(omp);
@@ -46,13 +47,13 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 "Cannot revise: the review-feedback checkpoint is missing, so IssueAgent cannot determine which feedback this revision must address.",
                 cancellationToken).ConfigureAwait(false);
         }
-        var retainedResult = currentState.Phase == WorkflowPhase.Revising
+        var retainedResult = publishRetainedResult && currentState.Phase == WorkflowPhase.Revising
             ? existingContent.ImplementationResult
             : null;
         var workingContent = existingContent with
         {
-            // A fresh review pass must not let the prior implementation result masquerade as a
-            // completed revision after a restart. Only a revising checkpoint may retain a result.
+            // A fresh revise command must not let the prior implementation result masquerade as a
+            // completed revision; only an explicit continuation may publish its checkpoint.
             ImplementationResult = retainedResult,
             State = CanonicalStateSerializer.ToDocument(workingState, existingContent.State.PullOrMergeRequest),
         };

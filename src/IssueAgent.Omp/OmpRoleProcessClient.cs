@@ -5,8 +5,8 @@ namespace IssueAgent.Omp;
 /// <summary>
 /// Selects OMP's configured model aliases at process startup. The RPC protocol only accepts a
 /// provider/model pair, so semantic roles such as <c>plan</c> and <c>task</c> must never be sent
-/// over RPC. Restarting and resuming the durable session preserves the workflow session while OMP
-/// resolves each role through its native configuration.
+/// over RPC. When restoring a durable session, OMP restores that session's previous model; capture
+/// the startup-resolved model and apply it with the supported typed control after restoration.
 /// </summary>
 internal sealed class OmpRoleProcessClient(
     string executablePath,
@@ -25,6 +25,7 @@ internal sealed class OmpRoleProcessClient(
         ArgumentException.ThrowIfNullOrWhiteSpace(role);
         await StartForRoleAsync(role).ConfigureAwait(false);
         session = await inner!.CreateSessionAsync(role, cancellationToken).ConfigureAwait(false);
+        activeRole = role;
         return session;
     }
 
@@ -32,6 +33,7 @@ internal sealed class OmpRoleProcessClient(
     {
         await StartForRoleAsync(role: null).ConfigureAwait(false);
         session = await inner!.ResumeSessionAsync(sessionId, sessionFile, cancellationToken).ConfigureAwait(false);
+        activeRole = null;
         return session;
     }
 
@@ -46,13 +48,17 @@ internal sealed class OmpRoleProcessClient(
         if (session is null)
         {
             await StartForRoleAsync(role).ConfigureAwait(false);
+            activeRole = role;
             return;
         }
 
         var persistedSession = session.SessionFile
             ?? throw new OmpRpcException($"OMP session '{session.SessionId}' did not provide a durable session file.");
         await StartForRoleAsync(role).ConfigureAwait(false);
-        session = await inner!.ResumeSessionAsync(session.SessionId, persistedSession, cancellationToken).ConfigureAwait(false);
+        var selectedModel = await inner!.GetSelectedModelAsync(cancellationToken).ConfigureAwait(false);
+        session = await inner.ResumeSessionAsync(session.SessionId, persistedSession, cancellationToken).ConfigureAwait(false);
+        await inner.SelectModelAsync(selectedModel, cancellationToken).ConfigureAwait(false);
+        activeRole = role;
     }
 
     public async IAsyncEnumerable<OmpEvent> RunAsync(
@@ -94,6 +100,6 @@ internal sealed class OmpRoleProcessClient(
             : arguments.Concat(["--model", role]).ToArray();
         var transport = NdjsonRpcTransport.Start(executablePath, startupArguments, workingDirectory, allowedEnvironment);
         inner = new OmpProcessClient(transport, shutdownGracePeriod, sessionDirectory);
-        activeRole = role;
+        activeRole = null;
     }
 }

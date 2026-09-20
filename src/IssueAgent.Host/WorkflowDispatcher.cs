@@ -138,6 +138,10 @@ public sealed partial class WorkflowDispatcher(
     {
         var runtime = await PrepareRuntimeAsync(providerName, repositoryOptions, cancellationToken).ConfigureAwait(false);
         if (runtime is null) return;
+        if (replaceCorruptCanonical)
+        {
+            await LabelCatalog.EnsureAllAsync(runtime.Provider, runtime.Repository, cancellationToken).ConfigureAwait(false);
+        }
         try
         {
             if (!replaceCorruptCanonical &&
@@ -335,6 +339,7 @@ public sealed partial class WorkflowDispatcher(
         }
 
         var command = commandResolution.Command;
+        var publishRetainedRevision = false;
         var recoveryCommand = command is WorkflowCommand.Cancel or WorkflowCommand.Continue;
         if (reconciled.Disposition != ReconciliationDisposition.ResumeAllowed && !recoveryCommand)
         {
@@ -398,6 +403,9 @@ public sealed partial class WorkflowDispatcher(
             await ConsumeCommandAsync(
                 runtime.Provider, runtime.Repository, issueNumber, mergeRequest?.Number,
                 commandResolution.Sources, WorkflowCommand.Continue, cancellationToken).ConfigureAwait(false);
+            publishRetainedRevision = routedCommand == WorkflowCommand.Revise &&
+                state.Phase == WorkflowPhase.Revising &&
+                reconciled.Content!.ImplementationResult is { Length: > 0 };
             command = routedCommand;
         }
 
@@ -442,7 +450,13 @@ public sealed partial class WorkflowDispatcher(
                     await new ImplementationWorkflow(runtime.Dependencies).RunAsync(runtime.Config, runtime.WorkflowMode, issueNumber, state, omp, cancellationToken).ConfigureAwait(false);
                     break;
                 case WorkflowCommand.Revise:
-                    await new RevisionWorkflow(runtime.Dependencies).RunAsync(runtime.Config, issueNumber, state, omp, cancellationToken).ConfigureAwait(false);
+                    await new RevisionWorkflow(runtime.Dependencies).RunAsync(
+                        runtime.Config,
+                        issueNumber,
+                        state,
+                        omp,
+                        cancellationToken,
+                        publishRetainedRevision).ConfigureAwait(false);
                     break;
             }
         }

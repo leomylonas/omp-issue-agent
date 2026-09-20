@@ -230,6 +230,31 @@ public sealed class ObservableOmpClientTests
     }
 
     [Fact]
+    public async Task RunAsyncRedactsExecutionSecretsFromRootJsonStrings()
+    {
+        const string secret = "root-json-secret";
+        using var metrics = new IssueAgentMetrics();
+        var logger = new RecordingLogger<ObservableOmpClient>();
+        var decorated = new ObservableOmpClient(
+            new FakeOmpClient { ToolResult = $"\"{secret}\"" },
+            metrics,
+            logger);
+        var request = new OmpRunRequest(
+            "session-1",
+            "/tmp",
+            "prompt",
+            new Dictionary<string, string> { ["EXECUTION_TOKEN"] = secret });
+
+        await foreach (var _ in decorated.RunAsync(request, CancellationToken.None))
+        {
+        }
+
+        var logs = string.Join(Environment.NewLine, logger.Messages);
+        Assert.DoesNotContain(secret, logs, StringComparison.Ordinal);
+        Assert.Contains("[REDACTED]", logs, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RunAsyncRecordsErrorMetricsAndRethrowsOnFailure()
     {
         using var capture = new MetricCapture();
