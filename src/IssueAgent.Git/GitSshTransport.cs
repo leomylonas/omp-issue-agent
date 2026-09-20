@@ -31,6 +31,10 @@ public sealed partial class GitSshTransport
     public static void Push(string worktreePath, string branchName, GitAuthentication authentication) =>
         RunGit(["push", "origin", "--", $"{branchName}:{branchName}"], worktreePath, GetOriginUrl(worktreePath), authentication);
 
+    /// <summary>Initializes and fetches one submodule through the Git/SSH transport.</summary>
+    public static void UpdateSubmodule(string repositoryPath, string submodulePath, string remoteUrl, GitAuthentication authentication) =>
+        RunGit(["submodule", "update", "--init", "--", submodulePath], repositoryPath, remoteUrl, authentication);
+
     private static string GetOriginUrl(string workingDirectory)
     {
         using var process = Process.Start(new ProcessStartInfo("git")

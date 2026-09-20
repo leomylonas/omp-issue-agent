@@ -266,27 +266,69 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
             var authentication = host is null ? null : authenticationResolver(host);
             var effectiveAuthentication = authentication ?? GitAuthentication.Anonymous(TlsTrust.System);
 
-            try
+            if (effectiveAuthentication.Mode == GitAuthenticationMode.Ssh)
             {
-                repo.Submodules.Update(submodule.Name, new SubmoduleUpdateOptions
-                {
-                    Init = true,
-                    FetchOptions =
-                    {
-                        CredentialsProvider = CredentialsHandlerFor(effectiveAuthentication, host),
-                        CertificateCheck = CertificateCheckHandlerFor(effectiveAuthentication.TlsTrust),
-                    },
-                });
+                GitSshTransport.UpdateSubmodule(
+                    repositoryPath,
+                    submodule.Path,
+                    GetSshTransportRemoteUrl(submodule.Url, repo.Network.Remotes["origin"]?.Url),
+                    effectiveAuthentication);
             }
-            catch (LibGit2SharpException) when (authentication is null)
+            else
             {
-                throw new SubmoduleAuthenticationRequiredException(
-                    $"Submodule '{submodule.Name}' at '{submodule.Url}' requires authentication that is not configured for its host.");
+                try
+                {
+                    repo.Submodules.Update(submodule.Name, new SubmoduleUpdateOptions
+                    {
+                        Init = true,
+                        FetchOptions =
+                        {
+                            CredentialsProvider = CredentialsHandlerFor(effectiveAuthentication, host),
+                            CertificateCheck = CertificateCheckHandlerFor(effectiveAuthentication.TlsTrust),
+                        },
+                    });
+                }
+                catch (LibGit2SharpException) when (authentication is null)
+                {
+                    throw new SubmoduleAuthenticationRequiredException(
+                        $"Submodule '{submodule.Name}' at '{submodule.Url}' requires authentication that is not configured for its host.");
+                }
             }
 
             GetSafeSubmodulePath(rootPath, repositoryPath, submodule.Path);
             DisableHooks(submodulePath);
             UpdateSubmodulesRecursively(submodulePath, rootPath, authenticationResolver, visitedRepositoryPaths, cancellationToken);
+        }
+    }
+
+    private static string GetSshTransportRemoteUrl(string submoduleUrl, string? parentRemoteUrl)
+    {
+        if (IsSshRemoteUrl(submoduleUrl))
+        {
+            return submoduleUrl;
+        }
+
+        if (TryGetHost(submoduleUrl) is null && parentRemoteUrl is not null && IsSshRemoteUrl(parentRemoteUrl))
+        {
+            // Git resolves relative submodule URLs against the parent remote, so the parent endpoint
+            // supplies the SSH host key policy without ever guessing a different credential target.
+            return parentRemoteUrl;
+        }
+
+        throw new InvalidOperationException(
+            $"Submodule '{submoduleUrl}' cannot use SSH authentication because its SSH endpoint is ambiguous.");
+    }
+
+    private static bool IsSshRemoteUrl(string remoteUrl)
+    {
+        try
+        {
+            _ = GitSshTransport.ParseSshHostAndPort(remoteUrl);
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
         }
     }
 

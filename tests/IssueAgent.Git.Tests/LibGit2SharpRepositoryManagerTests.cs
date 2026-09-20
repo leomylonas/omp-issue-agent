@@ -6,6 +6,8 @@ namespace IssueAgent.Git.Tests;
 public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
 {
     private readonly string reposRoot = TempGitFixtures.CreateTempDirectory();
+    private static readonly object PathLock = new();
+
     private readonly List<string> cleanupPaths = [];
     private readonly LibGit2SharpRepositoryManager manager;
 
@@ -542,6 +544,70 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateSubmodulesAsyncInitializesSshSubmoduleThroughGitSshTransport()
+    {
+        var submoduleSourcePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out _));
+        var remotePath = Track(TempGitFixtures.CreateTempDirectory());
+        Repository.Init(remotePath);
+        RunGitCli(remotePath, "-c", "protocol.file.allow=always", "submodule", "add", submoduleSourcePath, "lib/dependency");
+        RunGitCli(remotePath, "config", "-f", ".gitmodules", "submodule.lib/dependency.url", $"git@example.test:{submoduleSourcePath}");
+        using (var remoteRepository = new Repository(remotePath))
+        {
+            Commands.Stage(remoteRepository, "*");
+            remoteRepository.Commit("Add SSH submodule", new Signature("Test", "test@example.com", DateTimeOffset.UtcNow), new Signature("Test", "test@example.com", DateTimeOffset.UtcNow));
+        }
+
+        var baseCommit = new Repository(remotePath).Head.Tip.Sha;
+        await manager.EnsureBareRepositoryAsync("repo-ssh-submodule", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
+        await manager.CreateWorktreeAsync("repo-ssh-submodule", "wt-ssh-submodule", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
+        var sshAuthentication = new GitAuthentication
+        {
+            Mode = GitAuthenticationMode.Ssh,
+            SshPrivateKey = "test private key",
+            SshTrust = new SshTrust { Mode = SshHostVerificationMode.None },
+        };
+
+        WithFakeCommand("ssh", $"#!/bin/sh\nexec git-upload-pack \"{submoduleSourcePath}\"\n", () =>
+            manager.UpdateSubmodulesAsync("repo-ssh-submodule", worktreePath, host => host == "example.test" ? sshAuthentication : null, CancellationToken.None).AsTask().GetAwaiter().GetResult());
+
+        Assert.True(File.Exists(Path.Combine(worktreePath, "lib", "dependency", "README.md")));
+    }
+
+    [Fact]
+    public async Task UpdateSubmodulesAsyncRejectsSshAuthenticationForNonSshSubmoduleUrl()
+    {
+        var submoduleSourcePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out _));
+        var remotePath = Track(TempGitFixtures.CreateTempDirectory());
+        Repository.Init(remotePath);
+        RunGitCli(remotePath, "-c", "protocol.file.allow=always", "submodule", "add", submoduleSourcePath, "lib/dependency");
+        RunGitCli(remotePath, "config", "-f", ".gitmodules", "submodule.lib/dependency.url", "https://example.test/dependency.git");
+        using (var remoteRepository = new Repository(remotePath))
+        {
+            Commands.Stage(remoteRepository, "*");
+            remoteRepository.Commit("Add incompatible submodule", new Signature("Test", "test@example.com", DateTimeOffset.UtcNow), new Signature("Test", "test@example.com", DateTimeOffset.UtcNow));
+        }
+
+        var baseCommit = new Repository(remotePath).Head.Tip.Sha;
+        await manager.EnsureBareRepositoryAsync("repo-incompatible-ssh-submodule", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
+        await manager.CreateWorktreeAsync("repo-incompatible-ssh-submodule", "wt-incompatible-ssh-submodule", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
+        var sshAuthentication = new GitAuthentication
+        {
+            Mode = GitAuthenticationMode.Ssh,
+            SshPrivateKey = "test private key",
+            SshTrust = new SshTrust { Mode = SshHostVerificationMode.None },
+        };
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            manager.UpdateSubmodulesAsync("repo-incompatible-ssh-submodule", worktreePath, host => host == "example.test" ? sshAuthentication : null, CancellationToken.None).AsTask());
+
+        Assert.Contains("SSH endpoint is ambiguous", exception.Message, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(Path.Combine(worktreePath, "lib", "dependency", ".git")));
+    }
+
+
+    [Fact]
     public async Task UpdateSubmodulesAsyncRecursivelyInitializesNestedSubmodules()
     {
         var leafPath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out _));
@@ -599,12 +665,38 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
         Directory.Delete(Path.Combine(worktreePath, "dependency"));
         File.CreateSymbolicLink(Path.Combine(worktreePath, "dependency"), outsidePath);
 
+
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             manager.UpdateSubmodulesAsync("repo-submodule-symlink", worktreePath, _ => null, CancellationToken.None).AsTask());
 
         Assert.Empty(Directory.EnumerateFileSystemEntries(outsidePath));
     }
 
+    private static void WithFakeCommand(string command, string script, Action action)
+    {
+        lock (PathLock)
+        {
+            var commandDirectory = TempGitFixtures.CreateTempDirectory();
+            var commandPath = Path.Combine(commandDirectory, command);
+            File.WriteAllText(commandPath, script);
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(commandPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+
+            var originalPath = Environment.GetEnvironmentVariable("PATH");
+            try
+            {
+                Environment.SetEnvironmentVariable("PATH", commandDirectory + Path.PathSeparator + originalPath);
+                action();
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("PATH", originalPath);
+                Directory.Delete(commandDirectory, recursive: true);
+            }
+        }
+    }
     private string Track(string path)
     {
         cleanupPaths.Add(path);
