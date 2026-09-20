@@ -11,7 +11,7 @@ public sealed class GitLabProviderFixture : IDisposable
         Provider = GitLabProviderFactory.Create(new GitLabProviderConfiguration(
             "gitlab",
             baseUri,
-            "test-token",
+            null,
             ["gitlab.example"]));
     }
 

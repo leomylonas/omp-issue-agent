@@ -91,11 +91,11 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
     }
 
     [Fact]
-    public void ApplyAuthenticationConfiguresAdditionalCaForHttpsLfs()
+    public void ApplyAuthenticationBundlesSystemAndAdditionalCaForHttpsLfs()
     {
         var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example/octo/widgets.git");
         var certificatePath = Path.Combine(Track(), "additional-ca.pem");
-        File.WriteAllText(certificatePath, "test certificate");
+        File.WriteAllText(certificatePath, "additional test certificate");
         var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
 
         InvokeApplyAuthentication(startInfo, new GitAuthentication
@@ -109,12 +109,16 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
             },
         }, Track());
 
-        Assert.Equal(certificatePath, startInfo.Environment["GIT_SSL_CAINFO"]);
+        var bundlePath = Assert.IsType<string>(startInfo.Environment["GIT_SSL_CAINFO"]);
+        Assert.NotEqual(certificatePath, bundlePath);
+        var bundle = File.ReadAllText(bundlePath);
+        Assert.Contains(File.ReadAllText("/etc/ssl/certs/ca-certificates.crt"), bundle, StringComparison.Ordinal);
+        Assert.Contains("additional test certificate", bundle, StringComparison.Ordinal);
         Assert.Equal("super-secret-token", startInfo.Environment["ISSUEAGENT_GIT_TOKEN"]);
     }
 
     [Fact]
-    public void ApplyAuthenticationConfiguresAdditionalCaForSshAuthenticatedHttpsLfs()
+    public void ApplyAuthenticationBundlesSystemAndAdditionalCaForSshAuthenticatedHttpsLfs()
     {
         var worktreePath = CreateWorktreeWithOrigin("ssh://git.trusted.example/octo/widgets.git");
         var certificatePath = Path.Combine(Track(), "additional-ca.pem");
@@ -133,7 +137,7 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
             },
         }, Track());
 
-        Assert.Equal(certificatePath, startInfo.Environment["GIT_SSL_CAINFO"]);
+        Assert.NotEqual(certificatePath, startInfo.Environment["GIT_SSL_CAINFO"]);
         Assert.True(startInfo.Environment.ContainsKey("GIT_SSH_COMMAND"));
     }
 

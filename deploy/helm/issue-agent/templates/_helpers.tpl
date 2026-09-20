@@ -11,6 +11,10 @@
 app.kubernetes.io/name: {{ include "issue-agent.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+{{- define "issue-agent.authBrokerSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "issue-agent.authBrokerFullname" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
 {{- define "issue-agent.labels" -}}
 helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
 {{ include "issue-agent.selectorLabels" . }}

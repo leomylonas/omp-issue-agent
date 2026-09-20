@@ -51,14 +51,14 @@ public sealed record OmpOptions
     public IReadOnlyDictionary<string, SecretSource> ExecutionSecrets { get; init; } =
         new Dictionary<string, SecretSource>(StringComparer.Ordinal);
 
-    /// <summary>OMP model selectors in <c>provider/modelId</c> form. OMP's RPC protocol exposes
-    /// model selection, not semantic agent selection.</summary>
+    /// <summary>Semantic OMP role aliases resolved by OMP's native configuration at process
+    /// startup (for example <c>plan</c> and <c>task</c>), never through its RPC protocol.</summary>
     public IReadOnlyDictionary<string, string> Roles { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal)
     {
-        ["planning"] = "openai/gpt-5.4",
-        ["implementation"] = "openai/gpt-5.4",
-        ["revision"] = "openai/gpt-5.4",
-        ["conflictResolution"] = "openai/gpt-5.4",
+        ["planning"] = "plan",
+        ["implementation"] = "task",
+        ["revision"] = "task",
+        ["conflictResolution"] = "task",
     };
 }
 public sealed record NotificationsOptions
@@ -244,6 +244,11 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
             else if (provider.BaseUri.UserInfo.Length > 0)
             {
                 failures.Add($"Provider '{provider.Name}' BaseUri must not contain credentials.");
+            }
+            else if (provider.Token is not null &&
+                     !provider.BaseUri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                failures.Add($"Provider '{provider.Name}' BaseUri must use HTTPS when credentials are configured.");
             }
 
             if (provider.Token is { } token && !token.IsExactlyOneSource())

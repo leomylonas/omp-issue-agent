@@ -10,6 +10,7 @@ public static class GitLabProviderFactory
     public static GitLabProvider Create(GitLabProviderConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
+        RequireHttpsForCredentials(configuration.ApiBaseUri, configuration.Token);
 
         var restHttpClient = CreateHttpClient(configuration.TlsTrust, configuration.ApiBaseUri);
         ConfigureHeaders(restHttpClient, configuration.Token);
@@ -24,6 +25,14 @@ public static class GitLabProviderFactory
             anonymousAttachmentClient,
             configuration.TrustedAttachmentAuthorities,
             configuration.Name);
+    }
+
+    private static void RequireHttpsForCredentials(Uri apiBaseUri, string? token)
+    {
+        if (token is not null && !apiBaseUri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("A provider BaseUri must use HTTPS when credentials are configured.", nameof(apiBaseUri));
+        }
     }
 
     private static HttpClient CreateHttpClient(TlsTrust tlsTrust, Uri? baseAddress = null) =>

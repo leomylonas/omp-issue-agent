@@ -294,20 +294,39 @@ public static class GitLfsRunner
         {
             throw new InvalidOperationException("git-lfs system-plus-additional-ca trust requires at least one CA certificate path.");
         }
-        if (certificatePaths.Count == 1)
-        {
-            return certificatePaths[0];
-        }
 
-        var bundlePath = Path.Combine(isolatedHome, "additional-ca-bundle.pem");
+        var systemBundlePath = GetSystemCaBundlePath();
+        var bundlePath = Path.Combine(isolatedHome, "system-plus-additional-ca-bundle.pem");
         using var destination = File.Create(bundlePath);
+        CopyCertificateFile(systemBundlePath, destination);
         foreach (var certificatePath in certificatePaths)
         {
-            using var source = File.OpenRead(certificatePath);
-            source.CopyTo(destination);
-            destination.WriteByte((byte)'\n');
+            CopyCertificateFile(certificatePath, destination);
         }
+
         return bundlePath;
+    }
+
+    private static string GetSystemCaBundlePath()
+    {
+        var candidates = new[]
+        {
+            Environment.GetEnvironmentVariable("SSL_CERT_FILE"),
+            Environment.GetEnvironmentVariable("GIT_SSL_CAINFO"),
+            "/etc/ssl/certs/ca-certificates.crt",
+            "/etc/pki/tls/certs/ca-bundle.crt",
+            "/etc/ssl/ca-bundle.pem",
+        };
+        var bundlePath = candidates.FirstOrDefault(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path));
+        return bundlePath ?? throw new InvalidOperationException(
+            "git-lfs cannot locate the system CA bundle required for system-plus-additional-ca trust.");
+    }
+
+    private static void CopyCertificateFile(string certificatePath, Stream destination)
+    {
+        using var source = File.OpenRead(certificatePath);
+        source.CopyTo(destination);
+        destination.WriteByte((byte)'\n');
     }
 }
 

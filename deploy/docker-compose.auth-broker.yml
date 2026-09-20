@@ -14,7 +14,8 @@ services:
       - |
         chown -R 10001:10001 /data
         chmod 2770 /data
-        install -o 10001 -g 10001 -Dm 600 /run/secrets/omp_auth_broker_token /data/.omp/auth-broker.token
+        install -o 10001 -g 10001 -d -m 0700 /data/.omp
+        install -o 10001 -g 10001 -m 0600 /run/secrets/omp_auth_broker_token /data/.omp/auth-broker.token
         exec /usr/bin/setpriv --reuid=10001 --regid=10001 --clear-groups --no-new-privs -- /usr/local/bin/omp auth-broker serve --bind=0.0.0.0:8081
     environment:
       HOME: /data

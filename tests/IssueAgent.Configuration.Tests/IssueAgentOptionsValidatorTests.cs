@@ -196,6 +196,20 @@ public sealed class IssueAgentOptionsValidatorTests
     }
 
     [Fact]
+    public void ValidateRejectsPlaintextProviderBaseUriWhenCredentialsAreConfigured()
+    {
+        var options = CreateOptions() with
+        {
+            Providers = [CreateProvider() with { BaseUri = new Uri("http://github.example/") }],
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("BaseUri must use HTTPS", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ValidateRejectsTelegramWithoutExactlyOneTokenSourceOrChatId()
     {
         var options = CreateOptions() with

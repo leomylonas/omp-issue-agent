@@ -144,6 +144,45 @@ writable application storage. OMP configuration is read-only. `PI_CONFIG_FILES` 
 runtime setting that points to the mounted `/etc/omp/config.yml` file; OMP sessions and native
 state remain under `/data/omp`.
 
+### Plain Docker Auth Broker
+
+The broker is supported with plain Docker as a separate container. Create an isolated network and
+broker storage, then create the bearer-token file with restrictive permissions:
+
+```sh
+docker network create issue-agent
+docker volume create omp-auth-broker-data
+umask 077
+openssl rand -hex 32 > secrets/omp-auth-broker-token
+```
+
+Start the broker on that network. Its token and mutable auth directory are owned by the
+unprivileged broker UID, so the broker can update its persistent OAuth state without making the
+bearer token group-readable:
+
+```sh
+docker run -d --name omp-auth-broker --network issue-agent \
+  --read-only --cap-drop=ALL \
+  --cap-add=CHOWN --cap-add=FOWNER --cap-add=DAC_OVERRIDE \
+  --cap-add=SETGID --cap-add=SETUID \
+  --security-opt=no-new-privileges --tmpfs /tmp \
+  -p 127.0.0.1:8081:8081 \
+  -v omp-auth-broker-data:/data \
+  --mount type=bind,src="$PWD/secrets/omp-auth-broker-token",dst=/run/secrets/omp_auth_broker_token,readonly \
+  --entrypoint /bin/sh issue-agent:local -ec '
+    chown -R 10001:10001 /data
+    install -o 10001 -g 10001 -d -m 0700 /data/.omp
+    install -o 10001 -g 10001 -m 0600 /run/secrets/omp_auth_broker_token /data/.omp/auth-broker.token
+    exec /usr/bin/setpriv --reuid=10001 --regid=10001 --clear-groups --no-new-privs -- /usr/local/bin/omp auth-broker serve --bind=0.0.0.0:8081
+  '
+```
+
+For the `issue-agent` command above, add `--network issue-agent`,
+`-e IssueAgent__Omp__AuthBrokerUrl=http://omp-auth-broker:8081`, and
+`--mount type=bind,src="$PWD/secrets/omp-auth-broker-token",dst=/run/secrets-source/omp_auth_broker_token,readonly`.
+This passes the token only through the existing file-backed execution-secret path. Run the same
+local OAuth login and migration commands described for Compose, using `127.0.0.1:8081`.
+
 ## Optional integrations
 
 `issue-agent.env` contains examples for OTLP tracing, Telegram, and Slack. Configure notification

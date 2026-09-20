@@ -119,23 +119,17 @@ public sealed class ProviderRetryPolicyTests
         Assert.Equal(System.Net.HttpStatusCode.Forbidden, response.StatusCode);
     }
     [Fact]
-    public async Task SendAsyncClampsAnExcessiveRetryAfterDelayInsteadOfThrowing()
+    public async Task SendAsyncHonorsAnExplicitRetryWindowBeyondTheFallbackCap()
     {
         var attempt = 0;
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
 
         var exception = await Record.ExceptionAsync(() => ProviderRetryPolicy.SendAsync(
             _ =>
             {
                 attempt++;
                 var rejected = new HttpResponseMessage(System.Net.HttpStatusCode.TooManyRequests);
-                // A hostile/misconfigured header instructing a ~3170-year delay must never be
-                // honored verbatim. Before the fix, Task.Delay's own parameter validation throws
-                // ArgumentOutOfRangeException immediately for a delay this large. After the fix,
-                // the delay is clamped to the policy's one-minute cap, so the loop instead waits
-                // normally and is cut short by OperationCanceledException when our 2-second token
-                // fires, never touching the honored-verbatim path.
-                rejected.Headers.Add("X-RateLimit-Reset", "99999999999");
+                rejected.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromMinutes(6));
                 return Task.FromResult(rejected);
             },
             cts.Token,

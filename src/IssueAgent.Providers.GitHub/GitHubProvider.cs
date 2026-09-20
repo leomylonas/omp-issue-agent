@@ -36,7 +36,7 @@ public sealed class GitHubProvider(
         return new ProviderIdentity(
             user.Login,
             user.Name ?? user.Login,
-            user.Email ?? (trustsGitHubDotComAttachmentHosts ? $"{user.Login}@users.noreply.github.com" : null));
+            user.Email ?? (trustsGitHubDotComAttachmentHosts ? $"{user.Id}+{user.Login}@users.noreply.github.com" : null));
     }
 
     public async ValueTask<string> GetDefaultBranchAsync(RepositoryRef repository, CancellationToken cancellationToken)

@@ -21,5 +21,8 @@ fi
 
 # The host retains provider credentials while OMP uses a different UID. Both processes
 # share a group and umask so OMP can edit worktrees without exposing owner-only secrets.
+# Host and OMP share a group so worktree updates remain writable across the UID boundary.
+umask 0002
+
 exec /usr/bin/setpriv --reuid=10001 --regid=10001 --clear-groups \
     --inh-caps +setuid,+setgid --ambient-caps +setuid,+setgid --no-new-privs -- "$@"

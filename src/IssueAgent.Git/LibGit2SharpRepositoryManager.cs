@@ -60,17 +60,22 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         if (authentication.Mode == GitAuthenticationMode.Ssh)
         {
             GitSshTransport.Fetch(path, authentication);
-            return ValueTask.CompletedTask;
+        }
+        else
+        {
+            using var repo = new Repository(path);
+            var remote = repo.Network.Remotes["origin"];
+            var refSpecs = remote.FetchRefSpecs.Select(r => r.Specification);
+            Commands.Fetch(repo, remote.Name, refSpecs, new FetchOptions
+            {
+                CredentialsProvider = CredentialsHandlerFor(authentication, TryGetHost(remote.Url)),
+                CertificateCheck = CertificateCheckHandlerFor(authentication.TlsTrust),
+            }, logMessage: null);
         }
 
-        using var repo = new Repository(path);
-        var remote = repo.Network.Remotes["origin"];
-        var refSpecs = remote.FetchRefSpecs.Select(r => r.Specification);
-        Commands.Fetch(repo, remote.Name, refSpecs, new FetchOptions
-        {
-            CredentialsProvider = CredentialsHandlerFor(authentication, TryGetHost(remote.Url)),
-            CertificateCheck = CertificateCheckHandlerFor(authentication.TlsTrust),
-        }, logMessage: null);
+        // Fetch creates objects and refs below the shared bare database. Reapply the boundary
+        // after every fetch so newly created entries are usable by OMP without exposing authority.
+        HardenBareRepositoryAuthority(path);
         return ValueTask.CompletedTask;
     }
 
@@ -394,7 +399,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
 
 
 
-    private static void HardenBareRepositoryAuthority(string bareRepositoryPath)
+    private void HardenBareRepositoryAuthority(string bareRepositoryPath)
     {
         if (!OperatingSystem.IsLinux())
         {
@@ -404,10 +409,11 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         File.SetUnixFileMode(
             bareRepositoryPath,
             UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupExecute);
+        MakeAncestorDirectoriesTraversableByOmp(bareRepositoryPath, Path.GetDirectoryName(reposRootPath)!);
         var configPath = Path.Combine(bareRepositoryPath, "config");
         if (File.Exists(configPath))
         {
-            File.SetUnixFileMode(configPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            File.SetUnixFileMode(configPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead);
         }
 
         // OMP commits through a linked worktree. Git writes its objects, branch refs, and
@@ -426,13 +432,14 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
     /// <summary>Makes only the checkout writable by OMP's shared group; bare repositories retain
     /// their owner-only permissions.</summary>
     [SupportedOSPlatform("linux")]
-    private static void MakeWorktreeWritableByOmp(string worktreePath)
+    private void MakeWorktreeWritableByOmp(string worktreePath)
     {
         if (!OperatingSystem.IsLinux())
         {
             return;
         }
 
+        MakeAncestorDirectoriesTraversableByOmp(worktreePath, Path.GetDirectoryName(reposRootPath)!);
         MakeDirectoryTreeWritableByOmp(worktreePath);
     }
 
@@ -451,6 +458,20 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         if (Directory.Exists(metadataPath))
         {
             MakeDirectoryTreeWritableByOmp(metadataPath);
+        }
+    }
+
+    [SupportedOSPlatform("linux")]
+    private static void MakeAncestorDirectoriesTraversableByOmp(string path, string workspaceRootPath)
+    {
+        for (var directory = Directory.GetParent(path); directory is not null; directory = directory.Parent)
+        {
+            var mode = File.GetUnixFileMode(directory.FullName);
+            File.SetUnixFileMode(directory.FullName, mode | UnixFileMode.GroupExecute);
+            if (string.Equals(directory.FullName, workspaceRootPath, StringComparison.Ordinal))
+            {
+                break;
+            }
         }
     }
 

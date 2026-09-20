@@ -424,27 +424,14 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     }
 
     [Fact]
-    public async Task DownloadAttachmentAsyncNeverSendsAuthorizationToHttpConfiguredHost()
+    public void FactoryRejectsPlaintextBaseUriWhenCredentialsAreConfigured()
     {
-        var serverUri = new Uri(fixture.Server.Url!);
-        var provider = GitLabProviderFactory.Create(new GitLabProviderConfiguration(
-            "gitlab", new Uri(fixture.Server.Url! + "/api/v4/"), "secret-token", [serverUri.Host]));
-        fixture.Server
-            .Given(Request.Create().WithPath("/uploads/report.pdf").UsingGet())
-            .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/pdf").WithBody("pdf-bytes"));
+        var configuration = new GitLabProviderConfiguration(
+            "gitlab", new Uri("http://gitlab.example/api/v4/"), "secret-token", ["gitlab.example"]);
 
-        var destination = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var attachment = new ProviderAttachment(
-            new Uri(fixture.Server.Url! + "/uploads/report.pdf"),
-            "report.pdf",
-            null,
-            new AttachmentSource("issue-description", "7"),
-            false,
-            System.Net.Dns.GetHostAddresses(serverUri.Host).ToHashSet());
-        await provider.DownloadAttachmentAsync(attachment, destination, 1024, CancellationToken.None);
+        var exception = Assert.Throws<ArgumentException>(() => GitLabProviderFactory.Create(configuration));
 
-        var request = fixture.Server.LogEntries.Single(e => e.RequestMessage!.Path == "/uploads/report.pdf");
-        Assert.False(request.RequestMessage!.Headers!.ContainsKey("Authorization"));
+        Assert.Contains("HTTPS", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

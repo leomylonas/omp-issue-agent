@@ -11,7 +11,7 @@ public sealed class GitHubProviderFixture : IDisposable
         Provider = GitHubProviderFactory.Create(new GitHubProviderConfiguration(
             "github",
             baseUri,
-            "test-token",
+            null,
             ["github.example"]));
     }
 

@@ -70,6 +70,28 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task FetchAsyncRestoresOmpPermissionsForNewBareRepositoryEntries()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out _));
+        await manager.EnsureBareRepositoryAsync("repo-fetch-permissions", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var barePath = Path.Combine(reposRoot, "repo-fetch-permissions");
+        var refsPath = Path.Combine(barePath, "refs");
+        File.SetUnixFileMode(refsPath, File.GetUnixFileMode(refsPath) & ~(UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute));
+
+        await manager.FetchAsync("repo-fetch-permissions", TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+
+        var mode = File.GetUnixFileMode(refsPath);
+        Assert.True(
+            (mode & (UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute)) ==
+            (UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute));
+    }
+
+    [Fact]
     public async Task ResolveBranchCommitAsyncReturnsExactShaAndThrowsForMissingBranch()
     {
         var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out var expectedSha));
@@ -170,6 +192,11 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
                 (UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute));
         }
         Assert.False((File.GetUnixFileMode(barePath) & UnixFileMode.GroupWrite) != 0);
+        var configMode = File.GetUnixFileMode(Path.Combine(barePath, "config"));
+        Assert.True((configMode & UnixFileMode.GroupRead) != 0);
+        Assert.False((configMode & UnixFileMode.GroupWrite) != 0);
+        Assert.True((File.GetUnixFileMode(reposRoot) & UnixFileMode.GroupExecute) != 0);
+        Assert.True((File.GetUnixFileMode(Path.GetDirectoryName(worktreePath)!) & UnixFileMode.GroupExecute) != 0);
         Assert.Equal(bareHeadMode, File.GetUnixFileMode(bareHeadPath));
     }
 

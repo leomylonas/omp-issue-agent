@@ -31,6 +31,31 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
+    public async Task GetCurrentIdentityAsyncUsesIdBasedGitHubNoreplyFallback()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/user").UsingGet())
+            .RespondWith(JsonResponse("""{"login":"issue-agent-bot","id":123,"name":"IssueAgent Bot","email":null}"""));
+        var client = new Octokit.GitHubClient(
+            new Octokit.ProductHeaderValue("IssueAgent"),
+            new Uri(fixture.Server.Url! + "/"));
+        var provider = new GitHubProvider(
+            client,
+            new GitHubGraphQlClient(new HttpClient()),
+            new GitHubTimelineClient(new HttpClient()),
+            new HttpClient(),
+            new HttpClient(),
+            new HttpClient(),
+            [],
+            true,
+            "github");
+
+        var identity = await provider.GetCurrentIdentityAsync(CancellationToken.None);
+
+        Assert.Equal("123+issue-agent-bot@users.noreply.github.com", identity.Email);
+    }
+
+    [Fact]
     public async Task GetCurrentIdentityAsyncRequiresExplicitEmailWhenEnterpriseHidesIt()
     {
         fixture.Server
@@ -619,30 +644,6 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
-    public async Task DownloadAttachmentAsyncNeverSendsAuthorizationToHttpConfiguredHost()
-    {
-        var serverUri = new Uri(fixture.Server.Url!);
-        var provider = GitHubProviderFactory.Create(new GitHubProviderConfiguration(
-            "github", new Uri(fixture.Server.Url! + "/"), "secret-token", [serverUri.Host]));
-        fixture.Server
-            .Given(Request.Create().WithPath("/files/report.pdf").UsingGet())
-            .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/pdf").WithBody("pdf-bytes"));
-
-        var destination = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var attachment = new ProviderAttachment(
-            new Uri(fixture.Server.Url! + "/files/report.pdf"),
-            "report.pdf",
-            null,
-            new AttachmentSource("issue-description", "7"),
-            false,
-            System.Net.Dns.GetHostAddresses(serverUri.Host).ToHashSet());
-        await provider.DownloadAttachmentAsync(attachment, destination, 1024, CancellationToken.None);
-
-        var request = fixture.Server.LogEntries.Single(e => e.RequestMessage!.Path == "/files/report.pdf");
-        Assert.False(request.RequestMessage!.Headers!.ContainsKey("Authorization"));
-    }
-
-    [Fact]
     public async Task DownloadAttachmentAsyncRetriesTransientServerErrors()
     {
         fixture.Server
@@ -670,6 +671,17 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
 
         Assert.Equal(9, downloaded.SizeBytes);
         Assert.Equal(2, fixture.Server.LogEntries.Count(entry => entry.RequestMessage!.Path == "/files/retry.pdf"));
+    }
+
+    [Fact]
+    public void FactoryRejectsPlaintextBaseUriWhenCredentialsAreConfigured()
+    {
+        var configuration = new GitHubProviderConfiguration(
+            "github", new Uri("http://github.example/"), "secret-token", ["github.example"]);
+
+        var exception = Assert.Throws<ArgumentException>(() => GitHubProviderFactory.Create(configuration));
+
+        Assert.Contains("HTTPS", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

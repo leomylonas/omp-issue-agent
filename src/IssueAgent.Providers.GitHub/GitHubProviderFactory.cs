@@ -20,6 +20,7 @@ public static class GitHubProviderFactory
     public static GitHubProvider Create(GitHubProviderConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
+        RequireHttpsForCredentials(configuration.ApiBaseUri, configuration.Token);
 
         var isGitHubDotCom = configuration.ApiBaseUri.Host.Equals(GitHubDotComHost, StringComparison.OrdinalIgnoreCase);
         var restRawBaseUri = isGitHubDotCom ? configuration.ApiBaseUri : new Uri(configuration.ApiBaseUri, "api/v3/");
@@ -55,6 +56,14 @@ public static class GitHubProviderFactory
             configuration.TrustedAttachmentAuthorities,
             isGitHubDotCom,
             configuration.Name);
+    }
+
+    private static void RequireHttpsForCredentials(Uri apiBaseUri, string? token)
+    {
+        if (token is not null && !apiBaseUri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("A provider BaseUri must use HTTPS when credentials are configured.", nameof(apiBaseUri));
+        }
     }
 
     private static HttpClient CreateHttpClient(TlsTrust tlsTrust, Uri? baseAddress = null) =>

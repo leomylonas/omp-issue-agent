@@ -77,6 +77,18 @@ public sealed class DeploymentArtifactSecurityTests
     }
 
     [Fact]
+    public void PlainDockerBrokerUsesASeparateNetworkAndFileBackedExecutionSecret()
+    {
+        var readme = ReadRepositoryFile("deploy/README.md");
+
+        Assert.Contains("### Plain Docker Auth Broker", readme, StringComparison.Ordinal);
+        Assert.Contains("docker network create issue-agent", readme, StringComparison.Ordinal);
+        Assert.Contains("docker run -d --name omp-auth-broker --network issue-agent", readme, StringComparison.Ordinal);
+        Assert.Contains("IssueAgent__Omp__AuthBrokerUrl=http://omp-auth-broker:8081", readme, StringComparison.Ordinal);
+        Assert.Contains("dst=/run/secrets-source/omp_auth_broker_token,readonly", readme, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ComposeKeepsBrokerSecretOutOfTheBrokerlessConfiguration()
     {
         var compose = ReadRepositoryFile("deploy/docker-compose.yml");
@@ -96,6 +108,19 @@ public sealed class DeploymentArtifactSecurityTests
         Assert.DoesNotContain("OMP_BROKER_LISTEN", brokerOverlay, StringComparison.Ordinal);
         Assert.DoesNotContain("OMP_CONFIG_DIR", brokerOverlay, StringComparison.Ordinal);
         Assert.Contains("./omp:/etc/omp:ro", compose, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ComposeBrokerOwnsItsTokenAndMutableAuthDirectory()
+    {
+        var brokerOverlay = ReadRepositoryFile("deploy/docker-compose.auth-broker.yml");
+
+        Assert.Contains("install -o 10001 -g 10001 -d -m 0700 /data/.omp", brokerOverlay, StringComparison.Ordinal);
+        Assert.Contains(
+            "install -o 10001 -g 10001 -m 0600 /run/secrets/omp_auth_broker_token /data/.omp/auth-broker.token",
+            brokerOverlay,
+            StringComparison.Ordinal);
+        Assert.Contains("--reuid=10001 --regid=10001", brokerOverlay, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -143,6 +168,12 @@ public sealed class DeploymentArtifactSecurityTests
         Assert.Contains("if [ \"$(id -u)\" -eq 0 ]; then", entrypoint, StringComparison.Ordinal);
         Assert.Contains("mkdir -p /data/omp/agent", entrypoint, StringComparison.Ordinal);
         Assert.Contains("--reuid=10001 --regid=10001", entrypoint, StringComparison.Ordinal);
+        Assert.True(
+            entrypoint.IndexOf("umask 0002", StringComparison.Ordinal)
+            > entrypoint.IndexOf("install --owner=10001 --group=10001 --mode=0400", StringComparison.Ordinal));
+        Assert.True(
+            entrypoint.IndexOf("umask 0002", StringComparison.Ordinal)
+            < entrypoint.IndexOf("exec /usr/bin/setpriv", StringComparison.Ordinal));
         Assert.Contains("--reuid=10002 --regid=10001", ompWrapper, StringComparison.Ordinal);
         Assert.DoesNotContain("--ambient-caps +setuid,+setgid", ompWrapper, StringComparison.Ordinal);
         Assert.Contains("--ambient-caps -setuid,-setgid", ompWrapper, StringComparison.Ordinal);
@@ -164,7 +195,8 @@ public sealed class DeploymentArtifactSecurityTests
         Assert.Contains("install --owner=10001 --group=10001 --mode=0400", entrypoint, StringComparison.Ordinal);
         Assert.Contains("FOWNER", compose, StringComparison.Ordinal);
         Assert.Contains("/run/secrets-source", compose, StringComparison.Ordinal);
-        Assert.Contains("install -o 10001 -g 10001 -Dm 600 /run/secrets/omp_auth_broker_token /data/.omp/auth-broker.token", brokerOverlay, StringComparison.Ordinal);
+        Assert.Contains("install -o 10001 -g 10001 -d -m 0700 /data/.omp", brokerOverlay, StringComparison.Ordinal);
+        Assert.Contains("install -o 10001 -g 10001 -m 0600 /run/secrets/omp_auth_broker_token /data/.omp/auth-broker.token", brokerOverlay, StringComparison.Ordinal);
         Assert.Contains("--reuid=10001 --regid=10001", brokerOverlay, StringComparison.Ordinal);
         Assert.Contains("DAC_OVERRIDE", brokerOverlay, StringComparison.Ordinal);
         var mainContainer = deployment[deployment.IndexOf("      containers:", StringComparison.Ordinal)..deployment.IndexOf("      volumes:", StringComparison.Ordinal)];
@@ -185,10 +217,18 @@ public sealed class DeploymentArtifactSecurityTests
         var deployment = ReadRepositoryFile("deploy/helm/issue-agent/templates/deployment.yaml");
         var service = ReadRepositoryFile("deploy/helm/issue-agent/templates/service.yaml");
         var broker = ReadRepositoryFile("deploy/helm/issue-agent/templates/auth-broker.yaml");
+        var helpers = ReadRepositoryFile("deploy/helm/issue-agent/templates/_helpers.tpl");
+
         var mainSelector = deployment[..deployment.IndexOf("  template:", StringComparison.Ordinal)];
         var brokerSelector = broker[broker.IndexOf("  selector:", StringComparison.Ordinal)..broker.IndexOf("  template:", StringComparison.Ordinal)];
 
         Assert.DoesNotContain("app.kubernetes.io/component", mainSelector, StringComparison.Ordinal);
+        Assert.Contains("issue-agent.authBrokerSelectorLabels", brokerSelector, StringComparison.Ordinal);
+        Assert.DoesNotContain("issue-agent.selectorLabels", brokerSelector, StringComparison.Ordinal);
+        Assert.Contains(
+            "app.kubernetes.io/name: {{ include \"issue-agent.authBrokerFullname\" . }}",
+            helpers,
+            StringComparison.Ordinal);
         Assert.Contains("app.kubernetes.io/component: auth-broker", brokerSelector, StringComparison.Ordinal);
         Assert.Contains("type: Recreate", deployment, StringComparison.Ordinal);
         Assert.Contains("app.kubernetes.io/component: issue-agent", deployment, StringComparison.Ordinal);

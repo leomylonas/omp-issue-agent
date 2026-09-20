@@ -36,15 +36,15 @@ public static class ProviderRetryPolicy
 
                 var delay = GetRetryDelay(response, attempt);
                 response.Dispose();
-                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                await DelayAsync(delay, cancellationToken).ConfigureAwait(false);
             }
             catch (HttpRequestException) when (isIdempotent && attempt < MaxAttempts)
             {
-                await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                await DelayAsync(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (isIdempotent && !cancellationToken.IsCancellationRequested && attempt < MaxAttempts)
             {
-                await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                await DelayAsync(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -71,12 +71,12 @@ public static class ProviderRetryPolicy
             }
             catch (HttpRequestException) when (attempt < MaxAttempts)
             {
-                await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                await DelayAsync(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
                 continue;
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && attempt < MaxAttempts)
             {
-                await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                await DelayAsync(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
                 continue;
             }
 
@@ -84,7 +84,7 @@ public static class ProviderRetryPolicy
             {
                 if (IsRetryable(response, isIdempotent: true) && attempt < MaxAttempts)
                 {
-                    await Task.Delay(GetRetryDelay(response, attempt), cancellationToken).ConfigureAwait(false);
+                    await DelayAsync(GetRetryDelay(response, attempt), cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
@@ -95,15 +95,15 @@ public static class ProviderRetryPolicy
                 }
                 catch (HttpRequestException) when (attempt < MaxAttempts)
                 {
-                    await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                    await DelayAsync(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
                 }
                 catch (IOException) when (attempt < MaxAttempts)
                 {
-                    await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                    await DelayAsync(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && attempt < MaxAttempts)
                 {
-                    await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                    await DelayAsync(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
                 }
             }
         }
@@ -135,12 +135,7 @@ public static class ProviderRetryPolicy
 
         if (instructedDelay is { } delay)
         {
-            if (delay <= TimeSpan.Zero)
-            {
-                return TimeSpan.Zero;
-            }
-
-            return delay > MaxRetryDelay ? MaxRetryDelay : delay;
+            return delay <= TimeSpan.Zero ? TimeSpan.Zero : delay;
         }
         var exponential = IsDefinitiveRateLimitRejection(response)
             ? TimeSpan.FromMinutes(Math.Min(5, Math.Pow(2, attempt - 1)))
@@ -152,6 +147,18 @@ public static class ProviderRetryPolicy
         return fallback > MaxRetryDelay ? MaxRetryDelay : fallback;
     }
 
+    private static async Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
+    {
+        // Task.Delay rejects intervals above its timer limit. Preserve a provider's explicit
+        // retry window by waiting in cancellable chunks rather than reducing it to our fallback cap.
+        while (delay > MaxRetryDelay)
+        {
+            await Task.Delay(MaxRetryDelay, cancellationToken).ConfigureAwait(false);
+            delay -= MaxRetryDelay;
+        }
+
+        await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+    }
     private static TimeSpan GetTransientRetryDelay(int attempt) =>
         TimeSpan.FromMilliseconds(100 * Math.Pow(2, attempt - 1) + Random.Shared.Next(0, 100));
 
