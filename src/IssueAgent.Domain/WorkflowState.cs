@@ -107,7 +107,7 @@ public sealed record WorkflowState(
     string? OmpSessionFile = null,
     WorkflowPhase? InterruptedPhase = null,
     DateTimeOffset? ReviewFeedbackCutoff = null,
-    IReadOnlySet<string>? ReviewFeedbackIds = null,
+    IReadOnlySet<string>? ReviewFeedbackVersions = null,
     string? PendingBranch = null,
     string? ExpectedImplementationHead = null,
     ImplementationPublicationStage? PublicationStage = null,

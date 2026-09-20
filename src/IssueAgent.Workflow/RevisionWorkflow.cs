@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using IssueAgent.Context;
 using IssueAgent.Domain;
 using IssueAgent.Omp;
@@ -82,7 +84,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                     config,
                     mergeRequest.Number,
                     existingContent.State.ReviewFeedbackCutoff.Value,
-                    existingContent.State.ReviewFeedbackIds,
+                    existingContent.State.ReviewFeedbackVersions,
                     cancellationToken).ConfigureAwait(false))
             {
                 return await PauseForNewFeedbackAsync(
@@ -110,12 +112,12 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             .ConfigureAwait(false);
 
         var reviewFeedbackCutoff = existingContent.State.ReviewFeedbackCutoff.Value;
-        var observedFeedbackIds = existingContent.State.ReviewFeedbackIds is { } ids
-            ? new HashSet<string>(ids, StringComparer.Ordinal)
+        var observedFeedbackVersions = existingContent.State.ReviewFeedbackVersions is { } versions
+            ? new HashSet<string>(versions, StringComparer.Ordinal)
             : null;
         var feedback = context.PullOrMergeRequest is { } mrContext
             ? mrContext.Comments.Concat(mrContext.ReviewThreads)
-                .Where(comment => IsNewFeedbackSinceCheckpoint(comment, reviewFeedbackCutoff, observedFeedbackIds))
+                .Where(comment => IsNewFeedbackSinceCheckpoint(comment, reviewFeedbackCutoff, observedFeedbackVersions))
                 .ToList()
             : [];
         await omp.SelectRoleAsync(config.RevisionRole, cancellationToken).ConfigureAwait(false);
@@ -219,7 +221,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         }
 
         var feedbackAfterRevision = await CaptureFeedbackSnapshotAsync(config, config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
-        if (!feedbackAfterRevision.Entries.SetEquals(feedbackBeforeRevision.Entries))
+        if (!feedbackAfterRevision.Versions.SetEquals(feedbackBeforeRevision.Versions))
         {
             return await PauseForNewFeedbackAsync(
                 config,
@@ -270,7 +272,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         // LFS upload can take long enough for review feedback to arrive. Re-observe immediately
         // before pushing so a revision never publishes work produced without that feedback.
         var feedbackBeforePush = await CaptureFeedbackSnapshotAsync(config, config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
-        if (!feedbackBeforePush.Entries.SetEquals(feedbackBeforeRevision.Entries))
+        if (!feedbackBeforePush.Versions.SetEquals(feedbackBeforeRevision.Versions))
         {
             return await PauseForNewFeedbackAsync(
                 config,
@@ -295,7 +297,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             // Advancing it to a later write time could silently skip feedback that arrives while
             // publishing the branch.
             ReviewFeedbackCutoff = feedbackBeforePush.Cutoff,
-            ReviewFeedbackIds = feedbackBeforePush.Ids,
+            ReviewFeedbackVersions = feedbackBeforePush.Versions,
         };
 
         var content = new CanonicalCommentContent(
@@ -333,7 +335,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         }
     }
 
-    private sealed record FeedbackSnapshot(HashSet<string> Entries, HashSet<string> Ids, DateTimeOffset Cutoff);
+    private sealed record FeedbackSnapshot(HashSet<string> Versions, DateTimeOffset Cutoff);
 
     private async Task<FeedbackSnapshot> CaptureFeedbackSnapshotAsync(
         WorkflowRepositoryConfig config,
@@ -344,8 +346,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         // Record the observation boundary before enumerating provider pages. Feedback that arrives
         // after it cannot be advanced past by a concurrent publication checkpoint.
         var cutoff = deps.Clock.UtcNow;
-        var entries = new HashSet<string>(StringComparer.Ordinal);
-        var ids = new HashSet<string>(StringComparer.Ordinal);
+        var versions = new HashSet<string>(StringComparer.Ordinal);
         string? authoritativeAuthor = null;
         await foreach (var comment in deps.Provider.GetMergeRequestCommentsAsync(repository, mergeRequestNumber, cancellationToken).ConfigureAwait(false))
         {
@@ -357,15 +358,13 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                         .ConfigureAwait(false));
             if ((!config.IgnoreBotComments || !comment.IsBot) && !isAuthoritativeCanonicalComment)
             {
-                entries.Add($"comment:{comment.Id}:{comment.UpdatedAt:O}:{comment.Body}");
-                ids.Add($"comment:{comment.Id}");
+                versions.Add(CommentVersionEntry(comment.Id, comment.UpdatedAt, comment.Body));
             }
         }
 
         await foreach (var thread in deps.Provider.GetReviewThreadsAsync(repository, mergeRequestNumber, cancellationToken).ConfigureAwait(false))
         {
-            entries.Add(ThreadResolutionEntry(thread.Id, thread.IsResolved));
-            ids.Add(ThreadResolutionEntry(thread.Id, thread.IsResolved));
+            versions.Add(ThreadResolutionEntry(thread.Id, thread.IsResolved));
             foreach (var comment in thread.Comments)
             {
                 var isAuthoritativeCanonicalComment = CanonicalCommentMarkdown.IsCanonicalComment(comment.Body) &&
@@ -376,25 +375,24 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                             .ConfigureAwait(false));
                 if ((!config.IgnoreBotComments || !comment.IsBot) && !isAuthoritativeCanonicalComment)
                 {
-                    entries.Add($"thread:{thread.Id}:{comment.Id}:{comment.UpdatedAt:O}:{comment.Body}");
-                    ids.Add($"thread:{thread.Id}:{comment.Id}");
+                    versions.Add(CommentVersionEntry(comment.Id, comment.UpdatedAt, comment.Body, thread.Id));
                 }
             }
         }
 
-        return new FeedbackSnapshot(entries, ids, cutoff);
+        return new FeedbackSnapshot(versions, cutoff);
     }
 
     private async Task<bool> HasUnseenFeedbackSinceCheckpointAsync(
         WorkflowRepositoryConfig config,
         long mergeRequestNumber,
         DateTimeOffset cutoff,
-        IReadOnlyCollection<string>? handledFeedbackIds,
+        IReadOnlyCollection<string>? handledFeedbackVersions,
         CancellationToken cancellationToken)
     {
-        var observedFeedbackIds = handledFeedbackIds is null
+        var observedFeedbackVersions = handledFeedbackVersions is null
             ? null
-            : new HashSet<string>(handledFeedbackIds, StringComparer.Ordinal);
+            : new HashSet<string>(handledFeedbackVersions, StringComparer.Ordinal);
 
         var authoritativeAuthor = await CanonicalCommentLocator
             .ResolveAuthoritativeIdentityAsync(deps.Provider, config.CanonicalCommentAuthor, cancellationToken)
@@ -409,7 +407,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 IsNewFeedbackSinceCheckpoint(
                     new HumanComment(comment.AuthorLogin, comment.CreatedAt, comment.Body, UpdatedAt: comment.UpdatedAt, CommentId: comment.Id),
                     cutoff,
-                    observedFeedbackIds))
+                    observedFeedbackVersions))
             {
                 return true;
             }
@@ -420,7 +418,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                            mergeRequestNumber,
                            cancellationToken).ConfigureAwait(false))
         {
-            if (observedFeedbackIds is null || !observedFeedbackIds.Contains(ThreadResolutionEntry(thread.Id, thread.IsResolved)))
+            if (observedFeedbackVersions is null || !observedFeedbackVersions.Contains(ThreadResolutionEntry(thread.Id, thread.IsResolved)))
             {
                 return true;
             }
@@ -431,7 +429,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                     IsNewFeedbackSinceCheckpoint(
                         new HumanComment(comment.AuthorLogin, comment.CreatedAt, comment.Body, thread.Id, thread.IsResolved, comment.UpdatedAt, comment.Id),
                         cutoff,
-                        observedFeedbackIds))
+                        observedFeedbackVersions))
                 {
                     return true;
                 }
@@ -452,32 +450,41 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
     private static bool IsNewFeedbackSinceCheckpoint(
         HumanComment comment,
         DateTimeOffset cutoff,
-        HashSet<string>? observedFeedbackIds)
+        HashSet<string>? observedFeedbackVersions)
     {
         if ((comment.UpdatedAt ?? comment.CreatedAt) > cutoff)
         {
             return true;
         }
 
-        if (observedFeedbackIds is null)
+        if (observedFeedbackVersions is null)
         {
-            return false;
+            // Legacy checkpoints stored only IDs. They cannot prove an edit was handled, so
+            // conservatively surface feedback rather than suppressing it.
+            return true;
         }
 
         if (comment.ThreadId is { } threadId &&
-            !observedFeedbackIds.Contains(ThreadResolutionEntry(threadId, comment.IsResolved)))
+            !observedFeedbackVersions.Contains(ThreadResolutionEntry(threadId, comment.IsResolved)))
         {
             return true;
         }
 
-        var id = comment.CommentId is { } commentId
-            ? comment.ThreadId is { } commentThreadId ? $"thread:{commentThreadId}:{commentId}" : $"comment:{commentId}"
+        var version = comment.CommentId is { } commentId
+            ? CommentVersionEntry(commentId, comment.UpdatedAt ?? comment.CreatedAt, comment.Body, comment.ThreadId)
             : null;
-        return id is null || !observedFeedbackIds.Contains(id);
+        return version is null || !observedFeedbackVersions.Contains(version);
     }
 
     private static string ThreadResolutionEntry(string threadId, bool isResolved) =>
         $"thread:{threadId}:resolved={isResolved}";
+
+    private static string CommentVersionEntry(long commentId, DateTimeOffset updatedAt, string body, string? threadId = null)
+    {
+        var scope = threadId is null ? $"comment:{commentId}" : $"thread:{threadId}:{commentId}";
+        var digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(body)));
+        return $"{scope}:{updatedAt:O}:{digest}";
+    }
 
     private Task<WorkflowOutcome> PauseForMaterialDeviationAsync(
         WorkflowRepositoryConfig config,

@@ -35,7 +35,7 @@ public sealed record CanonicalStateDocument
     public string? PullOrMergeRequest { get; init; }
     public required DateTimeOffset UpdatedAt { get; init; }
     public DateTimeOffset? ReviewFeedbackCutoff { get; init; }
-    public List<string>? ReviewFeedbackIds { get; init; }
+    public List<string>? ReviewFeedbackVersions { get; init; }
 }
 
 /// <summary>Serializes <see cref="DateTimeOffset"/> as a round-trippable ISO-8601 scalar instead of
@@ -97,7 +97,7 @@ public static partial class CanonicalStateSerializer
         PullOrMergeRequest = pullOrMergeRequest,
         UpdatedAt = state.UpdatedAt,
         ReviewFeedbackCutoff = state.ReviewFeedbackCutoff,
-        ReviewFeedbackIds = state.ReviewFeedbackIds?.OrderBy(id => id, StringComparer.Ordinal).ToList(),
+        ReviewFeedbackVersions = state.ReviewFeedbackVersions?.OrderBy(version => version, StringComparer.Ordinal).ToList(),
     };
 
     public static WorkflowState ToWorkflowState(CanonicalStateDocument document)
@@ -137,7 +137,7 @@ public static partial class CanonicalStateSerializer
             document.OmpSessionFile,
             document.InterruptedPhase is { } interruptedPhase ? ParseEnum<WorkflowPhase>(interruptedPhase, "interruptedPhase") : null,
             document.ReviewFeedbackCutoff,
-            document.ReviewFeedbackIds is null ? null : new HashSet<string>(document.ReviewFeedbackIds, StringComparer.Ordinal),
+            document.ReviewFeedbackVersions is null ? null : new HashSet<string>(document.ReviewFeedbackVersions, StringComparer.Ordinal),
             document.PendingBranch is null ? null : ValidateBranchName(document.PendingBranch, "pendingBranch"),
             document.ExpectedImplementationHead is null ? null : ValidateCommitSha(document.ExpectedImplementationHead),
             document.PublicationStage is null ? null : ParseEnum<ImplementationPublicationStage>(document.PublicationStage, "publicationStage"),
@@ -230,7 +230,7 @@ public static partial class CanonicalStateSerializer
         var pascalCase = string.Concat(kebabCaseValue.Split('-').Select(part =>
             part.Length == 0 ? part : char.ToUpperInvariant(part[0]) + part[1..]));
 
-        if (!Enum.TryParse<TEnum>(pascalCase, out var value))
+        if (!Enum.TryParse<TEnum>(pascalCase, out var value) || !Enum.IsDefined(value))
         {
             throw new CanonicalStateException($"Canonical state field '{fieldName}' has unrecognized value '{kebabCaseValue}'.");
         }

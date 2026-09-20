@@ -121,6 +121,42 @@ public sealed class RevisionWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsyncIncludesFeedbackEditedAtThePublishedCutoff()
+    {
+        var state = await SeedReviewStateAsync();
+        provider.MergeRequestComments[(Repository.Id, 1)] =
+        [
+            new ProviderComment(1, "bob", "Original feedback.", clock.UtcNow, clock.UtcNow,
+                new AttachmentSource("merge-request-comment", "1"), false),
+        ];
+        var workflow = new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock));
+        var published = await workflow.RunAsync(
+            CreateConfig(),
+            1,
+            state,
+            new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"summary":"Addressed the original feedback.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}""")),
+            CancellationToken.None);
+
+        Assert.Contains(published.State.ReviewFeedbackVersions!, version => version.StartsWith("comment:1:", StringComparison.Ordinal));
+        provider.MergeRequestComments[(Repository.Id, 1)] =
+        [
+            new ProviderComment(1, "bob", "Edited feedback at the same timestamp.", clock.UtcNow, clock.UtcNow,
+                new AttachmentSource("merge-request-comment", "1"), false),
+        ];
+        var revisionOmp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"summary":"Addressed the edited feedback.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        await workflow.RunAsync(CreateConfig(), 1, published.State, revisionOmp, CancellationToken.None);
+
+        Assert.Contains("Edited feedback at the same timestamp.", Assert.Single(revisionOmp.RunRequests).Prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RunAsyncIncludesBotFeedbackWhenConfigured()
     {
         var state = await SeedReviewStateAsync();
@@ -285,7 +321,7 @@ public sealed class RevisionWorkflowTests : IDisposable
             OperationalState = WorkflowOperationalState.Working,
             WaitingReason = null,
             ReviewFeedbackCutoff = clock.UtcNow,
-            ReviewFeedbackIds = new HashSet<string>(StringComparer.Ordinal),
+            ReviewFeedbackVersions = new HashSet<string>(StringComparer.Ordinal),
         };
         var interruptedContent = CanonicalCommentMarkdown.Parse(canonical.Body) with
         {
@@ -320,7 +356,7 @@ public sealed class RevisionWorkflowTests : IDisposable
         Assert.Equal(0, git.PushCallCount);
         var paused = CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body);
         Assert.Equal(clock.UtcNow, paused.State.ReviewFeedbackCutoff);
-        Assert.Empty(paused.State.ReviewFeedbackIds!);
+        Assert.Empty(paused.State.ReviewFeedbackVersions!);
         Assert.Equal("Retained revision result.", paused.ImplementationResult);
     }
 
@@ -335,7 +371,7 @@ public sealed class RevisionWorkflowTests : IDisposable
             OperationalState = WorkflowOperationalState.Working,
             WaitingReason = null,
             ReviewFeedbackCutoff = clock.UtcNow,
-            ReviewFeedbackIds = new HashSet<string>(StringComparer.Ordinal),
+            ReviewFeedbackVersions = new HashSet<string>(StringComparer.Ordinal),
         };
         var interruptedContent = CanonicalCommentMarkdown.Parse(canonical.Body) with
         {
@@ -585,7 +621,7 @@ public sealed class RevisionWorkflowTests : IDisposable
 
         var publishedCheckpoint = CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body);
         var publishedState = CanonicalStateSerializer.ToWorkflowState(publishedCheckpoint.State);
-        Assert.Contains("thread:thread-1:resolved=True", publishedState.ReviewFeedbackIds!);
+        Assert.Contains("thread:thread-1:resolved=True", publishedState.ReviewFeedbackVersions!);
         provider.ReviewThreads[(Repository.Id, 1)] =
         [
             new ProviderReviewThread(

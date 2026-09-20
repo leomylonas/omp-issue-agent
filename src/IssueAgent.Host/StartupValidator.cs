@@ -33,7 +33,7 @@ public sealed partial class StartupValidator(
                 {
                     _ = await provider.GetCurrentIdentityAsync(cancellationToken).ConfigureAwait(false);
                 }
-                catch (Exception exception) when (exception is not OperationCanceledException)
+                catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
                 {
                     LogProviderValidationWarning(logger, exception, provider.Name);
                 }
@@ -51,7 +51,7 @@ public sealed partial class StartupValidator(
                         .ConfigureAwait(false);
                     _ = await git.ResolveBranchCommitAsync(repositoryOptions.Id, targetBranch, cancellationToken).ConfigureAwait(false);
                 }
-                catch (Exception exception) when (exception is not OperationCanceledException)
+                catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
                 {
                     LogRepositoryValidationWarning(logger, provider.Name, repositoryOptions.Id, exception.GetType().Name);
                 }

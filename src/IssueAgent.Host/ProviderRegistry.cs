@@ -124,9 +124,8 @@ public sealed class ProviderRegistry
     private static string[] GetTrustedAttachmentAuthorities(ProviderOptions configuration)
     {
         var authorities = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { configuration.BaseUri.Authority };
-        // GitHub.com serves some attachments from its web authority in addition to its API
-        // authority. githubusercontent.com descendants are recognized by GitHubProvider as the
-        // public GitHub-owned attachment family, not as configurable enterprise authorities.
+        // GitHub.com serves documented user attachments from its web authority in addition to its API
+        // authority. The provider separately checks the URL's attachment path before sending credentials.
         if (configuration.Kind == ProviderKind.GitHub &&
             configuration.BaseUri.Host.Equals("api.github.com", StringComparison.OrdinalIgnoreCase))
         {

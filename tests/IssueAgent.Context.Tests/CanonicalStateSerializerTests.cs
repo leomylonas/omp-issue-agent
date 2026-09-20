@@ -71,6 +71,21 @@ public sealed class CanonicalStateSerializerTests
         Assert.Throws<CanonicalStateException>(() => CanonicalStateSerializer.ToWorkflowState(parsed));
     }
 
+    [Theory]
+    [InlineData("phase: planning", "phase: 99")]
+    [InlineData("state: working", "state: 99")]
+    [InlineData("waitingReason: plan-approval", "waitingReason: 99")]
+    public void ToWorkflowStateRejectsUndefinedNumericCanonicalEnums(string expected, string replacement)
+    {
+        var document = CanonicalStateSerializer.ToDocument(
+            CreateState(WorkflowPhase.Planning, WorkflowOperationalState.Working, WaitingReason.PlanApproval),
+            null);
+        var yaml = CanonicalStateSerializer.Serialize(document).Replace(expected, replacement, StringComparison.Ordinal);
+        var parsed = CanonicalStateSerializer.Deserialize(yaml);
+
+        Assert.Throws<CanonicalStateException>(() => CanonicalStateSerializer.ToWorkflowState(parsed));
+    }
+
     private static WorkflowState CreateState(WorkflowPhase phase, WorkflowOperationalState operationalState, WaitingReason? waitingReason) => new(
         WorkflowId.New(),
         phase,

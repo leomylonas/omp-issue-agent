@@ -166,7 +166,7 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
         state = state with
         {
             ReviewFeedbackCutoff = clock.UtcNow.AddHours(-1),
-            ReviewFeedbackIds = new HashSet<string>(),
+            ReviewFeedbackVersions = new HashSet<string>(),
         };
         canonical = canonical with
         {

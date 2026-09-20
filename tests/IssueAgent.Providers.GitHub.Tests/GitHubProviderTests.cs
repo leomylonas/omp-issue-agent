@@ -1,5 +1,5 @@
+using System.Net;
 using System.Reflection;
-
 using IssueAgent.Providers;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
@@ -760,18 +760,19 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
-    public void IsTrustedAttachmentHostRequiresHttpsAndExactConfiguredAuthority()
+    public void IsTrustedAttachmentHostRequiresDocumentedGitHubAttachmentPath()
     {
-        Assert.True(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://github.example/foo.png")));
-        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://raw.githubusercontent.com/foo.png")));
-        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://uploads.github.example/foo.png")));
-        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://github.example:8443/foo.png")));
-        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("http://github.example/foo.png")));
-        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://evil.example/foo.png")));
+        Assert.True(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://github.example/user-attachments/assets/0f6435f4-24a7-4c37-96b8-e251982b3022")));
+        Assert.True(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://github.example/user-attachments/files/12345678/crash.log")));
+        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://github.example/api/v3/repos/octo/widgets/issues/7")));
+        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://github.example/octo/widgets/blob/main/screenshot.png")));
+        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://uploads.github.example/user-attachments/assets/0f6435f4-24a7-4c37-96b8-e251982b3022")));
+        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://github.example:8443/user-attachments/assets/0f6435f4-24a7-4c37-96b8-e251982b3022")));
+        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("http://github.example/user-attachments/assets/0f6435f4-24a7-4c37-96b8-e251982b3022")));
     }
 
     [Fact]
-    public void IsTrustedAttachmentHostAllowsGitHubDotComAttachmentFamily()
+    public void IsTrustedAttachmentHostAllowsOnlyDocumentedGitHubDotComAttachmentPath()
     {
         var provider = GitHubProviderFactory.Create(new GitHubProviderConfiguration(
             "github",
@@ -779,9 +780,32 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
             "test-token",
             ["api.github.com", "github.com"]));
 
-        Assert.True(provider.IsTrustedAttachmentHost(new Uri("https://raw.githubusercontent.com/foo.png")));
-        Assert.False(provider.IsTrustedAttachmentHost(new Uri("http://raw.githubusercontent.com/foo.png")));
-        Assert.False(provider.IsTrustedAttachmentHost(new Uri("https://raw.githubusercontent.com:8443/foo.png")));
+        Assert.True(provider.IsTrustedAttachmentHost(new Uri("https://github.com/user-attachments/assets/0f6435f4-24a7-4c37-96b8-e251982b3022")));
+        Assert.False(provider.IsTrustedAttachmentHost(new Uri("https://github.com/api/v3/repos/octo/widgets/issues/7")));
+        Assert.False(provider.IsTrustedAttachmentHost(new Uri("https://raw.githubusercontent.com/octo/widgets/main/screenshot.png")));
+    }
+
+    [Fact]
+    public async Task DownloadAttachmentAsyncUsesAnonymousClientForSameAuthorityApiUrl()
+    {
+        var authenticated = new RecordingHttpMessageHandler();
+        var anonymous = new RecordingHttpMessageHandler();
+        var provider = new GitHubProvider(
+            null!, null!, null!, new HttpClient(), new HttpClient(authenticated), new HttpClient(anonymous),
+            ["github.example"], false, "github");
+        var attachment = new ProviderAttachment(
+            new Uri("https://github.example/api/v3/repos/octo/widgets/issues/7.png"),
+            "7.png",
+            null,
+            new AttachmentSource("issue-description", "7"),
+            false,
+            new HashSet<IPAddress> { IPAddress.Loopback });
+
+        _ = await provider.DownloadAttachmentAsync(
+            attachment, Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")), 1024, CancellationToken.None);
+
+        Assert.Equal(0, authenticated.RequestCount);
+        Assert.Equal(1, anonymous.RequestCount);
     }
 
     [Fact]
@@ -851,5 +875,19 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
         }
 
         return results;
+    }
+
+    private sealed class RecordingHttpMessageHandler : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent("attachment"),
+            });
+        }
     }
 }

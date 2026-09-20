@@ -2,6 +2,7 @@ using System.Net;
 
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
 using IssueAgent.Providers;
 using IssueAgent.Domain;
 
@@ -17,7 +18,7 @@ namespace IssueAgent.Providers.GitLab;
 /// Draft merge requests use GitLab's documented <c>Draft:</c> title-prefix convention because the
 /// stable REST API has no dedicated boolean create parameter.
 /// </summary>
-public sealed class GitLabProvider(
+public sealed partial class GitLabProvider(
     GitLabApiClient client,
     HttpClient authenticatedAttachmentClient,
     HttpClient anonymousAttachmentClient,
@@ -265,8 +266,13 @@ public sealed class GitLabProvider(
     {
         ArgumentNullException.ThrowIfNull(url);
         return url.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
-            trustedAttachmentAuthorities.Contains(url.Authority, StringComparer.OrdinalIgnoreCase);
+            url.IsDefaultPort &&
+            trustedAttachmentAuthorities.Contains(url.Authority, StringComparer.OrdinalIgnoreCase) &&
+            DocumentedAttachmentPathRegex().IsMatch(url.AbsolutePath);
     }
+
+    [GeneratedRegex(@"^(?:/uploads|/-/(?:project|group)/[0-9]+/uploads)/[0-9A-Fa-f]{32}/[^/]+$", RegexOptions.CultureInvariant)]
+    private static partial Regex DocumentedAttachmentPathRegex();
 
     public async ValueTask<DownloadedAttachment> DownloadAttachmentAsync(
         ProviderAttachment attachment,

@@ -168,7 +168,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
         await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
             .RunAsync(CreateConfig(), 1, review.State, revisionOmp, CancellationToken.None);
 
-        Assert.Empty(review.State.ReviewFeedbackIds!);
+        Assert.Empty(review.State.ReviewFeedbackVersions!);
         Assert.Contains("Please add validation.", Assert.Single(revisionOmp.RunRequests).Prompt, StringComparison.Ordinal);
     }
 
@@ -838,7 +838,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
             OperationalState = WorkflowOperationalState.Waiting,
             WaitingReason = WaitingReason.ManualIntervention,
             ReviewFeedbackCutoff = checkpointCutoff,
-            ReviewFeedbackIds = new HashSet<string>(StringComparer.Ordinal) { "comment:1" },
+            ReviewFeedbackVersions = new HashSet<string>(StringComparer.Ordinal) { "comment:1" },
             ExpectedImplementationHead = git.RemoteBranchCommitToReturn,
             PublicationStage = ImplementationPublicationStage.BranchPublished,
         };
@@ -869,7 +869,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
             CancellationToken.None);
 
         Assert.Equal(checkpointCutoff, recovered.State.ReviewFeedbackCutoff);
-        Assert.Equal(["comment:1"], recovered.State.ReviewFeedbackIds);
+        Assert.Equal(["comment:1"], recovered.State.ReviewFeedbackVersions);
 
         provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)].Add(WorkflowCommandLabels.Revise);
         var revisionOmp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(

@@ -2,6 +2,7 @@ using System.Net;
 
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
 using System.Text.Json.Serialization;
 using IssueAgent.Providers;
 using IssueAgent.Domain;
@@ -17,7 +18,7 @@ namespace IssueAgent.Providers.GitHub;
 /// assembly because Octokit does not expose GraphQL review-thread resolution or issue timeline
 /// events with strongly typed models.
 /// </summary>
-public sealed class GitHubProvider(
+public sealed partial class GitHubProvider(
     IGitHubClient client,
     GitHubGraphQlClient graphQlClient,
     GitHubTimelineClient timelineClient,
@@ -348,12 +349,13 @@ public sealed class GitHubProvider(
     {
         ArgumentNullException.ThrowIfNull(url);
         return url.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
-            (trustedAttachmentAuthorities.Contains(url.Authority, StringComparer.OrdinalIgnoreCase) ||
-             (trustsGitHubDotComAttachmentHosts &&
-              url.IsDefaultPort &&
-              (url.Host.Equals("githubusercontent.com", StringComparison.OrdinalIgnoreCase) ||
-               url.Host.EndsWith(".githubusercontent.com", StringComparison.OrdinalIgnoreCase))));
+            url.IsDefaultPort &&
+            trustedAttachmentAuthorities.Contains(url.Authority, StringComparer.OrdinalIgnoreCase) &&
+            DocumentedAttachmentPathRegex().IsMatch(url.AbsolutePath);
     }
+
+    [GeneratedRegex(@"^/user-attachments/(?:assets/[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|files/[0-9]+/[^/]+)$", RegexOptions.CultureInvariant)]
+    private static partial Regex DocumentedAttachmentPathRegex();
 
     public async ValueTask<DownloadedAttachment> DownloadAttachmentAsync(
         ProviderAttachment attachment,

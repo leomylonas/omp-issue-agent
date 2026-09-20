@@ -1,3 +1,6 @@
+using System.Net;
+
+using IssueAgent.Domain;
 using IssueAgent.Providers;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
@@ -441,13 +444,42 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     }
 
     [Fact]
-    public void IsTrustedAttachmentHostRequiresHttpsAndExactConfiguredAuthority()
+    public void IsTrustedAttachmentHostRequiresDocumentedGitLabAttachmentPath()
     {
-        Assert.True(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://gitlab.example/uploads/1/file.png")));
-        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://uploads.gitlab.example/file.png")));
-        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://gitlab.example:8443/uploads/1/file.png")));
-        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("http://gitlab.example/uploads/1/file.png")));
-        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://evil.example/file.png")));
+        Assert.True(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://gitlab.example/uploads/66dbcd21ec5d24ed6ea225176098d52b/file.png")));
+        Assert.True(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://gitlab.example/-/project/123/uploads/66dbcd21ec5d24ed6ea225176098d52b/file.png")));
+        Assert.True(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://gitlab.example/-/group/123/uploads/66dbcd21ec5d24ed6ea225176098d52b/file.png")));
+        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://gitlab.example/api/v4/projects/123/issues/7")));
+        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://gitlab.example/octo/widgets/-/issues/7/file.png")));
+        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://uploads.gitlab.example/uploads/66dbcd21ec5d24ed6ea225176098d52b/file.png")));
+        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("https://gitlab.example:8443/uploads/66dbcd21ec5d24ed6ea225176098d52b/file.png")));
+        Assert.False(fixture.Provider.IsTrustedAttachmentHost(new Uri("http://gitlab.example/uploads/66dbcd21ec5d24ed6ea225176098d52b/file.png")));
+    }
+
+    [Fact]
+    public async Task DownloadAttachmentAsyncUsesAnonymousClientForSameAuthorityApiUrl()
+    {
+        var authenticated = new RecordingHttpMessageHandler();
+        var anonymous = new RecordingHttpMessageHandler();
+        var provider = new GitLabProvider(
+            new GitLabApiClient(new HttpClient(), RetryPolicy.Default),
+            new HttpClient(authenticated),
+            new HttpClient(anonymous),
+            ["gitlab.example"],
+            "gitlab");
+        var attachment = new ProviderAttachment(
+            new Uri("https://gitlab.example/api/v4/projects/123/issues/7.png"),
+            "7.png",
+            null,
+            new AttachmentSource("issue-description", "7"),
+            false,
+            new HashSet<IPAddress> { IPAddress.Loopback });
+
+        _ = await provider.DownloadAttachmentAsync(
+            attachment, Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")), 1024, CancellationToken.None);
+
+        Assert.Equal(0, authenticated.RequestCount);
+        Assert.Equal(1, anonymous.RequestCount);
     }
 
     [Fact]
@@ -517,5 +549,19 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
         }
 
         return results;
+    }
+
+    private sealed class RecordingHttpMessageHandler : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent("attachment"),
+            });
+        }
     }
 }

@@ -17,7 +17,7 @@ public sealed class GitLabProviderContractTests : ProviderContractTests, IClassF
 
     protected override IGitProvider Provider => fixture.Provider;
     protected override RepositoryRef Repository { get; } = new("123", "octo", "widgets");
-    protected override Uri TrustedAttachmentUri { get; } = new("https://gitlab.example/uploads/file.png");
+    protected override Uri TrustedAttachmentUri { get; } = new("https://gitlab.example/uploads/66dbcd21ec5d24ed6ea225176098d52b/file.png");
     protected override Uri UntrustedAttachmentUri { get; } = new("https://evil.example/file.png");
     protected override string ValidIssuePayload => """{"iid":7,"title":"Bug","description":"Description","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","labels":[],"assignees":[]}""";
 

@@ -647,17 +647,17 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         var feedbackSnapshot = existingContent.State.ReviewFeedbackCutoff is { } existingCutoff
             ? new ReviewFeedbackSnapshot(
                 existingCutoff,
-                new HashSet<string>(existingContent.State.ReviewFeedbackIds ?? [], StringComparer.Ordinal))
+                new HashSet<string>(existingContent.State.ReviewFeedbackVersions ?? [], StringComparer.Ordinal))
             : new ReviewFeedbackSnapshot(deps.Clock.UtcNow, new HashSet<string>(StringComparer.Ordinal));
         var stateWithFeedbackSnapshot = state with
         {
             ReviewFeedbackCutoff = feedbackSnapshot.Cutoff,
-            ReviewFeedbackIds = feedbackSnapshot.Ids,
+            ReviewFeedbackVersions = feedbackSnapshot.Versions,
         };
 
         // This records the start of review, not feedback that happened to be visible while the
         // draft was being published. No review feedback has been processed at this point, so its
-        // identifiers must not be checkpointed as handled. Recovery reuses an existing boundary.
+        // version tokens must not be checkpointed as handled. Recovery reuses an existing boundary.
         var checkpointContent = existingContent with
         {
             State = CanonicalStateSerializer.ToDocument(
@@ -694,7 +694,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, publishedState, "Implementation published; awaiting review.");
     }
 
-    private sealed record ReviewFeedbackSnapshot(DateTimeOffset Cutoff, IReadOnlySet<string> Ids);
+    private sealed record ReviewFeedbackSnapshot(DateTimeOffset Cutoff, IReadOnlySet<string> Versions);
 
     private async Task<ProviderMergeRequest> FindOrCreateMergeRequestAsync(
         WorkflowRepositoryConfig config,

@@ -97,8 +97,9 @@ public interface IGitProvider
         long issueNumber,
         CancellationToken cancellationToken);
 
-    /// <summary>True when <paramref name="url"/> is a provider-owned attachment endpoint that may
-    /// receive this provider's credentials. External hosts never receive provider credentials.</summary>
+    /// <summary>True when <paramref name="url"/> is a documented provider-owned attachment endpoint
+    /// that may receive this provider's credentials. External hosts and non-attachment provider URLs
+    /// never receive provider credentials.</summary>
     bool IsTrustedAttachmentHost(Uri url);
 
     ValueTask<DownloadedAttachment> DownloadAttachmentAsync(
