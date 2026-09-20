@@ -507,7 +507,8 @@ public sealed partial class WorkflowDispatcher(
                     cancellationToken).ConfigureAwait(false);
                 return;
             }
-            if (acceptedRemoteHead is not null &&
+            if (!rebuildRetainedRevisionFromRemoteHead &&
+                acceptedRemoteHead is not null &&
                 state.WaitingReason is WaitingReason.RemoteHistoryRewrite or WaitingReason.MissingRemoteRevisionBranch)
             {
                 state = await reconciliation.AcceptRemoteHistoryAsync(
