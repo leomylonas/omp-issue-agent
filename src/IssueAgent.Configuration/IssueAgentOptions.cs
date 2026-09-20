@@ -364,6 +364,7 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
                 failures.Add($"Provider '{provider.Name}' token must configure exactly one of env or file.");
             }
             ValidateLocalSettings(provider.Defaults, $"Provider '{provider.Name}' defaults", failures);
+            var providerRepositoryIdentities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             if (provider.Token is null && string.IsNullOrWhiteSpace(provider.IdentityOverride))
             {
@@ -380,6 +381,11 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
                 if (!repositoryIds.Add(repository.Id))
                 {
                     failures.Add($"Repository id '{repository.Id}' is duplicated across providers.");
+                }
+                var providerNativeIdentity = GetProviderNativeRepositoryIdentity(provider, repository);
+                if (providerNativeIdentity is not null && !providerRepositoryIdentities.Add(providerNativeIdentity))
+                {
+                    failures.Add($"Repository '{repository.Id}' duplicates a provider-native owner/name identity.");
                 }
                 ValidateLocalSettings(repository.Settings, $"Repository '{repository.Id}' settings", failures);
                 var mergedTrust = EffectiveConfigurationResolver.Merge(options.Defaults, provider.Defaults, repository.Settings);
@@ -431,6 +437,17 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
         !Path.IsPathRooted(repositoryId) &&
         !repositoryId.StartsWith('\\') &&
         !repositoryId.Split(['/', '\\'], StringSplitOptions.None).Any(segment => segment is "." or "..");
+
+    private static string? GetProviderNativeRepositoryIdentity(ProviderOptions provider, RepositoryOptions repository)
+    {
+        var nameParts = repository.Name.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var repositoryName = nameParts.Length == 0 ? repository.Name : nameParts[^1];
+        var owner = repository.OwnerOrNamespace
+            ?? (nameParts.Length > 1 ? string.Join('/', nameParts[..^1]) : null)
+            ?? provider.DefaultOwnerOrNamespace;
+
+        return owner is null ? null : string.Concat(owner, "\0", repositoryName);
+    }
 
     private static void ValidateLocalSettings(RepositorySettingsOptions settings, string path, List<string> failures)
     {

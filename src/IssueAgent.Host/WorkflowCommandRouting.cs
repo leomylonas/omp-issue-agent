@@ -66,7 +66,8 @@ public static class WorkflowCommandRouting
                 durableState.OperationalState == WorkflowOperationalState.Working => WorkflowCommand.Replan,
             WorkflowPhase.Planning => null,
             WorkflowPhase.Revising when state.WaitingReason is WaitingReason.MaterialPlanDeviation or
-                WaitingReason.NewFeedbackDuringRevision or WaitingReason.RemoteHistoryRewrite => WorkflowCommand.Revise,
+                WaitingReason.NewFeedbackDuringRevision or WaitingReason.RemoteHistoryRewrite or
+                WaitingReason.MissingRemoteRevisionBranch => WorkflowCommand.Revise,
             WorkflowPhase.Revising when state.InterruptedPhase == WorkflowPhase.Revising => WorkflowCommand.Revise,
             WorkflowPhase.Revising when durableState.Phase == WorkflowPhase.Revising &&
                 durableState.OperationalState == WorkflowOperationalState.Working => WorkflowCommand.Revise,

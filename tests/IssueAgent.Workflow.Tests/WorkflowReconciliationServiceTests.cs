@@ -157,32 +157,55 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task ChangedRemoteRewriteBlockerIsPersistedAndNotifiedEvenWhenTheReasonIsUnchanged()
+    public async Task MissingRemoteRevisionBlockerIsPersistedOnceAndDoesNotRepeatNotifications()
     {
         var (state, canonical) = SeedWorkflow(
             WorkflowPhase.Revising,
             WorkflowOperationalState.Waiting,
             WaitingReason.RemoteHistoryRewrite);
+        state = state with
+        {
+            ReviewFeedbackCutoff = clock.UtcNow.AddHours(-1),
+            ReviewFeedbackIds = new HashSet<string>(),
+        };
+        canonical = canonical with
+        {
+            Body = CanonicalCommentMarkdown.Render(
+                CanonicalCommentMarkdown.Parse(canonical.Body) with
+                {
+                    State = CanonicalStateSerializer.ToDocument(state, pullOrMergeRequest: null),
+                }),
+        };
+        provider.IssueComments[(Repository.Id, 1)][0] = canonical;
+        const string explanation =
+            "The revision branch disappeared from the authoritative remote before the retained revision could be rebuilt. Restore the branch and continue again.";
 
-        var result = await CreateService().PauseForHumanAsync(
+        var first = await CreateService().PauseForHumanAsync(
             CreateConfig(),
             1,
             canonical,
             CanonicalCommentMarkdown.Parse(canonical.Body),
             state,
-            WaitingReason.RemoteHistoryRewrite,
-            "The revision branch disappeared from the authoritative remote before the retained revision could be rebuilt.",
-            CancellationToken.None,
-            recordNewBlocker: true);
+            WaitingReason.MissingRemoteRevisionBranch,
+            explanation,
+            CancellationToken.None);
 
-        var persisted = CanonicalStateSerializer.ToWorkflowState(
-            CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body).State);
-        Assert.Equal(ReconciliationDisposition.Waiting, result.Disposition);
-        Assert.Equal(WaitingReason.RemoteHistoryRewrite, persisted.WaitingReason);
-        Assert.Equal(clock.UtcNow, persisted.UpdatedAt);
-        Assert.Equal(
-            "The revision branch disappeared from the authoritative remote before the retained revision could be rebuilt.",
-            Assert.Single(notifier.Notifications).Message);
+        var persistedComment = provider.IssueComments[(Repository.Id, 1)].Single();
+        var persistedContent = CanonicalCommentMarkdown.Parse(persistedComment.Body);
+        var persistedState = CanonicalStateSerializer.ToWorkflowState(persistedContent.State);
+        git.RemoteBranchCommitToReturn = null;
+        var repeated = await CreateService().ReconcileAsync(
+            CreateConfig(),
+            1,
+            persistedComment,
+            CancellationToken.None);
+
+        Assert.Equal(ReconciliationDisposition.Waiting, first.Disposition);
+        Assert.Equal(ReconciliationDisposition.Waiting, repeated.Disposition);
+        Assert.Equal(WaitingReason.MissingRemoteRevisionBranch, persistedState.WaitingReason);
+        Assert.Equal(clock.UtcNow, persistedState.UpdatedAt);
+        Assert.Single(provider.UpdatedComments);
+        Assert.Equal(explanation, Assert.Single(notifier.Notifications).Message);
     }
 
     [Fact]

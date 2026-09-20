@@ -483,6 +483,31 @@ public sealed class IssueAgentOptionsValidatorTests
         Assert.False(validator.Validate(null, options).Failed);
     }
 
+    [Fact]
+    public void ValidateRejectsDuplicateProviderNativeRepositoryIdentity()
+    {
+        var options = CreateOptions() with
+        {
+            Providers =
+            [
+                CreateProvider() with
+                {
+                    DefaultOwnerOrNamespace = "Example",
+                    Repositories =
+                    [
+                        new RepositoryOptions { Id = "github/example/first", Name = "Repository" },
+                        new RepositoryOptions { Id = "github/example/second", Name = "example/repository" },
+                    ],
+                },
+            ],
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("duplicates a provider-native owner/name identity", StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData(" ")]

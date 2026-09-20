@@ -143,6 +143,21 @@ public sealed class WorkflowCommandRoutingTests
     }
 
     [Fact]
+    public void ContinueFromMissingRemoteRevisionBlockerKeepsRetainedResultUnpublished()
+    {
+        var missingRemote = CreateState(WorkflowPhase.Revising, WorkflowOperationalState.Waiting) with
+        {
+            WaitingReason = WaitingReason.MissingRemoteRevisionBranch,
+        };
+
+        Assert.Equal(WorkflowCommand.Revise, WorkflowCommandRouting.ContinueRoute(missingRemote, missingRemote));
+        Assert.False(WorkflowDispatcher.ShouldPublishRetainedRevision(
+            missingRemote,
+            Content(missingRemote, implementationResult: "Retained revision."),
+            WorkflowCommand.Revise));
+    }
+
+    [Fact]
     public void ContinueRouteDoesNotGuessFailedOperationWithoutProvenance()
     {
         var failed = CreateState(WorkflowPhase.Failed, WorkflowOperationalState.Waiting);

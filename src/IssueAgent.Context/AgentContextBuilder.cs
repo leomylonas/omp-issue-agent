@@ -142,7 +142,7 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
     }
 
     private RepositoryRef? FindAllowedRepository(RepositoryRef relatedRepository) =>
-        options.AllowedRepositories.SingleOrDefault(configuredRepository =>
+        options.AllowedRepositories.FirstOrDefault(configuredRepository =>
             string.Equals(configuredRepository.OwnerOrNamespace, relatedRepository.OwnerOrNamespace, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(configuredRepository.Name, relatedRepository.Name, StringComparison.OrdinalIgnoreCase));
 

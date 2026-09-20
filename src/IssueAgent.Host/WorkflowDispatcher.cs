@@ -443,7 +443,7 @@ public sealed partial class WorkflowDispatcher(
         {
             var durableState = CanonicalStateSerializer.ToWorkflowState(reconciled.Content!.State);
             var rebuildRetainedRevisionFromRemoteHead =
-                state.WaitingReason == WaitingReason.RemoteHistoryRewrite &&
+                state.WaitingReason is WaitingReason.RemoteHistoryRewrite or WaitingReason.MissingRemoteRevisionBranch &&
                 HasRetainedRevisionCheckpoint(state, reconciled.Content!);
             if (rebuildRetainedRevisionFromRemoteHead &&
                 await runtime.Dependencies.Git
@@ -451,19 +451,17 @@ public sealed partial class WorkflowDispatcher(
                     .ConfigureAwait(false) is null)
             {
                 // The prior rewrite blocker had an accepted remote tip. Its disappearance is a
-                // new recovery blocker even though both conditions share the rewrite enum.
-                // Durably re-record and notify it without consuming the acknowledgement command.
+                // distinct recovery blocker: preserve it durably so retained continue labels do
+                // not rewrite canonical state or notify repeatedly while the branch is absent.
                 await reconciliation.PauseForHumanAsync(
                     runtime.Config,
                     issueNumber,
                     canonical,
                     reconciled.Content!,
                     state,
-                    WaitingReason.RemoteHistoryRewrite,
+                    WaitingReason.MissingRemoteRevisionBranch,
                     "The revision branch disappeared from the authoritative remote before the retained revision could be rebuilt. Restore the branch and continue again.",
-                    cancellationToken,
-                    recordNewBlocker: state.Phase == WorkflowPhase.Revising &&
-                        state.WaitingReason == WaitingReason.RemoteHistoryRewrite).ConfigureAwait(false);
+                    cancellationToken).ConfigureAwait(false);
                 return;
             }
             var routedCommand = rebuildRetainedRevisionFromRemoteHead
@@ -488,11 +486,11 @@ public sealed partial class WorkflowDispatcher(
             if (!recoveredAuthoritativeRemote &&
                 (state.Phase == WorkflowPhase.Review ||
                  (state.Phase == WorkflowPhase.Revising &&
-                  state.WaitingReason == WaitingReason.RemoteHistoryRewrite)))
+                  state.WaitingReason is WaitingReason.RemoteHistoryRewrite or WaitingReason.MissingRemoteRevisionBranch)))
             {
                 var waitingReason = state.Phase == WorkflowPhase.Review
                     ? WaitingReason.ReviewRequested
-                    : WaitingReason.RemoteHistoryRewrite;
+                    : WaitingReason.MissingRemoteRevisionBranch;
                 var message = state.Phase == WorkflowPhase.Review
                     ? "The review branch is not available on the authoritative remote. The continue command was retained and will be retried after the branch is restored."
                     : "The revision branch disappeared from the authoritative remote while recovery was in progress. The retained revision was not rebuilt from the planned base; restore the branch and continue again.";
@@ -504,9 +502,7 @@ public sealed partial class WorkflowDispatcher(
                     state,
                     waitingReason,
                     message,
-                    cancellationToken,
-                    recordNewBlocker: state.Phase == WorkflowPhase.Revising &&
-                        state.WaitingReason == WaitingReason.RemoteHistoryRewrite).ConfigureAwait(false);
+                    cancellationToken).ConfigureAwait(false);
                 return;
             }
             if (routedCommand is null)
@@ -619,10 +615,10 @@ public sealed partial class WorkflowDispatcher(
             .TryResolveRemoteBranchCommitAsync(config.Repository.Id, state.Branch, cancellationToken)
             .ConfigureAwait(false);
         var mustResetRetainedRevisionToRemoteHead =
-            state.WaitingReason == WaitingReason.RemoteHistoryRewrite &&
+            state.WaitingReason is WaitingReason.RemoteHistoryRewrite or WaitingReason.MissingRemoteRevisionBranch &&
             HasRetainedRevisionCheckpoint(state, content);
         if (state.Phase == WorkflowPhase.Revising &&
-            state.WaitingReason == WaitingReason.RemoteHistoryRewrite &&
+            state.WaitingReason is WaitingReason.RemoteHistoryRewrite or WaitingReason.MissingRemoteRevisionBranch &&
             remoteHead is null)
         {
             return false;
@@ -757,7 +753,8 @@ public sealed partial class WorkflowDispatcher(
         CanonicalCommentContent content,
         WorkflowCommand? routedCommand) =>
         routedCommand == WorkflowCommand.Revise &&
-        state.WaitingReason is not (WaitingReason.NewFeedbackDuringRevision or WaitingReason.RemoteHistoryRewrite) &&
+        state.WaitingReason is not (WaitingReason.NewFeedbackDuringRevision or WaitingReason.RemoteHistoryRewrite or
+            WaitingReason.MissingRemoteRevisionBranch) &&
         HasRetainedRevisionCheckpoint(state, content);
 
 

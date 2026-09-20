@@ -211,6 +211,17 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
                 content.State.ReviewFeedbackCutoff is not null,
             LocalHeadIsAncestorOfRemote: localHeadIsAncestorOfRemote));
 
+        if (state.WaitingReason == WaitingReason.MissingRemoteRevisionBranch &&
+            decision.Reason == WaitingReason.RemoteHistoryRewrite)
+        {
+            return new WorkflowReconciliationResult(
+                ReconciliationDisposition.Waiting,
+                state,
+                content,
+                canonicalComment,
+                "The revision branch remains unavailable on the authoritative remote. Restore the branch and continue again.");
+        }
+
         if (decision.Action == ReconciliationAction.WaitForHuman)
         {
             return await PauseForHumanAsync(

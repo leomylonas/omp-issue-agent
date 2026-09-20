@@ -49,6 +49,7 @@ public enum WaitingReason
     Conflict,
     MissingCredentials,
     RemoteHistoryRewrite,
+    MissingRemoteRevisionBranch,
     ProtectedBranch,
     ReviewRequested,
     ManualIntervention,

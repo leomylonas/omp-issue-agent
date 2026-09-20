@@ -113,6 +113,23 @@ public sealed class AgentContextBuilderTests
     }
 
     [Fact]
+    public async Task BuildAsyncUsesFirstConfiguredRepositoryWhenProviderNativeIdentityIsDuplicated()
+    {
+        var provider = new FakeGitProvider();
+        var first = new RepositoryRef("configured/octo-widgets-first", Repository.OwnerOrNamespace, Repository.Name);
+        var second = new RepositoryRef("configured/octo-widgets-second", "OCTO", "WIDGETS");
+        var providerRepository = new RepositoryRef("42", Repository.OwnerOrNamespace, Repository.Name);
+        provider.AddIssue(first, 1, "Primary issue", "Primary description");
+        provider.AddIssue(first, 2, "Related issue", "Related description");
+        provider.AddRelationship(first, 1, "related", providerRepository, 2);
+
+        var context = await BuildAsync(provider, 1, repository: first, allowedRepositories: [first, second]);
+
+        var related = Assert.Single(context.RelatedIssues);
+        Assert.Equal(first.Id, related.Issue.RepositoryId);
+    }
+
+    [Fact]
     public async Task BuildAsyncDetectsRelationshipCyclesWithoutInfiniteLoop()
     {
         var provider = new FakeGitProvider();
@@ -169,13 +186,14 @@ public sealed class AgentContextBuilderTests
         FakeGitProvider provider,
         long issueNumber,
         int depth = 1,
-        RepositoryRef? repository = null)
+        RepositoryRef? repository = null,
+        IReadOnlyList<RepositoryRef>? allowedRepositories = null)
     {
         var effectiveRepository = repository ?? Repository;
         var options = new AgentContextBuilderOptions
         {
             RelatedIssueTraversalDepth = depth,
-            AllowedRepositories = [effectiveRepository],
+            AllowedRepositories = allowedRepositories ?? [effectiveRepository],
         };
         var builder = new AgentContextBuilder(provider, new AttachmentPipeline(provider, options.AttachmentLimits), options);
         var state = new WorkflowState(
