@@ -541,6 +541,70 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
         Assert.True(File.Exists(Path.Combine(worktreePath, "lib", "dependency", "README.md")));
     }
 
+    [Fact]
+    public async Task UpdateSubmodulesAsyncRecursivelyInitializesNestedSubmodules()
+    {
+        var leafPath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out _));
+        var intermediatePath = Track(TempGitFixtures.CreateTempDirectory());
+        Repository.Init(intermediatePath);
+        RunGitCli(intermediatePath, "-c", "protocol.file.allow=always", "submodule", "add", leafPath, "nested/leaf");
+        using (var intermediateRepository = new Repository(intermediatePath))
+        {
+            Commands.Stage(intermediateRepository, "*");
+            intermediateRepository.Commit("Add nested submodule", new Signature("Test", "test@example.com", DateTimeOffset.UtcNow), new Signature("Test", "test@example.com", DateTimeOffset.UtcNow));
+        }
+
+        var remotePath = Track(TempGitFixtures.CreateTempDirectory());
+        Repository.Init(remotePath);
+        RunGitCli(remotePath, "-c", "protocol.file.allow=always", "submodule", "add", intermediatePath, "lib/intermediate");
+        using (var remoteRepository = new Repository(remotePath))
+        {
+            Commands.Stage(remoteRepository, "*");
+            remoteRepository.Commit("Add submodule", new Signature("Test", "test@example.com", DateTimeOffset.UtcNow), new Signature("Test", "test@example.com", DateTimeOffset.UtcNow));
+        }
+
+        var baseCommit = new Repository(remotePath).Head.Tip.Sha;
+        await manager.EnsureBareRepositoryAsync("repo-recursive-submodules", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
+        await manager.CreateWorktreeAsync("repo-recursive-submodules", "wt-recursive-submodules", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
+
+        await manager.UpdateSubmodulesAsync("repo-recursive-submodules", worktreePath, _ => null, CancellationToken.None);
+
+        Assert.True(File.Exists(Path.Combine(worktreePath, "lib", "intermediate", "nested", "leaf", "README.md")));
+    }
+
+    [Fact]
+    public async Task UpdateSubmodulesAsyncRejectsAPathThatTraversesASymbolicLink()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        var submoduleSourcePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out _));
+        var remotePath = Track(TempGitFixtures.CreateTempDirectory());
+        Repository.Init(remotePath);
+        RunGitCli(remotePath, "-c", "protocol.file.allow=always", "submodule", "add", submoduleSourcePath, "dependency");
+        using (var remoteRepository = new Repository(remotePath))
+        {
+            Commands.Stage(remoteRepository, "*");
+            remoteRepository.Commit("Add submodule", new Signature("Test", "test@example.com", DateTimeOffset.UtcNow), new Signature("Test", "test@example.com", DateTimeOffset.UtcNow));
+        }
+
+        var baseCommit = new Repository(remotePath).Head.Tip.Sha;
+        await manager.EnsureBareRepositoryAsync("repo-submodule-symlink", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
+        await manager.CreateWorktreeAsync("repo-submodule-symlink", "wt-submodule-symlink", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
+        var outsidePath = Track(TempGitFixtures.CreateTempDirectory());
+        Directory.Delete(Path.Combine(worktreePath, "dependency"));
+        File.CreateSymbolicLink(Path.Combine(worktreePath, "dependency"), outsidePath);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            manager.UpdateSubmodulesAsync("repo-submodule-symlink", worktreePath, _ => null, CancellationToken.None).AsTask());
+
+        Assert.Empty(Directory.EnumerateFileSystemEntries(outsidePath));
+    }
+
     private string Track(string path)
     {
         cleanupPaths.Add(path);

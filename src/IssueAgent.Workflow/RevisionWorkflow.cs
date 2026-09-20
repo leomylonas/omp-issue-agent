@@ -58,16 +58,24 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             State = CanonicalStateSerializer.ToDocument(workingState, existingContent.State.PullOrMergeRequest),
         };
         await UpsertCanonicalCommentAsync(config, issueNumber, workingContent, cancellationToken).ConfigureAwait(false);
-        await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Revising, WorkflowOperationalState.Working, [WorkflowCommand.Revise], cancellationToken)
-            .ConfigureAwait(false);
+        await TransitionLabelsAsync(
+            config,
+            issueNumber,
+            WorkflowPhase.Revising,
+            WorkflowOperationalState.Working,
+            currentState.Phase == WorkflowPhase.Review ? [WorkflowCommand.Revise] : [WorkflowCommand.Continue],
+            cancellationToken).ConfigureAwait(false);
         var mergeRequest = await deps.Provider.FindMergeRequestAsync(config.Repository, currentState.Branch, currentState.TargetBranch, cancellationToken).ConfigureAwait(false);
         if (mergeRequest is null)
         {
             return await EscalateAsync(
                 config, issueNumber, workingState, existingContent, "Cannot revise: no merge request was found for this workflow's branch.", cancellationToken).ConfigureAwait(false);
         }
-        await ConsumeMergeRequestCommandAsync(config, mergeRequest.Number, WorkflowCommand.Revise, cancellationToken).ConfigureAwait(false);
-
+        await ConsumeMergeRequestCommandAsync(
+            config,
+            mergeRequest.Number,
+            currentState.Phase == WorkflowPhase.Review ? WorkflowCommand.Revise : WorkflowCommand.Continue,
+            cancellationToken).ConfigureAwait(false);
         if (retainedResult is { Length: > 0 })
         {
             var feedbackBeforePublication = await CaptureFeedbackSnapshotAsync(config, config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
@@ -233,6 +241,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         var commandLabel = command switch
         {
             WorkflowCommand.Revise => WorkflowCommandLabels.Revise,
+            WorkflowCommand.Continue => WorkflowCommandLabels.Continue,
             _ => throw new ArgumentOutOfRangeException(nameof(command)),
         };
         var labels = await deps.Provider.GetLabelsAsync(workItem, cancellationToken).ConfigureAwait(false);

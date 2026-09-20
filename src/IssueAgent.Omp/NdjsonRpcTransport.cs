@@ -12,6 +12,7 @@ namespace IssueAgent.Omp;
 /// </summary>
 public sealed class NdjsonRpcTransport : IAsyncDisposable
 {
+    private const int StandardErrorReadBufferSize = 4 * 1024;
     private readonly Process process;
     private readonly Channel<JsonObject> frames = Channel.CreateUnbounded<JsonObject>();
     private readonly Dictionary<string, TaskCompletionSource<JsonObject>> pendingRequests = [];
@@ -19,13 +20,16 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
     private readonly TaskCompletionSource<JsonObject> ready =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task readLoopTask;
+    private readonly Task standardErrorDrainTask;
     private long nextRequestId;
     private readonly SemaphoreSlim writeGate = new(1, 1);
+    private int standardErrorObserved;
     private int disposed;
 
     private NdjsonRpcTransport(Process process)
     {
         this.process = process;
+        standardErrorDrainTask = Task.Run(DrainStandardErrorAsync);
         readLoopTask = Task.Run(ReadLoopAsync);
     }
 
@@ -214,18 +218,42 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
         }
         finally
         {
-            ready.TrySetException(new InvalidOperationException("OMP process exited before sending its ready frame."));
+            var processExitException = new InvalidOperationException(
+                "OMP process exited before sending its ready frame." + StandardErrorDiagnostic());
+            ready.TrySetException(processExitException);
             frames.Writer.TryComplete();
             lock (pendingRequestsLock)
             {
                 foreach (var completion in pendingRequests.Values)
                 {
-                    completion.TrySetException(new InvalidOperationException("OMP process exited before responding."));
+                    completion.TrySetException(
+                        new InvalidOperationException("OMP process exited before responding." + StandardErrorDiagnostic()));
                 }
                 pendingRequests.Clear();
             }
         }
     }
+
+    private async Task DrainStandardErrorAsync()
+    {
+        var buffer = new char[StandardErrorReadBufferSize];
+        try
+        {
+            while (await process.StandardError.ReadAsync(buffer.AsMemory()).ConfigureAwait(false) > 0)
+            {
+                Volatile.Write(ref standardErrorObserved, 1);
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            // Disposal can close the redirected stream while the process is being terminated.
+        }
+    }
+
+    private string StandardErrorDiagnostic() =>
+        Volatile.Read(ref standardErrorObserved) == 0
+            ? string.Empty
+            : " OMP wrote to standard error; its contents were suppressed.";
 
     /// <summary>Requests bounded graceful process shutdown: closes stdin, waits up to
     /// <paramref name="gracePeriod"/>, then kills the process tree if still running.</summary>
@@ -273,6 +301,15 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
         catch
         {
             // Read loop failures are surfaced to pending commands.
+        }
+
+        try
+        {
+            await standardErrorDrainTask.ConfigureAwait(false);
+        }
+        catch
+        {
+            // Standard error is diagnostic-only and must never affect protocol cleanup.
         }
 
         process.Dispose();

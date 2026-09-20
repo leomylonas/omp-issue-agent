@@ -14,8 +14,8 @@ public sealed class ProviderRegistry
 {
     private readonly IReadOnlyDictionary<string, IGitProvider> providers;
     private readonly Dictionary<string, GitAuthentication> gitAuthentication;
+    private readonly Dictionary<string, string?> gitHostByRepository;
     private readonly Dictionary<string, GitAuthentication> gitAuthenticationByHost;
-
     public ProviderRegistry(EffectiveIssueAgentConfiguration configuration, IssueAgentMetrics metrics, ILoggerFactory loggerFactory)
     {
         ArgumentNullException.ThrowIfNull(configuration);
@@ -24,7 +24,9 @@ public sealed class ProviderRegistry
         var providerLogger = loggerFactory.CreateLogger<ObservableGitProvider>();
         var built = new Dictionary<string, IGitProvider>(StringComparer.OrdinalIgnoreCase);
         var authentication = new Dictionary<string, GitAuthentication>(StringComparer.OrdinalIgnoreCase);
+        var gitHosts = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         var authenticationByHost = new Dictionary<string, GitAuthentication>(StringComparer.OrdinalIgnoreCase);
+        var ambiguousGitAuthenticationHosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var provider in configuration.Providers)
         {
             var created = Create(provider.Source, provider.ApiToken, ResolveProviderTlsTrust(provider.Repositories));
@@ -32,19 +34,26 @@ public sealed class ProviderRegistry
             {
                 throw new InvalidOperationException($"Provider name '{provider.Name}' is configured more than once.");
             }
+
             foreach (var repository in provider.Repositories)
             {
                 var gitAuth = ToGitAuthentication(repository.Git);
                 authentication[repository.Id] = gitAuth;
                 var host = GitUrlHost.TryGetHost(repository.CloneUrl);
-                if (host is not null)
+                gitHosts[repository.Id] = host;
+                if (host is not null &&
+                    !ambiguousGitAuthenticationHosts.Contains(host) &&
+                    !authenticationByHost.TryAdd(host, gitAuth))
                 {
-                    authenticationByHost.TryAdd(host, gitAuth);
+                    authenticationByHost.Remove(host);
+                    ambiguousGitAuthenticationHosts.Add(host);
                 }
             }
         }
+
         providers = built;
         gitAuthentication = authentication;
+        gitHostByRepository = gitHosts;
         gitAuthenticationByHost = authenticationByHost;
     }
 
@@ -59,11 +68,20 @@ public sealed class ProviderRegistry
             ? authentication
             : throw new KeyNotFoundException($"Resolved Git authentication for repository '{repositoryId}' was not found.");
 
-    /// <summary>Resolves recursive-submodule credentials by host (specification §11): a submodule
-    /// hosted on a configured provider host receives that provider's Git credentials; every other
-    /// host resolves to <see langword="null"/> and is updated anonymously.</summary>
-    public GitAuthentication? TryGetGitAuthenticationForHost(string host) =>
-        gitAuthenticationByHost.TryGetValue(host, out var authentication) ? authentication : null;
+    /// <summary>Resolves recursive-submodule credentials by host (specification §11). The current
+    /// repository's authentication is used only for its own configured host. A different configured
+    /// host is usable only when it has exactly one configured mapping; ambiguous mappings fail closed.</summary>
+    public GitAuthentication? GetSubmoduleGitAuthentication(string repositoryId, string host)
+    {
+        var authentication = GetGitAuthentication(repositoryId);
+        if (gitHostByRepository.TryGetValue(repositoryId, out var repositoryHost) &&
+            string.Equals(repositoryHost, host, StringComparison.OrdinalIgnoreCase))
+        {
+            return authentication;
+        }
+
+        return gitAuthenticationByHost.TryGetValue(host, out authentication) ? authentication : null;
+    }
 
 
     private static IGitProvider Create(ProviderOptions configuration, string? token, TlsTrust tlsTrust)

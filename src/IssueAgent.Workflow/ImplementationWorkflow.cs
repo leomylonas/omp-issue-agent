@@ -105,7 +105,13 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             State = CanonicalStateSerializer.ToDocument(workingState, existingContent.State.PullOrMergeRequest),
         };
         await UpsertCanonicalCommentAsync(config, issueNumber, workingContent, cancellationToken).ConfigureAwait(false);
-        await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Implementing, WorkflowOperationalState.Working, [WorkflowCommand.Implement], cancellationToken).ConfigureAwait(false);
+        await TransitionLabelsAsync(
+            config,
+            issueNumber,
+            WorkflowPhase.Implementing,
+            WorkflowOperationalState.Working,
+            currentState.Phase == WorkflowPhase.Planned ? [WorkflowCommand.Implement] : [WorkflowCommand.Continue],
+            cancellationToken).ConfigureAwait(false);
 
         var worktreePath = WorktreePath(config, currentState.WorkflowId);
         await deps.Git.ResetWorktreeAsync(config.Repository.Id, worktreePath, currentState.BaseCommit, cancellationToken).ConfigureAwait(false);
@@ -173,7 +179,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             State = CanonicalStateSerializer.ToDocument(workingState, existingContent.State.PullOrMergeRequest),
         };
         await UpsertCanonicalCommentAsync(config, issueNumber, workingContent, cancellationToken).ConfigureAwait(false);
-        await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Implementing, WorkflowOperationalState.Working, [], cancellationToken).ConfigureAwait(false);
+        await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Implementing, WorkflowOperationalState.Working, [WorkflowCommand.Continue], cancellationToken).ConfigureAwait(false);
 
         var worktreePath = WorktreePath(config, currentState.WorkflowId);
         var inputSnapshot = await CaptureInputSnapshotAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
@@ -386,6 +392,10 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         string implementationResult,
         CancellationToken cancellationToken)
     {
+        var reviewFeedbackCutoff = await CaptureReviewFeedbackCutoffAsync(
+            config.Repository,
+            mergeRequest.Number,
+            cancellationToken).ConfigureAwait(false);
         var publishedAt = deps.Clock.UtcNow;
         var publishedState = state with
         {
@@ -394,7 +404,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             WaitingReason = WaitingReason.ReviewRequested,
             InterruptedPhase = null,
             UpdatedAt = publishedAt,
-            ReviewFeedbackCutoff = publishedAt,
+            ReviewFeedbackCutoff = reviewFeedbackCutoff,
         };
         var content = existingContent with
         {
@@ -414,6 +424,30 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             cancellationToken).ConfigureAwait(false);
         return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, publishedState, "Implementation published; awaiting review.");
     }
+    /// <summary>Establishes the review-feedback cursor before publishing the review checkpoint.
+    /// Enumerating both feedback surfaces makes the cursor a real provider observation boundary,
+    /// including when a previously published implementation is recovered.</summary>
+    private async Task<DateTimeOffset> CaptureReviewFeedbackCutoffAsync(
+        RepositoryRef repository,
+        long mergeRequestNumber,
+        CancellationToken cancellationToken)
+    {
+        var cutoff = deps.Clock.UtcNow;
+        await foreach (var _ in deps.Provider
+            .GetMergeRequestCommentsAsync(repository, mergeRequestNumber, cancellationToken)
+            .ConfigureAwait(false))
+        {
+        }
+
+        await foreach (var _ in deps.Provider
+            .GetReviewThreadsAsync(repository, mergeRequestNumber, cancellationToken)
+            .ConfigureAwait(false))
+        {
+        }
+
+        return cutoff;
+    }
+
     private async Task<ProviderMergeRequest> FindOrCreateMergeRequestAsync(
         WorkflowRepositoryConfig config,
         long issueNumber,

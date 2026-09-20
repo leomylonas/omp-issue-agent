@@ -138,8 +138,13 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
                 State = CanonicalStateSerializer.ToDocument(workingState, existingContent.State.PullOrMergeRequest),
             },
             cancellationToken).ConfigureAwait(false);
-        await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Planning, WorkflowOperationalState.Working, [WorkflowCommand.Replan], cancellationToken)
-            .ConfigureAwait(false);
+        await TransitionLabelsAsync(
+            config,
+            issueNumber,
+            WorkflowPhase.Planning,
+            WorkflowOperationalState.Working,
+            currentState.Phase == WorkflowPhase.Planned ? [WorkflowCommand.Replan] : [WorkflowCommand.Continue],
+            cancellationToken).ConfigureAwait(false);
 
         var worktreePath = WorktreePath(config, currentState.WorkflowId);
         var attachmentsPath = AttachmentsPath(config, currentState.WorkflowId);

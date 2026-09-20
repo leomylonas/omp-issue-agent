@@ -33,6 +33,8 @@ public sealed class ImplementationWorkflowTests : IDisposable
     public async Task RunAsyncPublishesDraftMergeRequestAndSetsReviewWaiting()
     {
         var state = await SeedApprovedPlanAsync();
+        var reviewFeedbackSnapshotCaptured = false;
+        provider.OnReviewThreadsEnumeration = () => reviewFeedbackSnapshotCaptured = true;
         var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """
             {"summary":"Added a guard clause.","keyChanges":["Guard clause in Save()"],"decisions":["Chose guard clause for clarity."],"checksRun":["dotnet test"],"knownFailures":[],"deviations":[],"risks":[]}
             """));
@@ -51,6 +53,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
         Assert.Contains("Added a guard clause.", updated.Body, StringComparison.Ordinal);
         Assert.Contains(provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)], l => l == "agent:phase:review");
         Assert.Equal(WorkflowNotificationKind.ImplementationReady, Assert.Single(notifier.Notifications).Kind);
+        Assert.True(reviewFeedbackSnapshotCaptured);
     }
 
     [Fact]
@@ -217,6 +220,8 @@ public sealed class ImplementationWorkflowTests : IDisposable
             CancellationToken.None);
         provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] =
             ["agent:phase:implementing", "agent:state:waiting", "agent:cmd:continue"];
+        var reviewFeedbackSnapshotCaptured = false;
+        provider.OnReviewThreadsEnumeration = () => reviewFeedbackSnapshotCaptured = true;
         var omp = new FakeOmpClient();
 
         var outcome = await CreateWorkflow().RunAsync(
@@ -231,6 +236,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
         Assert.Empty(omp.RunRequests);
         Assert.Single(provider.MergeRequests);
         Assert.Contains("Durably recorded implementation summary.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
+        Assert.True(reviewFeedbackSnapshotCaptured);
     }
 
     [Fact]
@@ -309,6 +315,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
         Assert.Equal(1, git.ResetWorktreeCallCount);
         Assert.Equal(["implementer"], resumingOmp.SelectedRoles);
         Assert.Contains("Continued after acknowledgement.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
+        Assert.DoesNotContain(WorkflowCommandLabels.Continue, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
     }
 
 

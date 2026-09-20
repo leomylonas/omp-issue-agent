@@ -20,6 +20,15 @@ def response(request_id, command, data=None, error=None):
         payload.update({"success": False, "error": error})
     send(payload)
 
+def emit_standard_error():
+    byte_count = int(os.environ.get("OMP_STDERR_BYTES", "0"))
+    if byte_count > 0:
+        payload = (b"stderr-secret-value\n" * ((byte_count // 20) + 1))[:byte_count]
+        sys.stderr.buffer.write(payload)
+        sys.stderr.buffer.flush()
+
+
+
 
 def main():
     send({
@@ -53,6 +62,9 @@ def main():
                 log.write(command + " " + json.dumps(request) + "\n")
 
         if command == "new_session":
+            emit_standard_error()
+            if os.environ.get("OMP_EXIT_AFTER_STDERR") == "1":
+                return
             response(request_id, command, {"cancelled": False})
         elif command == "set_model":
             model = {"provider": request.get("provider"), "id": request.get("modelId")}

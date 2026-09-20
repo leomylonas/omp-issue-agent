@@ -152,6 +152,33 @@ public sealed class OmpProcessClientTests
         Assert.False(error.WasCancelled);
         Assert.Contains("timed out", error.Message, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public async Task StandardErrorIsDrainedWithoutExposingItsContentsInProcessDiagnostics()
+    {
+        var transport = NdjsonRpcTransport.Start(
+            "python3",
+            [ScriptPath],
+            AppContext.BaseDirectory,
+            new Dictionary<string, string>
+            {
+                ["PATH"] = Environment.GetEnvironmentVariable("PATH") ?? string.Empty,
+                ["OMP_STDERR_BYTES"] = "1048576",
+                ["OMP_EXIT_AFTER_STDERR"] = "1",
+            });
+        await using var client = new OmpProcessClient(
+            transport,
+            TimeSpan.FromSeconds(5),
+            Path.GetTempPath());
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => client.CreateSessionAsync("anthropic/claude-sonnet-5", CancellationToken.None)
+                .AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken));
+
+        Assert.Contains("standard error", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("stderr-secret-value", exception.Message, StringComparison.Ordinal);
+    }
     [Fact]
     public async Task CancellationBeforePromptDispatchPreventsPrompt()
     {

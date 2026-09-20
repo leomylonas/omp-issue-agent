@@ -237,11 +237,34 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
 
     public ValueTask UpdateSubmodulesAsync(string repositoryId, string worktreePath, Func<string, GitAuthentication?> authenticationResolver, CancellationToken cancellationToken)
     {
-        using var repo = new Repository(worktreePath);
+        ArgumentNullException.ThrowIfNull(authenticationResolver);
+        var rootPath = Path.GetFullPath(worktreePath);
+        UpdateSubmodulesRecursively(rootPath, rootPath, authenticationResolver, new HashSet<string>(StringComparer.Ordinal), cancellationToken);
+        return ValueTask.CompletedTask;
+    }
+
+    private static void UpdateSubmodulesRecursively(
+        string repositoryPath,
+        string rootPath,
+        Func<string, GitAuthentication?> authenticationResolver,
+        ISet<string> visitedRepositoryPaths,
+        CancellationToken cancellationToken)
+    {
+        using var repo = new Repository(repositoryPath);
+        var repositoryIdentity = Path.GetFullPath(repo.Info.Path);
+        if (!visitedRepositoryPaths.Add(repositoryIdentity))
+        {
+            return;
+        }
+
+        var parentHost = TryGetHost(repo.Network.Remotes["origin"]?.Url);
         foreach (var submodule in repo.Submodules)
         {
-            var host = TryGetHost(submodule.Url);
+            cancellationToken.ThrowIfCancellationRequested();
+            var submodulePath = GetSafeSubmodulePath(rootPath, repositoryPath, submodule.Path);
+            var host = TryGetHost(submodule.Url) ?? parentHost;
             var authentication = host is null ? null : authenticationResolver(host);
+            var effectiveAuthentication = authentication ?? GitAuthentication.Anonymous(TlsTrust.System);
 
             try
             {
@@ -250,8 +273,8 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
                     Init = true,
                     FetchOptions =
                     {
-                        CredentialsProvider = CredentialsHandlerFor(authentication ?? GitAuthentication.Anonymous(TlsTrust.System), host),
-                        CertificateCheck = CertificateCheckHandlerFor((authentication ?? GitAuthentication.Anonymous(TlsTrust.System)).TlsTrust),
+                        CredentialsProvider = CredentialsHandlerFor(effectiveAuthentication, host),
+                        CertificateCheck = CertificateCheckHandlerFor(effectiveAuthentication.TlsTrust),
                     },
                 });
             }
@@ -261,11 +284,48 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
                     $"Submodule '{submodule.Name}' at '{submodule.Url}' requires authentication that is not configured for its host.");
             }
 
-            using var submoduleRepo = new Repository(Path.Combine(worktreePath, submodule.Path));
-            DisableHooks(submoduleRepo.Info.Path);
+            GetSafeSubmodulePath(rootPath, repositoryPath, submodule.Path);
+            DisableHooks(submodulePath);
+            UpdateSubmodulesRecursively(submodulePath, rootPath, authenticationResolver, visitedRepositoryPaths, cancellationToken);
+        }
+    }
+
+    private static string GetSafeSubmodulePath(string rootPath, string repositoryPath, string submodulePath)
+    {
+        var normalizedRootPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rootPath));
+        var normalizedRepositoryPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(repositoryPath));
+        var path = Path.GetFullPath(Path.Combine(normalizedRepositoryPath, submodulePath));
+        var relativeToRoot = Path.GetRelativePath(normalizedRootPath, path);
+        if (Path.IsPathRooted(relativeToRoot) ||
+            string.Equals(relativeToRoot, "..", StringComparison.Ordinal) ||
+            relativeToRoot.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"Submodule path '{submodulePath}' escapes worktree '{rootPath}'.");
         }
 
-        return ValueTask.CompletedTask;
+        var relativeToRepository = Path.GetRelativePath(normalizedRepositoryPath, path);
+        var currentPath = normalizedRepositoryPath;
+        foreach (var segment in relativeToRepository.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+        {
+            currentPath = Path.Combine(currentPath, segment);
+            try
+            {
+                if ((File.GetAttributes(currentPath) & FileAttributes.ReparsePoint) != 0)
+                {
+                    throw new InvalidOperationException($"Submodule path '{submodulePath}' traverses a symbolic link.");
+                }
+            }
+            catch (FileNotFoundException)
+            {
+                break;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                break;
+            }
+        }
+
+        return path;
     }
 
     public ValueTask<bool> TryRebaseOntoAsync(string repositoryId, string worktreePath, string ontoCommit, GitIdentity identity, CancellationToken cancellationToken)
@@ -536,7 +596,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         File.SetUnixFileMode(path, mode);
     }
 
-    private static string? TryGetHost(string url) => GitUrlHost.TryGetHost(url);
+    private static string? TryGetHost(string? url) => GitUrlHost.TryGetHost(url);
 
     /// <summary>Returns credentials for <paramref name="authentication"/> only when libgit2's
     /// callback URL host matches <paramref name="expectedHost"/> (specification §11: never forward

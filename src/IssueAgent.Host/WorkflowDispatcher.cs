@@ -402,20 +402,9 @@ public sealed partial class WorkflowDispatcher(
                 return;
             }
 
-            // Persist the acceptance before consuming its label, including retained-worktree
-            // pauses. Otherwise a crash between acknowledgement and workflow resumption loses
-            // the command that authorizes the retained result to proceed.
-            await PersistContinueAcceptanceAsync(
-                runtime,
-                issueNumber,
-                canonical,
-                reconciled.Content!,
-                state,
-                routedCommand.Value,
-                cancellationToken).ConfigureAwait(false);
-            await ConsumeCommandAsync(
-                runtime.Provider, runtime.Repository, issueNumber, mergeRequest?.Number,
-                commandResolution.Sources, WorkflowCommand.Continue, cancellationToken).ConfigureAwait(false);
+            // Keep the acknowledgement label until the routed workflow records its working
+            // checkpoint and transitions phase/state labels. A process crash before that durable
+            // hand-off then leaves the command available for safe replay.
             publishRetainedRevision = routedCommand == WorkflowCommand.Revise &&
                 state.Phase == WorkflowPhase.Revising &&
                 reconciled.Content!.ImplementationResult is { Length: > 0 };
@@ -520,40 +509,7 @@ public sealed partial class WorkflowDispatcher(
         }
     }
 
-    private static async Task PersistContinueAcceptanceAsync(
-        Runtime runtime,
-        long issueNumber,
-        ProviderComment canonicalComment,
-        CanonicalCommentContent content,
-        WorkflowState state,
-        WorkflowCommand routedCommand,
-        CancellationToken cancellationToken)
-    {
-        var acceptedState = state with
-        {
-            Phase = routedCommand switch
-            {
-                WorkflowCommand.Replan => WorkflowPhase.Planning,
-                WorkflowCommand.Revise => WorkflowPhase.Revising,
-                WorkflowCommand.Implement => WorkflowPhase.Implementing,
-                _ => state.Phase,
-            },
-            OperationalState = WorkflowOperationalState.Working,
-            WaitingReason = null,
-            InterruptedPhase = null,
-            UpdatedAt = runtime.Dependencies.Clock.UtcNow,
-        };
-        var updated = content with
-        {
-            State = CanonicalStateSerializer.ToDocument(acceptedState, content.State.PullOrMergeRequest),
-        };
-        await runtime.Provider.UpdateIssueCommentAsync(
-            runtime.Repository,
-            issueNumber,
-            canonicalComment.Id,
-            CanonicalCommentMarkdown.Render(updated),
-            cancellationToken).ConfigureAwait(false);
-    }
+
 
     private static async Task ConsumeCommandAsync(
         IGitProvider provider,
@@ -670,7 +626,7 @@ public sealed partial class WorkflowDispatcher(
             resolved.OmpRoles.GetValueOrDefault("implementation", "task"),
             resolved.SupplementalInstructions,
             resolved.OmpTimeout,
-            providers.TryGetGitAuthenticationForHost,
+            host => providers.GetSubmoduleGitAuthentication(repository.Id, host),
             resolved.CloseIssueOnMerge,
             resolved.OmpRoles.GetValueOrDefault("revision", "task"),
             resolved.OmpRoles.GetValueOrDefault("conflictResolution", "task"),

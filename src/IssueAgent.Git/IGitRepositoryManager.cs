@@ -54,10 +54,11 @@ public interface IGitRepositoryManager
     /// <summary>Returns the worktree's current HEAD commit SHA.</summary>
     ValueTask<string> GetHeadCommitAsync(string repositoryId, string worktreePath, CancellationToken cancellationToken);
 
-    /// <summary>Initializes and updates the worktree's direct (non-recursive) submodules using the supplied
+    /// <summary>Recursively initializes and updates the worktree's submodules using the supplied
     /// per-host authentication resolver. A submodule host outside <paramref name="authenticationResolver"/>'s
     /// known hosts is updated anonymously; failure when authentication is required is reported via
-    /// <see cref="SubmoduleAuthenticationRequiredException"/>.</summary>
+    /// <see cref="SubmoduleAuthenticationRequiredException"/>. Paths escaping the root worktree or
+    /// traversing symbolic links are rejected.</summary>
     ValueTask UpdateSubmodulesAsync(string repositoryId, string worktreePath, Func<string, GitAuthentication?> authenticationResolver, CancellationToken cancellationToken);
 
     /// <summary>Rebases the worktree's current branch onto <paramref name="ontoCommit"/>. Returns
