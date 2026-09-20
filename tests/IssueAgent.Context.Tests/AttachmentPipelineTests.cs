@@ -146,6 +146,55 @@ public sealed class AttachmentPipelineTests
         Assert.Contains("download failed", attachment.OmissionReason, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ProcessAsyncOmitsAndDeletesPartialFileWhenFinalDownloadFailureIsNonCallerCancellationOrStreamingIo(bool isCancellation)
+    {
+        provider.TrustedHosts.Add("github.example");
+        var partialPath = Path.Combine(destination, "partial.pdf");
+        provider.AttachmentDownloadOverride = (_, _, _) =>
+        {
+            Directory.CreateDirectory(destination);
+            File.WriteAllBytes(partialPath, [1]);
+            throw isCancellation
+                ? new OperationCanceledException("The download timed out.")
+                : new IOException("The response stream ended unexpectedly.");
+        };
+
+        var results = await RunProcessAsync("[partial](https://github.example/files/partial.pdf)");
+
+        var attachment = Assert.Single(results);
+        Assert.True(attachment.IsOmitted);
+        Assert.Contains("download failed", attachment.OmissionReason, StringComparison.Ordinal);
+        Assert.False(File.Exists(partialPath));
+    }
+
+    [Fact]
+    public async Task ProcessAsyncPropagatesCallerCancellationWhileDeletingPartialFile()
+    {
+        provider.TrustedHosts.Add("github.example");
+        var partialPath = Path.Combine(destination, "cancelled.pdf");
+        using var cancellation = new CancellationTokenSource();
+        provider.AttachmentDownloadOverride = (_, _, _) =>
+        {
+            Directory.CreateDirectory(destination);
+            File.WriteAllBytes(partialPath, [1]);
+            cancellation.Cancel();
+            throw new OperationCanceledException(cancellation.Token);
+        };
+        var pipeline = new AttachmentPipeline(provider, new AttachmentLimits());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pipeline.ProcessAsync(
+            "[cancelled](https://github.example/files/cancelled.pdf)",
+            new AttachmentSource("issue-description", "1"),
+            destination,
+            new RemainingBudget(100 * 1024 * 1024),
+            cancellation.Token));
+
+        Assert.False(File.Exists(partialPath));
+    }
+
     private async Task<IReadOnlyList<IssueAgent.Domain.AttachmentReference>> RunProcessAsync(string body)
     {
         var pipeline = new AttachmentPipeline(provider, new AttachmentLimits());

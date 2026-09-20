@@ -57,8 +57,20 @@ public static class GitHubProviderFactory
             anonymousAttachmentClient,
             configuration.TrustedAttachmentAuthorities,
             isGitHubDotCom,
+            GetAttachmentPathPrefix(configuration.ApiBaseUri, isGitHubDotCom),
             configuration.Name,
             configuration.RetryPolicy);
+    }
+
+    private static string GetAttachmentPathPrefix(Uri apiBaseUri, bool isGitHubDotCom)
+    {
+        if (isGitHubDotCom)
+        {
+            return string.Empty;
+        }
+
+        var path = apiBaseUri.AbsolutePath.TrimEnd('/');
+        return path.EndsWith("/api/v3", StringComparison.OrdinalIgnoreCase) ? path[..^7] : path;
     }
 
     private static void RequireHttpsForCredentials(Uri apiBaseUri, string? token)

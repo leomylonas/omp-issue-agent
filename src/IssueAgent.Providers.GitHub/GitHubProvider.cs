@@ -27,6 +27,7 @@ public sealed partial class GitHubProvider(
     HttpClient anonymousAttachmentClient,
     IReadOnlyList<string> trustedAttachmentAuthorities,
     bool trustsGitHubDotComAttachmentHosts,
+    string attachmentPathPrefix,
     string name,
     RetryPolicy? configuredRetryPolicy = null) : IGitProvider
 {
@@ -347,11 +348,22 @@ public sealed partial class GitHubProvider(
 
     public bool IsTrustedAttachmentHost(Uri url)
     {
-        ArgumentNullException.ThrowIfNull(url);
         return url.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
-            url.IsDefaultPort &&
             trustedAttachmentAuthorities.Contains(url.Authority, StringComparer.OrdinalIgnoreCase) &&
-            DocumentedAttachmentPathRegex().IsMatch(url.AbsolutePath);
+            IsDocumentedAttachmentPath(url.AbsolutePath);
+    }
+
+    private bool IsDocumentedAttachmentPath(string absolutePath)
+    {
+        if (attachmentPathPrefix.Length == 0)
+        {
+            return DocumentedAttachmentPathRegex().IsMatch(absolutePath);
+        }
+
+        return absolutePath.Length > attachmentPathPrefix.Length &&
+            absolutePath.AsSpan().StartsWith(attachmentPathPrefix, StringComparison.Ordinal) &&
+            absolutePath[attachmentPathPrefix.Length] == '/' &&
+            DocumentedAttachmentPathRegex().IsMatch(absolutePath.AsSpan(attachmentPathPrefix.Length));
     }
 
     [GeneratedRegex(@"^/user-attachments/(?:assets/[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|files/[0-9]+/[^/]+)$", RegexOptions.CultureInvariant)]

@@ -89,6 +89,10 @@ public sealed class AttachmentPipeline(
             }
 
             var perAttachmentCap = Math.Min(limits.MaxAttachmentSizeBytes, remainingBudget.Remaining);
+            // Providers resolve the same safe, collision-free path before opening the stream. Keep
+            // that path so the orchestration boundary can remove a file left by a transport timeout
+            // or final streaming failure after the provider's retries are exhausted.
+            var partialPath = AttachmentFileNames.ResolveSafeDestination(destinationDirectory, providerAttachment.SuggestedFileName);
 
             try
             {
@@ -113,7 +117,23 @@ public sealed class AttachmentPipeline(
             }
             catch (AttachmentTooLargeException)
             {
+                DeletePartialFile(partialPath);
                 results.Add(Omitted(providerAttachment, $"Attachment exceeds the {perAttachmentCap}-byte limit for this download."));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                DeletePartialFile(partialPath);
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                DeletePartialFile(partialPath);
+                results.Add(Omitted(providerAttachment, "Attachment download failed: OperationCanceledException."));
+            }
+            catch (IOException)
+            {
+                DeletePartialFile(partialPath);
+                results.Add(Omitted(providerAttachment, "Attachment download failed: IOException."));
             }
             catch (HttpRequestException exception)
             {
@@ -121,6 +141,7 @@ public sealed class AttachmentPipeline(
                 // attachment client precisely so an unvalidated 3xx to an internal/loopback/cloud-
                 // metadata endpoint is never followed — specification §15) and any other transport
                 // failure. Omitted, not fatal: one bad link must not abort the whole context.
+                DeletePartialFile(partialPath);
                 results.Add(Omitted(providerAttachment, $"Attachment download failed: {exception.StatusCode?.ToString() ?? exception.GetType().Name}."));
             }
         }

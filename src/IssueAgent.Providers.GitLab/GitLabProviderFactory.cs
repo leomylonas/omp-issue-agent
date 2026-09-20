@@ -26,8 +26,15 @@ public static class GitLabProviderFactory
             authenticatedAttachmentClient,
             anonymousAttachmentClient,
             configuration.TrustedAttachmentAuthorities,
+            GetAttachmentPathPrefix(configuration.ApiBaseUri),
             configuration.Name,
             configuration.RetryPolicy);
+    }
+
+    private static string GetAttachmentPathPrefix(Uri apiBaseUri)
+    {
+        var path = apiBaseUri.AbsolutePath.TrimEnd('/');
+        return path.EndsWith("/api/v4", StringComparison.OrdinalIgnoreCase) ? path[..^7] : path;
     }
 
     private static void RequireHttpsForCredentials(Uri apiBaseUri, string? token)

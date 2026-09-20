@@ -50,6 +50,7 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
             new HttpClient(),
             [],
             true,
+            string.Empty,
             "github");
 
         var identity = await provider.GetCurrentIdentityAsync(CancellationToken.None);
@@ -786,13 +787,26 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
+    public void IsTrustedAttachmentHostSupportsConfiguredEnterpriseAuthorityAndBasePath()
+    {
+        var provider = GitHubProviderFactory.Create(new GitHubProviderConfiguration(
+            "github",
+            new Uri("https://github.example:8443/enterprise/"),
+            "test-token",
+            ["github.example:8443"]));
+
+        Assert.True(provider.IsTrustedAttachmentHost(new Uri("https://github.example:8443/enterprise/user-attachments/assets/0f6435f4-24a7-4c37-96b8-e251982b3022")));
+        Assert.False(provider.IsTrustedAttachmentHost(new Uri("https://github.example:8443/api/v3/user-attachments/assets/0f6435f4-24a7-4c37-96b8-e251982b3022")));
+    }
+
+    [Fact]
     public async Task DownloadAttachmentAsyncUsesAnonymousClientForSameAuthorityApiUrl()
     {
         var authenticated = new RecordingHttpMessageHandler();
         var anonymous = new RecordingHttpMessageHandler();
         var provider = new GitHubProvider(
             null!, null!, null!, new HttpClient(), new HttpClient(authenticated), new HttpClient(anonymous),
-            ["github.example"], false, "github");
+            ["github.example"], false, string.Empty, "github");
         var attachment = new ProviderAttachment(
             new Uri("https://github.example/api/v3/repos/octo/widgets/issues/7.png"),
             "7.png",

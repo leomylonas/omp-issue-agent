@@ -457,6 +457,19 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     }
 
     [Fact]
+    public void IsTrustedAttachmentHostSupportsConfiguredEnterpriseAuthorityAndBasePath()
+    {
+        var provider = GitLabProviderFactory.Create(new GitLabProviderConfiguration(
+            "gitlab",
+            new Uri("https://gitlab.example:8443/gitlab/api/v4/"),
+            "test-token",
+            ["gitlab.example:8443"]));
+
+        Assert.True(provider.IsTrustedAttachmentHost(new Uri("https://gitlab.example:8443/gitlab/uploads/66dbcd21ec5d24ed6ea225176098d52b/file.png")));
+        Assert.False(provider.IsTrustedAttachmentHost(new Uri("https://gitlab.example:8443/api/v4/uploads/66dbcd21ec5d24ed6ea225176098d52b/file.png")));
+    }
+
+    [Fact]
     public async Task DownloadAttachmentAsyncUsesAnonymousClientForSameAuthorityApiUrl()
     {
         var authenticated = new RecordingHttpMessageHandler();
@@ -466,6 +479,7 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
             new HttpClient(authenticated),
             new HttpClient(anonymous),
             ["gitlab.example"],
+            string.Empty,
             "gitlab");
         var attachment = new ProviderAttachment(
             new Uri("https://gitlab.example/api/v4/projects/123/issues/7.png"),

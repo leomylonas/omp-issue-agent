@@ -23,6 +23,7 @@ public sealed partial class GitLabProvider(
     HttpClient authenticatedAttachmentClient,
     HttpClient anonymousAttachmentClient,
     IReadOnlyList<string> trustedAttachmentAuthorities,
+    string attachmentPathPrefix,
     string name,
     RetryPolicy? configuredRetryPolicy = null) : IGitProvider
 {
@@ -266,9 +267,21 @@ public sealed partial class GitLabProvider(
     {
         ArgumentNullException.ThrowIfNull(url);
         return url.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
-            url.IsDefaultPort &&
             trustedAttachmentAuthorities.Contains(url.Authority, StringComparer.OrdinalIgnoreCase) &&
-            DocumentedAttachmentPathRegex().IsMatch(url.AbsolutePath);
+            IsDocumentedAttachmentPath(url.AbsolutePath);
+    }
+
+    private bool IsDocumentedAttachmentPath(string absolutePath)
+    {
+        if (attachmentPathPrefix.Length == 0)
+        {
+            return DocumentedAttachmentPathRegex().IsMatch(absolutePath);
+        }
+
+        return absolutePath.Length > attachmentPathPrefix.Length &&
+            absolutePath.AsSpan().StartsWith(attachmentPathPrefix, StringComparison.Ordinal) &&
+            absolutePath[attachmentPathPrefix.Length] == '/' &&
+            DocumentedAttachmentPathRegex().IsMatch(absolutePath.AsSpan(attachmentPathPrefix.Length));
     }
 
     [GeneratedRegex(@"^(?:/uploads|/-/(?:project|group)/[0-9]+/uploads)/[0-9A-Fa-f]{32}/[^/]+$", RegexOptions.CultureInvariant)]
