@@ -46,7 +46,7 @@ public sealed class HookNonExecutionTests
 
         try
         {
-            await GitLfsRunner.UploadObjectsAsync(worktreePath, "main", authentication, CancellationToken.None);
+            await GitLfsRunner.UploadObjectsAsync(worktreePath, barePath, "main", authentication, CancellationToken.None);
         }
         catch (InvalidOperationException)
         {

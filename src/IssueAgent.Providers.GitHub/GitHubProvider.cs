@@ -497,11 +497,13 @@ public sealed class GitHubProvider(
             catch (RateLimitExceededException exception) when (attempt < 3)
             {
                 var delay = exception.GetRetryAfterTimeSpan();
-                await Task.Delay(ClampRetryDelay(delay), cancellationToken).ConfigureAwait(false);
+                await DelayForProviderInstructionAsync(delay, cancellationToken).ConfigureAwait(false);
             }
             catch (SecondaryRateLimitExceededException exception) when (attempt < 3)
             {
-                await Task.Delay(ClampRetryDelay(GetSecondaryRetryAfter(exception) ?? GetSecondaryFallbackDelay(attempt)), cancellationToken).ConfigureAwait(false);
+                await DelayForProviderInstructionAsync(
+                    GetSecondaryRetryAfter(exception) ?? GetSecondaryFallbackDelay(attempt),
+                    cancellationToken).ConfigureAwait(false);
             }
             catch (ApiException exception) when (isIdempotent && ((int)exception.StatusCode == (int)HttpStatusCode.RequestTimeout || (int)exception.StatusCode >= 500) && attempt < 3)
             {
@@ -518,8 +520,24 @@ public sealed class GitHubProvider(
         }
     }
 
-    private static TimeSpan ClampRetryDelay(TimeSpan delay) =>
-        delay <= TimeSpan.Zero ? TimeSpan.Zero : delay > MaxRetryDelay ? MaxRetryDelay : delay;
+    private static async Task DelayForProviderInstructionAsync(TimeSpan delay, CancellationToken cancellationToken)
+    {
+        foreach (var chunk in GetProviderRetryDelayChunks(delay))
+        {
+            await Task.Delay(chunk, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static IEnumerable<TimeSpan> GetProviderRetryDelayChunks(TimeSpan delay)
+    {
+        while (delay > MaxRetryDelay)
+        {
+            yield return MaxRetryDelay;
+            delay -= MaxRetryDelay;
+        }
+
+        yield return delay <= TimeSpan.Zero ? TimeSpan.Zero : delay;
+    }
 
     private static TimeSpan GetTransientRetryDelay(int attempt) =>
         TimeSpan.FromMilliseconds(100 * Math.Pow(2, attempt - 1) + Random.Shared.Next(0, 100));

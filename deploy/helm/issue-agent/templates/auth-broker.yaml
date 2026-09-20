@@ -31,14 +31,16 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/component: auth-broker
-      {{- include "issue-agent.authBrokerSelectorLabels" . | nindent 6 }}
+      # Retain the original chart selector so broker-enabled releases upgrade cleanly.
+      # The component label keeps the broker and IssueAgent Services disjoint.
+      {{- include "issue-agent.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       annotations:
         checksum/secret: {{ $secretChecksum }}
       labels:
         app.kubernetes.io/component: auth-broker
-        {{- include "issue-agent.authBrokerSelectorLabels" . | nindent 8 }}
+        {{- include "issue-agent.selectorLabels" . | nindent 8 }}
     spec:
       automountServiceAccountToken: false
       securityContext:
@@ -121,7 +123,7 @@ spec:
   type: ClusterIP
   selector:
     app.kubernetes.io/component: auth-broker
-    {{- include "issue-agent.authBrokerSelectorLabels" . | nindent 4 }}
+    {{- include "issue-agent.selectorLabels" . | nindent 4 }}
   ports:
     - name: http
       port: 8081

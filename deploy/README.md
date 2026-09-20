@@ -178,10 +178,12 @@ docker run -d --name omp-auth-broker --network issue-agent \
 ```
 
 For the `issue-agent` command above, add `--network issue-agent`,
-`-e IssueAgent__Omp__AuthBrokerUrl=http://omp-auth-broker:8081`, and
+`-e IssueAgent__Omp__AuthBrokerUrl=http://omp-auth-broker:8081`,
+`-e IssueAgent__Omp__ExecutionSecrets__OMP_AUTH_BROKER_TOKEN__File=/run/issue-agent-secrets/omp_auth_broker_token`, and
 `--mount type=bind,src="$PWD/secrets/omp-auth-broker-token",dst=/run/secrets-source/omp_auth_broker_token,readonly`.
-This passes the token only through the existing file-backed execution-secret path. Run the same
-local OAuth login and migration commands described for Compose, using `127.0.0.1:8081`.
+This copies the token into the file-backed execution-secret path, allowing only the explicitly
+configured OMP process to receive it. Run the same local OAuth login and migration commands
+described for Compose, using `127.0.0.1:8081`.
 
 ## Optional integrations
 

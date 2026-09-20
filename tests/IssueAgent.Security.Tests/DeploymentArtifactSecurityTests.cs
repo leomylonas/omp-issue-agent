@@ -85,6 +85,10 @@ public sealed class DeploymentArtifactSecurityTests
         Assert.Contains("docker network create issue-agent", readme, StringComparison.Ordinal);
         Assert.Contains("docker run -d --name omp-auth-broker --network issue-agent", readme, StringComparison.Ordinal);
         Assert.Contains("IssueAgent__Omp__AuthBrokerUrl=http://omp-auth-broker:8081", readme, StringComparison.Ordinal);
+        Assert.Contains(
+            "IssueAgent__Omp__ExecutionSecrets__OMP_AUTH_BROKER_TOKEN__File=/run/issue-agent-secrets/omp_auth_broker_token",
+            readme,
+            StringComparison.Ordinal);
         Assert.Contains("dst=/run/secrets-source/omp_auth_broker_token,readonly", readme, StringComparison.Ordinal);
     }
 
@@ -167,6 +171,7 @@ public sealed class DeploymentArtifactSecurityTests
         Assert.Contains("umask 0077", entrypoint, StringComparison.Ordinal);
         Assert.Contains("if [ \"$(id -u)\" -eq 0 ]; then", entrypoint, StringComparison.Ordinal);
         Assert.Contains("mkdir -p /data/omp/agent", entrypoint, StringComparison.Ordinal);
+        Assert.Contains("chmod 2770 /data /data/omp /data/omp/agent", entrypoint, StringComparison.Ordinal);
         Assert.Contains("--reuid=10001 --regid=10001", entrypoint, StringComparison.Ordinal);
         Assert.True(
             entrypoint.IndexOf("umask 0002", StringComparison.Ordinal)
@@ -175,6 +180,7 @@ public sealed class DeploymentArtifactSecurityTests
             entrypoint.IndexOf("umask 0002", StringComparison.Ordinal)
             < entrypoint.IndexOf("exec /usr/bin/setpriv", StringComparison.Ordinal));
         Assert.Contains("--reuid=10002 --regid=10001", ompWrapper, StringComparison.Ordinal);
+        Assert.Contains("umask 0002", ompWrapper, StringComparison.Ordinal);
         Assert.DoesNotContain("--ambient-caps +setuid,+setgid", ompWrapper, StringComparison.Ordinal);
         Assert.Contains("--ambient-caps -setuid,-setgid", ompWrapper, StringComparison.Ordinal);
     }
@@ -212,7 +218,7 @@ public sealed class DeploymentArtifactSecurityTests
     }
 
     [Fact]
-    public void HelmMainSelectorRemainsUpgradeSafeAndItsWorkspaceRolloutIsPvcSafe()
+    public void HelmSelectorsPreserveTheLegacyBrokerIdentityAndSeparateServices()
     {
         var deployment = ReadRepositoryFile("deploy/helm/issue-agent/templates/deployment.yaml");
         var service = ReadRepositoryFile("deploy/helm/issue-agent/templates/service.yaml");
@@ -221,15 +227,18 @@ public sealed class DeploymentArtifactSecurityTests
 
         var mainSelector = deployment[..deployment.IndexOf("  template:", StringComparison.Ordinal)];
         var brokerSelector = broker[broker.IndexOf("  selector:", StringComparison.Ordinal)..broker.IndexOf("  template:", StringComparison.Ordinal)];
+        var serviceStart = broker.IndexOf("kind: Service", StringComparison.Ordinal);
+        var brokerServiceSelector = broker[
+            broker.IndexOf("  selector:", serviceStart, StringComparison.Ordinal)
+            ..broker.IndexOf("  ports:", serviceStart, StringComparison.Ordinal)];
 
         Assert.DoesNotContain("app.kubernetes.io/component", mainSelector, StringComparison.Ordinal);
-        Assert.Contains("issue-agent.authBrokerSelectorLabels", brokerSelector, StringComparison.Ordinal);
-        Assert.DoesNotContain("issue-agent.selectorLabels", brokerSelector, StringComparison.Ordinal);
-        Assert.Contains(
-            "app.kubernetes.io/name: {{ include \"issue-agent.authBrokerFullname\" . }}",
-            helpers,
-            StringComparison.Ordinal);
+        Assert.Contains("issue-agent.selectorLabels", brokerSelector, StringComparison.Ordinal);
+        Assert.DoesNotContain("issue-agent.authBrokerSelectorLabels", broker, StringComparison.Ordinal);
+        Assert.DoesNotContain("define \"issue-agent.authBrokerSelectorLabels\"", helpers, StringComparison.Ordinal);
         Assert.Contains("app.kubernetes.io/component: auth-broker", brokerSelector, StringComparison.Ordinal);
+        Assert.Contains("issue-agent.selectorLabels", brokerServiceSelector, StringComparison.Ordinal);
+        Assert.Contains("app.kubernetes.io/component: auth-broker", brokerServiceSelector, StringComparison.Ordinal);
         Assert.Contains("type: Recreate", deployment, StringComparison.Ordinal);
         Assert.Contains("app.kubernetes.io/component: issue-agent", deployment, StringComparison.Ordinal);
         Assert.Contains("app.kubernetes.io/component: issue-agent", service, StringComparison.Ordinal);

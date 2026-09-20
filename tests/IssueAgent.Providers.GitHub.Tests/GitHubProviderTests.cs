@@ -1,3 +1,5 @@
+using System.Reflection;
+
 using IssueAgent.Providers;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
@@ -65,6 +67,20 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
         var identity = await fixture.Provider.GetCurrentIdentityAsync(CancellationToken.None);
 
         Assert.Null(identity.Email);
+    }
+
+    [Fact]
+    public void GitHubRestRetryKeepsProviderInstructedDelayBeyondFallbackCap()
+    {
+        var method = typeof(GitHubProvider).GetMethod(
+            "GetProviderRetryDelayChunks",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        var chunks = ((IEnumerable<TimeSpan>)method.Invoke(null, [TimeSpan.FromMinutes(12)])!).ToArray();
+
+        Assert.Equal(
+            [TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(2)],
+            chunks);
     }
     [Fact]
     public async Task DiscoverAssignedOpenIssuesAsyncExcludesPullRequestsAndIssuesBeforeStartDate()
