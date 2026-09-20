@@ -157,6 +157,8 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
     }
 
     public int PublishChangedSubmodulesCallCount { get; private set; }
+    public List<string> PublishedSubmoduleBaseCommits { get; } = [];
+
 
     public ValueTask PublishChangedSubmodulesAsync(
         string repositoryId,
@@ -168,6 +170,7 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
         CancellationToken cancellationToken)
     {
         PublishChangedSubmodulesCallCount++;
+        PublishedSubmoduleBaseCommits.Add(baseCommit);
         return ValueTask.CompletedTask;
     }
 

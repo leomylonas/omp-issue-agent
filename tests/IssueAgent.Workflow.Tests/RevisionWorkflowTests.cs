@@ -238,6 +238,43 @@ public sealed class RevisionWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsyncRemoteRewriteRecoveryRunsFreshRevisionInsteadOfPublishingRetainedResult()
+    {
+        var reviewState = await SeedReviewStateAsync();
+        var canonical = Assert.Single(provider.IssueComments[(Repository.Id, 1)]);
+        var recoveredState = reviewState with
+        {
+            Phase = WorkflowPhase.Revising,
+            OperationalState = WorkflowOperationalState.Waiting,
+            WaitingReason = WaitingReason.RemoteHistoryRewrite,
+        };
+        var recoveredContent = CanonicalCommentMarkdown.Parse(canonical.Body) with
+        {
+            ImplementationResult = "Stale retained revision.",
+            State = CanonicalStateSerializer.ToDocument(recoveredState, "github/octo/widgets#1"),
+        };
+        await provider.UpdateIssueCommentAsync(
+            Repository,
+            1,
+            canonical.Id,
+            CanonicalCommentMarkdown.Render(recoveredContent),
+            CancellationToken.None);
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"summary":"Fresh revision from accepted remote head.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await new RevisionWorkflow(new WorkflowDependencies(
+            provider, git, CreateContextBuilder(), notifier, clock)).RunAsync(
+            CreateConfig(), 1, recoveredState, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
+        Assert.Single(omp.RunRequests);
+        Assert.Contains("Fresh revision from accepted remote head.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
+        Assert.DoesNotContain("Stale retained revision.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RunAsyncRecoveryPausesWhenDurableHandledIdsExcludeExistingFeedback()
     {
         var reviewState = await SeedReviewStateAsync();

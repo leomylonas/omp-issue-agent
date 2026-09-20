@@ -109,7 +109,9 @@ public sealed record WorkflowState(
     IReadOnlySet<string>? ReviewFeedbackIds = null,
     string? PendingBranch = null,
     string? ExpectedImplementationHead = null,
-    ImplementationPublicationStage? PublicationStage = null)
+    ImplementationPublicationStage? PublicationStage = null,
+    string? ImplementationInputDigest = null,
+    string? RebasedPublicationBase = null)
 {
     public void EnsureValid()
     {

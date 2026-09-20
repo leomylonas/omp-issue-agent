@@ -30,6 +30,8 @@ public sealed record CanonicalStateDocument
     public string? PendingBranch { get; init; }
     public string? ExpectedImplementationHead { get; init; }
     public string? PublicationStage { get; init; }
+    public string? ImplementationInputDigest { get; init; }
+    public string? RebasedPublicationBase { get; init; }
     public string? PullOrMergeRequest { get; init; }
     public required DateTimeOffset UpdatedAt { get; init; }
     public DateTimeOffset? ReviewFeedbackCutoff { get; init; }
@@ -90,6 +92,8 @@ public static partial class CanonicalStateSerializer
         BaseCommit = state.BaseCommit,
         ExpectedImplementationHead = state.ExpectedImplementationHead,
         PublicationStage = state.PublicationStage is { } publicationStage ? ToKebabCase(publicationStage.ToString()) : null,
+        ImplementationInputDigest = state.ImplementationInputDigest,
+        RebasedPublicationBase = state.RebasedPublicationBase,
         PullOrMergeRequest = pullOrMergeRequest,
         UpdatedAt = state.UpdatedAt,
         ReviewFeedbackCutoff = state.ReviewFeedbackCutoff,
@@ -136,7 +140,9 @@ public static partial class CanonicalStateSerializer
             document.ReviewFeedbackIds is null ? null : new HashSet<string>(document.ReviewFeedbackIds, StringComparer.Ordinal),
             document.PendingBranch is null ? null : ValidateBranchName(document.PendingBranch, "pendingBranch"),
             document.ExpectedImplementationHead is null ? null : ValidateCommitSha(document.ExpectedImplementationHead),
-            document.PublicationStage is null ? null : ParseEnum<ImplementationPublicationStage>(document.PublicationStage, "publicationStage"));
+            document.PublicationStage is null ? null : ParseEnum<ImplementationPublicationStage>(document.PublicationStage, "publicationStage"),
+            document.ImplementationInputDigest is null ? null : ValidateDigest(document.ImplementationInputDigest, "implementationInputDigest"),
+            document.RebasedPublicationBase is null ? null : ValidateCommitSha(document.RebasedPublicationBase));
     }
 
     [GeneratedRegex(@"^[A-Za-z0-9]([A-Za-z0-9._/-]*[A-Za-z0-9])?$")]
@@ -167,6 +173,16 @@ public static partial class CanonicalStateSerializer
         if (!CommitShaPattern().IsMatch(value))
         {
             throw new CanonicalStateException("Canonical state field 'baseCommit' is not a valid commit SHA.");
+        }
+
+        return value;
+    }
+
+    private static string ValidateDigest(string value, string fieldName)
+    {
+        if (!CommitShaPattern().IsMatch(value) || value.Length != 64)
+        {
+            throw new CanonicalStateException($"Canonical state field '{fieldName}' is not a SHA-256 digest.");
         }
 
         return value;

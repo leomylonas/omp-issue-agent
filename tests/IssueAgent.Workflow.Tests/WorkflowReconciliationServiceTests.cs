@@ -97,6 +97,8 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
         Assert.Equal(ReconciliationDisposition.Waiting, result.Disposition);
         Assert.Equal(WaitingReason.AmbiguousCommand, result.State!.WaitingReason);
         Assert.False(Directory.Exists(WorktreePath(state)));
+        Assert.Contains(WorkflowLabels.WaitingState, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
+        Assert.DoesNotContain(WorkflowLabels.WorkingState, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
     }
 
     [Fact]

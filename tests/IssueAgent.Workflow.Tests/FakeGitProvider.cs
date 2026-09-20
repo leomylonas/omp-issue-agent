@@ -33,6 +33,8 @@ public sealed class FakeGitProvider : IGitProvider
     public string DefaultBranch { get; set; } = "main";
     public ProviderIdentity CurrentIdentity { get; set; } = new("issue-agent", "IssueAgent");
     public int GetCurrentIdentityCallCount { get; private set; }
+    public Func<ProviderMergeRequest, ProviderMergeRequest>? CreatedMergeRequestResponse { get; set; }
+
 
 
     public void AddIssue(RepositoryRef repository, long number, string title, string description, IReadOnlySet<string>? labels = null, DateTimeOffset? updatedAt = null)
@@ -172,7 +174,7 @@ public sealed class FakeGitProvider : IGitProvider
             request.Repository, number, request.SourceBranch, request.TargetBranch, request.Title, request.Body,
             request.IsDraft, IsMerged: false, IsClosed: false, new AttachmentSource("merge-request-description", number.ToString(System.Globalization.CultureInfo.InvariantCulture)));
         MergeRequests[number] = mergeRequest;
-        return ValueTask.FromResult(mergeRequest);
+        return ValueTask.FromResult(CreatedMergeRequestResponse?.Invoke(mergeRequest) ?? mergeRequest);
     }
 
     public ValueTask<ProviderMergeRequest> GetMergeRequestAsync(RepositoryRef repository, long number, CancellationToken cancellationToken) =>

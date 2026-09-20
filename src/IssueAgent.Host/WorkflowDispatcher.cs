@@ -44,8 +44,10 @@ public sealed partial class WorkflowDispatcher(
         ProviderComment? canonical;
         try
         {
+            var canonicalCommentAuthor = await ResolveCanonicalCommentAuthorAsync(
+                provider, effectiveProvider, cancellationToken).ConfigureAwait(false);
             canonical = await CanonicalCommentLocator
-                .FindAsync(provider, repository, issueNumber, cancellationToken, effectiveProvider.Source.IdentityOverride)
+                .FindAsync(provider, repository, issueNumber, cancellationToken, canonicalCommentAuthor)
                 .ConfigureAwait(false);
         }
         catch (CanonicalCommentCorruptException exception)
@@ -441,11 +443,15 @@ public sealed partial class WorkflowDispatcher(
         {
             var durableState = CanonicalStateSerializer.ToWorkflowState(reconciled.Content!.State);
             var routedCommand = WorkflowCommandRouting.ContinueRoute(state, durableState);
-            var preservesRetainedContinuation = state.WaitingReason is
-                WaitingReason.NewInputDuringImplementation or WaitingReason.MaterialPlanDeviation or
-                WaitingReason.NewFeedbackDuringRevision ||
-                HasResultCheckpointedImplementation(state, reconciled.Content!) ||
+            var rebuildRetainedRevisionFromRemoteHead =
+                state.WaitingReason == WaitingReason.RemoteHistoryRewrite &&
                 HasRetainedRevisionCheckpoint(state, reconciled.Content!);
+            var preservesRetainedContinuation = !rebuildRetainedRevisionFromRemoteHead &&
+                (state.WaitingReason is
+                    WaitingReason.NewInputDuringImplementation or WaitingReason.MaterialPlanDeviation or
+                    WaitingReason.NewFeedbackDuringRevision ||
+                 HasResultCheckpointedImplementation(state, reconciled.Content!) ||
+                 HasRetainedRevisionCheckpoint(state, reconciled.Content!));
             if (!preservesRetainedContinuation)
             {
                 await RecoverContinueWorkspaceAsync(
@@ -561,6 +567,9 @@ public sealed partial class WorkflowDispatcher(
         var remoteHead = await dependencies.Git
             .TryResolveRemoteBranchCommitAsync(config.Repository.Id, state.Branch, cancellationToken)
             .ConfigureAwait(false);
+        var mustResetRetainedRevisionToRemoteHead =
+            state.WaitingReason == WaitingReason.RemoteHistoryRewrite &&
+            HasRetainedRevisionCheckpoint(state, content);
         if (!Directory.Exists(worktreePath))
         {
             await dependencies.Git.CreateWorktreeAsync(
@@ -571,16 +580,17 @@ public sealed partial class WorkflowDispatcher(
                 remoteHead ?? state.BaseCommit,
                 cancellationToken).ConfigureAwait(false);
         }
-        else if (!HasResultCheckpointedImplementation(state, content) &&
-                 !HasRetainedRevisionCheckpoint(state, content) &&
-                 state.WaitingReason is not (WaitingReason.NewInputDuringImplementation or
-                     WaitingReason.MaterialPlanDeviation or WaitingReason.NewFeedbackDuringRevision) &&
-                 remoteHead is not null &&
-                 !await dependencies.Git.HasUncommittedChangesAsync(
-                     config.Repository.Id, worktreePath, cancellationToken).ConfigureAwait(false))
+        else if (mustResetRetainedRevisionToRemoteHead ||
+                 (remoteHead is not null &&
+                  !HasResultCheckpointedImplementation(state, content) &&
+                  !HasRetainedRevisionCheckpoint(state, content) &&
+                  state.WaitingReason is not (WaitingReason.NewInputDuringImplementation or
+                      WaitingReason.MaterialPlanDeviation or WaitingReason.NewFeedbackDuringRevision) &&
+                  !await dependencies.Git.HasUncommittedChangesAsync(
+                      config.Repository.Id, worktreePath, cancellationToken).ConfigureAwait(false)))
         {
             await dependencies.Git.ResetWorktreeAsync(
-                config.Repository.Id, worktreePath, remoteHead, cancellationToken).ConfigureAwait(false);
+                config.Repository.Id, worktreePath, remoteHead ?? state.BaseCommit, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -684,7 +694,7 @@ public sealed partial class WorkflowDispatcher(
         CanonicalCommentContent content,
         WorkflowCommand? routedCommand) =>
         routedCommand == WorkflowCommand.Revise &&
-        state.WaitingReason != WaitingReason.NewFeedbackDuringRevision &&
+        state.WaitingReason is not (WaitingReason.NewFeedbackDuringRevision or WaitingReason.RemoteHistoryRewrite) &&
         HasRetainedRevisionCheckpoint(state, content);
 
 
@@ -770,14 +780,14 @@ public sealed partial class WorkflowDispatcher(
             MaxAttachmentSizeBytes = resolved.MaxAttachmentSizeBytes,
             MaxTotalSizeBytes = resolved.MaxTotalAttachmentSizeBytes,
         };
+        var canonicalCommentAuthor = await ResolveCanonicalCommentAuthorAsync(
+            provider, effectiveProvider, cancellationToken).ConfigureAwait(false);
         var contextOptions = new AgentContextBuilderOptions
         {
             IgnoreBotComments = resolved.IgnoreBotComments,
             RelatedIssueTraversalDepth = resolved.RelatedIssueTraversalDepth,
             AttachmentLimits = limits,
-            CanonicalCommentAuthor = string.IsNullOrWhiteSpace(effectiveProvider.Source.IdentityOverride)
-                ? (await provider.GetCurrentIdentityAsync(cancellationToken).ConfigureAwait(false)).Login
-                : effectiveProvider.Source.IdentityOverride.Trim(),
+            CanonicalCommentAuthor = canonicalCommentAuthor,
         };
         var context = new AgentContextBuilder(provider, new AttachmentPipeline(provider, limits), contextOptions);
         var dependencies = new WorkflowDependencies(provider, git, context, notifier, new SystemClock());
@@ -814,10 +824,22 @@ public sealed partial class WorkflowDispatcher(
             resolved.OmpRoles.GetValueOrDefault("revision", "task"),
             resolved.OmpRoles.GetValueOrDefault("conflictResolution", "task"),
             resolved.IgnoreBotComments,
-            effectiveProvider.Source.IdentityOverride);
+            canonicalCommentAuthor);
         var workflowMode = resolved.WorkflowMode == ConfiguredWorkflowMode.PlanOnly ? WorkflowMode.PlanOnly : WorkflowMode.Full;
         return new Runtime(provider, repository, dependencies, config, workflowMode, resolved.OmpTimeout, resolved.OmpExecutionSecrets.Values, new TagList { { LogContextFields.Provider, providerName }, { LogContextFields.Repository, repository.Id } });
     }
+
+    internal static ValueTask<string> ResolveCanonicalCommentAuthorAsync(
+        IGitProvider provider,
+        EffectiveProviderConfiguration configuration,
+        CancellationToken cancellationToken) =>
+        CanonicalCommentLocator.ResolveAuthoritativeIdentityAsync(
+            provider,
+            CanonicalCommentIdentityOverride(configuration),
+            cancellationToken);
+
+    internal static string? CanonicalCommentIdentityOverride(EffectiveProviderConfiguration configuration) =>
+        configuration.ApiToken is { Length: > 0 } ? null : configuration.Source.IdentityOverride;
 
     private IOmpClient StartOmp(Runtime runtime, long issueNumber, string workingDirectory)
     {

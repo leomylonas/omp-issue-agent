@@ -373,6 +373,8 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         {
             ExpectedImplementationHead = headCommit,
             PublicationStage = ImplementationPublicationStage.ResultCheckpointed,
+            ImplementationInputDigest = inputSnapshot.Digest,
+            RebasedPublicationBase = latestTargetCommit,
         };
         var checkpointContent = workingContent with
         {
@@ -455,7 +457,9 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         CancellationToken cancellationToken)
     {
         if (existingContent.ImplementationResult is not { Length: > 0 } implementationResult ||
-            currentState.ExpectedImplementationHead is not { Length: > 0 } expectedHead)
+            currentState.ExpectedImplementationHead is not { Length: > 0 } expectedHead ||
+            currentState.ImplementationInputDigest is not { Length: > 0 } implementationInputDigest ||
+            currentState.RebasedPublicationBase is not { Length: > 0 } rebasedPublicationBase)
         {
             return await PauseAsync(
                 config,
@@ -484,6 +488,20 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                 cancellationToken).ConfigureAwait(false);
         }
 
+        var recoveryInput = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(recoveryInput.Digest, implementationInputDigest, StringComparison.Ordinal))
+        {
+            return await PauseAsync(
+                config,
+                issueNumber,
+                currentState,
+                existingContent,
+                implementationResult,
+                WaitingReason.NewInputDuringImplementation,
+                "New or edited human input arrived since the implementation result was checkpointed. The current worktree was retained; choose continue, replan, or cancel.",
+                cancellationToken).ConfigureAwait(false);
+        }
+
         await deps.Git.FetchAsync(config.Repository.Id, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
         var remoteHead = await deps.Git
             .TryResolveRemoteBranchCommitAsync(config.Repository.Id, currentState.Branch, cancellationToken)
@@ -509,7 +527,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             await deps.Git.PublishChangedSubmodulesAsync(
                 config.Repository.Id,
                 worktreePath,
-                currentState.BaseCommit,
+                rebasedPublicationBase,
                 currentState.Branch,
                 config.GitAuthentication,
                 config.SubmoduleAuthenticationResolver ?? (_ => null),
@@ -689,6 +707,12 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         var existing = await deps.Provider.FindMergeRequestAsync(config.Repository, state.Branch, state.TargetBranch, cancellationToken).ConfigureAwait(false);
         if (existing is not null)
         {
+            if (!HasWorkflowMarker(existing, state))
+            {
+                throw new WorkflowContractException(
+                    "An existing merge request for this branch is not marked as belonging to this workflow.");
+            }
+
             return existing;
         }
 
@@ -704,10 +728,22 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
 
             {implementationResult.Trim()}{closingReference}
             """.Trim();
-        return await deps.Provider.CreateDraftMergeRequestAsync(
+        var created = await deps.Provider.CreateDraftMergeRequestAsync(
             new CreateMergeRequestRequest(config.Repository, state.Branch, state.TargetBranch, issue.Title, body, IsDraft: true, issueNumber),
             cancellationToken).ConfigureAwait(false);
+        var adopted = await deps.Provider.FindMergeRequestAsync(
+            config.Repository, state.Branch, state.TargetBranch, cancellationToken).ConfigureAwait(false);
+        if (adopted is null || !HasWorkflowMarker(adopted, state))
+        {
+            throw new WorkflowContractException(
+                $"Provider did not return the newly-created merge request #{created.Number} with this workflow's marker.");
+        }
+
+        return adopted;
     }
+
+    private static bool HasWorkflowMarker(ProviderMergeRequest mergeRequest, WorkflowState state) =>
+        mergeRequest.Description.Contains($"<!-- issue-agent:workflow:{state.WorkflowId} -->", StringComparison.Ordinal);
 
     /// <summary>The plan is stale when the issue's title/description content no longer matches
     /// what the currently published plan was written against. A missing hash is also stale rather
@@ -846,7 +882,11 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         }
     }
 
-    private sealed record InputSnapshot(string Title, string Description, string CommentsDigest);
+    private sealed record InputSnapshot(string Title, string Description, string CommentsDigest)
+    {
+        public string Digest => Convert.ToHexStringLower(
+            SHA256.HashData(Encoding.UTF8.GetBytes($"{Title}\0{Description}\0{CommentsDigest}")));
+    }
 
     private async Task<InputSnapshot> CaptureInputSnapshotAsync(
         WorkflowRepositoryConfig config,

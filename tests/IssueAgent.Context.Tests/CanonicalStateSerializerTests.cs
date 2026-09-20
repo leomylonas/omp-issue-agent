@@ -20,7 +20,11 @@ public sealed class CanonicalStateSerializerTests
     [Fact]
     public void RoundTripThroughYamlPreservesWorkflowState()
     {
-        var state = CreateState(WorkflowPhase.Review, WorkflowOperationalState.Waiting, WaitingReason.NewInputDuringImplementation);
+        var state = CreateState(WorkflowPhase.Review, WorkflowOperationalState.Waiting, WaitingReason.NewInputDuringImplementation) with
+        {
+            ImplementationInputDigest = "8911d6f83c8e5f8d14797f364ea3754e8404b3fc176122c94efcbe85613015c8",
+            RebasedPublicationBase = "feedface",
+        };
         var document = CanonicalStateSerializer.ToDocument(state, null);
 
         var yaml = CanonicalStateSerializer.Serialize(document);

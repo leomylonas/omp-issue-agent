@@ -1,4 +1,6 @@
 using IssueAgent.Context;
+using IssueAgent.Configuration;
+
 using IssueAgent.Domain;
 using IssueAgent.Git;
 using IssueAgent.Providers;
@@ -49,6 +51,42 @@ public sealed class WorkflowCommandRoutingTests
         Assert.True(result.IsAmbiguous);
         Assert.Null(result.Command);
         Assert.Equal(WorkflowCommandSource.None, result.Sources);
+    }
+
+    [Fact]
+    public void CanonicalCommentIdentityOverrideIsIgnoredWhenProviderCredentialsExist()
+    {
+        var configuration = new EffectiveProviderConfiguration(
+            new ProviderOptions
+            {
+                Name = "github",
+                Kind = ProviderKind.GitHub,
+                BaseUri = new Uri("https://api.github.com/"),
+                IdentityOverride = "anonymous-discovery-identity",
+            },
+            "github",
+            "credential",
+            []);
+
+        Assert.Null(WorkflowDispatcher.CanonicalCommentIdentityOverride(configuration));
+    }
+
+    [Fact]
+    public void CanonicalCommentIdentityOverrideIsUsedWithoutProviderCredentials()
+    {
+        var configuration = new EffectiveProviderConfiguration(
+            new ProviderOptions
+            {
+                Name = "github",
+                Kind = ProviderKind.GitHub,
+                BaseUri = new Uri("https://api.github.com/"),
+                IdentityOverride = "anonymous-discovery-identity",
+            },
+            "github",
+            null,
+            []);
+
+        Assert.Equal("anonymous-discovery-identity", WorkflowDispatcher.CanonicalCommentIdentityOverride(configuration));
     }
 
     [Fact]
@@ -199,6 +237,41 @@ public sealed class WorkflowCommandRoutingTests
                 Dependencies(git), Config(root), state, Content(state), CancellationToken.None);
 
             Assert.Empty(git.ResetWorktrees);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RevisionRewriteRecoveryDiscardsRetainedResultAndResetsToAcceptedRemoteHead()
+    {
+        var state = ReviewState() with
+        {
+            Phase = WorkflowPhase.Revising,
+            WaitingReason = WaitingReason.RemoteHistoryRewrite,
+        };
+        var content = Content(state, implementationResult: "Stale revision result.");
+        var root = Path.Combine(Path.GetTempPath(), $"issue-agent-{Guid.NewGuid():N}");
+        var worktreePath = Path.Combine(root, state.WorkflowId.ToString(), "worktree");
+        Directory.CreateDirectory(worktreePath);
+        try
+        {
+            var git = new ContinueRecoveryGit { RemoteHead = "accepted-remote-head" };
+
+            await WorkflowDispatcher.RecoverContinueWorkspaceAsync(
+                Dependencies(git),
+                Config(root),
+                state,
+                content,
+                CancellationToken.None);
+
+            Assert.Equal([("repo", worktreePath, "accepted-remote-head")], git.ResetWorktrees);
+            Assert.False(WorkflowDispatcher.ShouldPublishRetainedRevision(
+                state,
+                content,
+                WorkflowCommand.Revise));
         }
         finally
         {

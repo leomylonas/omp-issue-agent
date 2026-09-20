@@ -314,16 +314,23 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
     {
         var workItem = new ProviderWorkItemReference(config.Repository, ProviderWorkItemKind.Issue, issueNumber);
         var labels = await dependencies.Provider.GetLabelsAsync(workItem, cancellationToken).ConfigureAwait(false);
-        if (labels.Contains(WorkflowLabels.WaitingState))
+        var snapshot = LabelProtocol.Analyze(labels);
+        var commandOnlyAmbiguity = snapshot.Ambiguity == LabelAmbiguity.MultipleCommandLabels &&
+            !snapshot.IsPhaseStateAmbiguous;
+        if (!labels.Contains(WorkflowLabels.WaitingState))
         {
-            return;
+            await dependencies.Provider.EnsureLabelAsync(
+                config.Repository,
+                LabelCatalog.All.First(label => label.Name == WorkflowLabels.WaitingState),
+                cancellationToken).ConfigureAwait(false);
+            await dependencies.Provider.AddLabelsAsync(workItem, [WorkflowLabels.WaitingState], cancellationToken).ConfigureAwait(false);
         }
 
-        await dependencies.Provider.EnsureLabelAsync(
-            config.Repository,
-            LabelCatalog.All.First(label => label.Name == WorkflowLabels.WaitingState),
-            cancellationToken).ConfigureAwait(false);
-        await dependencies.Provider.AddLabelsAsync(workItem, [WorkflowLabels.WaitingState], cancellationToken).ConfigureAwait(false);
+        if (commandOnlyAmbiguity && labels.Contains(WorkflowLabels.WorkingState))
+        {
+            await dependencies.Provider.RemoveLabelAsync(workItem, WorkflowLabels.WorkingState, cancellationToken).ConfigureAwait(false);
+        }
+
     }
 
     private async Task EscalateCorruptionAsync(
