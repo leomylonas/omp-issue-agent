@@ -125,10 +125,23 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ReviewWithoutFeedbackCheckpointPausesRatherThanGuessingWhichFeedbackWasProcessed()
+    {
+        var (_, canonical) = SeedWorkflow(WorkflowPhase.Review, WorkflowOperationalState.Waiting, WaitingReason.ReviewRequested);
+
+        var result = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
+
+        Assert.Equal(ReconciliationDisposition.Waiting, result.Disposition);
+        Assert.Equal(WaitingReason.CorruptState, result.State!.WaitingReason);
+        Assert.Contains("feedback checkpoint", result.Explanation, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task AmbiguousLabelsPauseWithoutDeletingRetainedState()
     {
         var (state, canonical) = SeedWorkflow(WorkflowPhase.Planned, WorkflowOperationalState.Waiting, WaitingReason.PlanApproval);
         provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)].Add(WorkflowLabels.ReviewPhase);
+        provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)].Add(WorkflowLabels.WorkingState);
 
         var result = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
 
@@ -138,6 +151,8 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
         Assert.Single(provider.UpdatedComments);
         Assert.Contains(WorkflowLabels.PlannedPhase, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
         Assert.Contains(WorkflowLabels.ReviewPhase, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
+        Assert.Contains(WorkflowLabels.WaitingState, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
+        Assert.Contains(WorkflowLabels.WorkingState, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
         Assert.Single(notifier.Notifications);
     }
 

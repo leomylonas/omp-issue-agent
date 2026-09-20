@@ -149,6 +149,35 @@ public static class LabelProtocol
         return (toAdd, toRemove);
     }
 
+    /// <summary>Computes the terminal-label transition. Terminal workflows retain their durable
+    /// phase but have no operational state label because they are no longer actively managed.</summary>
+    public static (IReadOnlyList<string> ToAdd, IReadOnlyList<string> ToRemove) ComputeTerminalTransition(
+        IReadOnlyCollection<string> currentLabels,
+        WorkflowPhase targetPhase,
+        IReadOnlyCollection<WorkflowCommand> commandsToConsume)
+    {
+        ArgumentNullException.ThrowIfNull(currentLabels);
+        ArgumentNullException.ThrowIfNull(commandsToConsume);
+
+        var (adds, removes) = ComputeTransition(
+            currentLabels,
+            targetPhase,
+            WorkflowOperationalState.Waiting,
+            commandsToConsume);
+        var toAdd = adds.ToList();
+        var toRemove = removes.ToList();
+        toAdd.RemoveAll(label => TryParseState(label, out _));
+        foreach (var label in currentLabels)
+        {
+            if (TryParseState(label, out _) && !toRemove.Contains(label))
+            {
+                toRemove.Add(label);
+            }
+        }
+
+        return (toAdd, toRemove);
+    }
+
     private static string CommandLabel(WorkflowCommand command) => command switch
     {
         WorkflowCommand.Replan => WorkflowCommandLabels.Replan,

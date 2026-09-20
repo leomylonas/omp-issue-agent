@@ -35,6 +35,8 @@ public sealed class CancellationWorkflowTests : IDisposable
         Assert.False(Directory.Exists(Path.Combine(workspaceRoot, state.WorkflowId.ToString())));
         Assert.Contains(provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)], l => l == "agent:phase:cancelled");
         Assert.DoesNotContain("agent:cmd:cancel", provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
+        Assert.DoesNotContain(WorkflowLabels.WorkingState, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
+        Assert.DoesNotContain(WorkflowLabels.WaitingState, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
         Assert.Equal(WorkflowNotificationKind.Cancelled, Assert.Single(notifier.Notifications).Kind);
         var persisted = CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body);
         Assert.Equal("cancelled", persisted.State.Phase);
@@ -64,6 +66,8 @@ public sealed class CancellationWorkflowTests : IDisposable
         Assert.Equal(WorkflowPhase.Done, outcome.State.Phase);
         Assert.False(Directory.Exists(worktreePath));
         Assert.Contains(provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)], l => l == "agent:phase:done");
+        Assert.DoesNotContain(WorkflowLabels.WorkingState, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
+        Assert.DoesNotContain(WorkflowLabels.WaitingState, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
         var persisted = CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body);
         Assert.Equal("done", persisted.State.Phase);
     }
@@ -80,6 +84,8 @@ public sealed class CancellationWorkflowTests : IDisposable
 
         Assert.Equal(WorkflowPhase.Cancelled, outcome.State.Phase);
         Assert.False(Directory.Exists(worktreePath));
+        Assert.DoesNotContain(WorkflowLabels.WorkingState, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
+        Assert.DoesNotContain(WorkflowLabels.WaitingState, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
         var persisted = CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body);
         Assert.Equal("cancelled", persisted.State.Phase);
     }

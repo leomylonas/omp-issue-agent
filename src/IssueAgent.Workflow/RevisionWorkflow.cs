@@ -36,6 +36,16 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 config, issueNumber, workingState, "Cannot revise: no canonical comment was found for this issue.", cancellationToken).ConfigureAwait(false);
         }
         var existingContent = CanonicalCommentMarkdown.Parse(canonicalComment.Body);
+        if (existingContent.State.ReviewFeedbackCutoff is null)
+        {
+            return await EscalateAsync(
+                config,
+                issueNumber,
+                currentState,
+                existingContent,
+                "Cannot revise: the review-feedback checkpoint is missing, so IssueAgent cannot determine which feedback this revision must address.",
+                cancellationToken).ConfigureAwait(false);
+        }
         var retainedResult = currentState.Phase == WorkflowPhase.Revising
             ? existingContent.ImplementationResult
             : null;
@@ -73,7 +83,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             .BuildAsync(config.Repository, issueNumber, workingState, currentPlan, mergeRequest, attachmentsPath, cancellationToken)
             .ConfigureAwait(false);
 
-        var reviewFeedbackCutoff = existingContent.State.ReviewFeedbackCutoff ?? existingContent.State.UpdatedAt;
+        var reviewFeedbackCutoff = existingContent.State.ReviewFeedbackCutoff.Value;
         var feedback = context.PullOrMergeRequest is { } mrContext
             ? mrContext.Comments.Concat(mrContext.ReviewThreads).Where(c => c.CreatedAt > reviewFeedbackCutoff).ToList()
             : [];
@@ -283,7 +293,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         string implementationResult,
         string message,
         CancellationToken cancellationToken,
-        WaitingReason reason = WaitingReason.ManualIntervention)
+        WaitingReason reason = WaitingReason.NewFeedbackDuringRevision)
     {
         var pausedState = workingState with
         {
@@ -410,6 +420,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         IReadOnlyCollection<WorkflowCommand> commandsToConsume, CancellationToken cancellationToken)
     {
         var workItem = new ProviderWorkItemReference(config.Repository, ProviderWorkItemKind.Issue, issueNumber);
+        await LabelCatalog.EnsureAllAsync(deps.Provider, config.Repository, cancellationToken).ConfigureAwait(false);
         var currentLabels = await deps.Provider.GetLabelsAsync(workItem, cancellationToken).ConfigureAwait(false);
         var (toAdd, toRemove) = LabelProtocol.ComputeTransition(currentLabels, phase, operationalState, commandsToConsume);
 

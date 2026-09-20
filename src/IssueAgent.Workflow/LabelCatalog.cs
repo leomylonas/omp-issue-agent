@@ -8,6 +8,20 @@ namespace IssueAgent.Workflow;
 public static class LabelCatalog
 {
     public static IReadOnlyList<ProviderLabel> All { get; } = BuildAll();
+    /// <summary>Creates every managed repository label without changing any existing metadata.</summary>
+    public static async Task EnsureAllAsync(
+        IGitProvider provider,
+        RepositoryRef repository,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+
+        foreach (var label in All)
+        {
+            await provider.EnsureLabelAsync(repository, label, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
 
     private static List<ProviderLabel> BuildAll()
     {

@@ -127,6 +127,54 @@ public sealed class RevisionWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsyncKeepsRevisionCheckpointAndUsesDistinctReasonWhenNewFeedbackArrives()
+    {
+        var state = await SeedReviewStateAsync();
+        var omp = new FakeOmpClient();
+        omp.EnqueueRun(
+            onStart: () => provider.MergeRequestComments[(Repository.Id, 1)] =
+            [
+                new ProviderComment(9, "bob", "Please account for this new feedback.", clock.UtcNow.AddMinutes(1), clock.UtcNow.AddMinutes(1),
+                    new AttachmentSource("merge-request-comment", "9"), false),
+            ],
+            new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"summary":"Revision.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowPhase.Revising, outcome.State.Phase);
+        Assert.Equal(WaitingReason.NewFeedbackDuringRevision, outcome.State.WaitingReason);
+        Assert.Contains("Revision.", CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body).ImplementationResult, StringComparison.Ordinal);
+        Assert.Equal(0, git.PushCallCount);
+    }
+
+    [Fact]
+    public async Task RunAsyncFailsClosedWhenReviewFeedbackCheckpointIsMissing()
+    {
+        var state = await SeedReviewStateAsync();
+        var canonical = Assert.Single(provider.IssueComments[(Repository.Id, 1)]);
+        var content = CanonicalCommentMarkdown.Parse(canonical.Body);
+        await provider.UpdateIssueCommentAsync(
+            Repository,
+            1,
+            canonical.Id,
+            CanonicalCommentMarkdown.Render(content with { State = content.State with { ReviewFeedbackCutoff = null } }),
+            CancellationToken.None);
+        var omp = new FakeOmpClient();
+
+        var outcome = await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WaitingReason.CorruptState, outcome.State.WaitingReason);
+        Assert.Empty(omp.RunRequests);
+        Assert.Contains("feedback checkpoint", Assert.Single(notifier.Notifications).Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RunAsyncContinueAfterMaterialDeviationPublishesRetainedRevisionWithoutRerunningOmp()
     {
         var state = await SeedReviewStateAsync();

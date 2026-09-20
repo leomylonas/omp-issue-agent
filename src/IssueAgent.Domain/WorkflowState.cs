@@ -35,6 +35,7 @@ public enum WaitingReason
     ReplanRequired,
     MaterialPlanDeviation,
     NewInputDuringImplementation,
+    NewFeedbackDuringRevision,
     AmbiguousCommand,
     CorruptState,
     Conflict,

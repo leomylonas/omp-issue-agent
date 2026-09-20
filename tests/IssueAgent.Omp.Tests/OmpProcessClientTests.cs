@@ -18,14 +18,13 @@ public sealed class OmpProcessClientTests
     }
 
     [Fact]
-    public async Task CreateSessionAsyncRejectsUnsupportedSemanticRole()
+    public async Task CreateSessionAsyncPreservesSemanticRoleWithoutModelSelectionRpc()
     {
         await using var client = StartClient();
 
-        var exception = await Assert.ThrowsAsync<OmpRpcException>(
-            () => client.CreateSessionAsync("repository-planner", CancellationToken.None).AsTask());
+        var session = await client.CreateSessionAsync("repository-planner", CancellationToken.None);
 
-        Assert.Contains("provider/modelId", exception.Message, StringComparison.Ordinal);
+        Assert.Equal("repository-planner", session.Role);
     }
 
     [Fact]
@@ -66,11 +65,33 @@ public sealed class OmpProcessClientTests
     }
 
     [Fact]
-    public void ModelSelectorAllowsSlashesInTheModelId()
+    public async Task FactoryResolvesSemanticRolesAtStartup()
     {
-        Assert.True(OmpModel.TryParse("openrouter/anthropic/claude-sonnet-5", out var model));
-        Assert.Equal("openrouter", model.Provider);
-        Assert.Equal("anthropic/claude-sonnet-5", model.ModelId);
+        var argumentLog = Path.Combine(Path.GetTempPath(), $"issue-agent-omp-args-{Guid.NewGuid():N}.log");
+        try
+        {
+            var environment = new Dictionary<string, string>
+            {
+                ["OMP_ARGUMENT_LOG"] = argumentLog,
+            };
+            await using var client = OmpProcessClientFactory.Start(
+                "python3",
+                [ScriptPath, "--mode", "rpc", "--session-dir", Path.GetTempPath()],
+                AppContext.BaseDirectory,
+                environment);
+
+            var session = await client.CreateSessionAsync("plan", CancellationToken.None);
+            await client.SelectRoleAsync("task", CancellationToken.None);
+
+            Assert.Equal("fake-session-1", session.SessionId);
+            var startups = await File.ReadAllLinesAsync(argumentLog, TestContext.Current.CancellationToken);
+            Assert.Contains(startups, startup => startup.Contains("--model plan", StringComparison.Ordinal));
+            Assert.Contains(startups, startup => startup.Contains("--model task", StringComparison.Ordinal));
+        }
+        finally
+        {
+            File.Delete(argumentLog);
+        }
     }
 
     [Fact]

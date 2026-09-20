@@ -38,7 +38,7 @@ public sealed class CancellationWorkflow(WorkflowDependencies deps)
         };
 
         await PersistTerminalStateAsync(config, issueNumber, existingContent, cancelledState, cancellationToken).ConfigureAwait(false);
-        await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Cancelled, WorkflowOperationalState.Waiting, [WorkflowCommand.Cancel], cancellationToken)
+        await TransitionTerminalLabelsAsync(config, issueNumber, WorkflowPhase.Cancelled, [WorkflowCommand.Cancel], cancellationToken)
             .ConfigureAwait(false);
 
         await CleanupLocalStateAsync(config, currentState, cancellationToken).ConfigureAwait(false);
@@ -61,7 +61,7 @@ public sealed class CancellationWorkflow(WorkflowDependencies deps)
 
         var doneState = currentState with { Phase = WorkflowPhase.Done, OperationalState = WorkflowOperationalState.Waiting, WaitingReason = WaitingReason.ManualIntervention, UpdatedAt = deps.Clock.UtcNow };
         await PersistTerminalStateAsync(config, issueNumber, existingContent, doneState, cancellationToken).ConfigureAwait(false);
-        await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Done, WorkflowOperationalState.Waiting, [], cancellationToken).ConfigureAwait(false);
+        await TransitionTerminalLabelsAsync(config, issueNumber, WorkflowPhase.Done, [], cancellationToken).ConfigureAwait(false);
         await CleanupLocalStateAsync(config, currentState, cancellationToken).ConfigureAwait(false);
         return new WorkflowOutcome(WorkflowOutcomeStatus.Progressed, doneState, "Merged; workflow complete.");
     }
@@ -74,7 +74,7 @@ public sealed class CancellationWorkflow(WorkflowDependencies deps)
 
         var cancelledState = currentState with { Phase = WorkflowPhase.Cancelled, OperationalState = WorkflowOperationalState.Waiting, WaitingReason = WaitingReason.ManualIntervention, UpdatedAt = deps.Clock.UtcNow };
         await PersistTerminalStateAsync(config, issueNumber, existingContent, cancelledState, cancellationToken).ConfigureAwait(false);
-        await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Cancelled, WorkflowOperationalState.Waiting, [], cancellationToken).ConfigureAwait(false);
+        await TransitionTerminalLabelsAsync(config, issueNumber, WorkflowPhase.Cancelled, [], cancellationToken).ConfigureAwait(false);
         await CleanupLocalStateAsync(config, currentState, cancellationToken).ConfigureAwait(false);
         return new WorkflowOutcome(WorkflowOutcomeStatus.Progressed, cancelledState, "Closed without merge; workflow cancelled.");
     }
@@ -113,18 +113,17 @@ public sealed class CancellationWorkflow(WorkflowDependencies deps)
         if (Directory.Exists(workflowPath)) Directory.Delete(workflowPath, recursive: true);
     }
 
-    private async Task TransitionLabelsAsync(
-        WorkflowRepositoryConfig config, long issueNumber, WorkflowPhase phase, WorkflowOperationalState operationalState,
-        IReadOnlyCollection<WorkflowCommand> commandsToConsume, CancellationToken cancellationToken)
+    private async Task TransitionTerminalLabelsAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowPhase phase,
+        IReadOnlyCollection<WorkflowCommand> commandsToConsume,
+        CancellationToken cancellationToken)
     {
         var workItem = new ProviderWorkItemReference(config.Repository, ProviderWorkItemKind.Issue, issueNumber);
+        await LabelCatalog.EnsureAllAsync(deps.Provider, config.Repository, cancellationToken).ConfigureAwait(false);
         var currentLabels = await deps.Provider.GetLabelsAsync(workItem, cancellationToken).ConfigureAwait(false);
-        var (toAdd, toRemove) = LabelProtocol.ComputeTransition(currentLabels, phase, operationalState, commandsToConsume);
-
-        foreach (var label in toAdd)
-        {
-            await deps.Provider.EnsureLabelAsync(config.Repository, LabelCatalog.All.First(l => l.Name == label), cancellationToken).ConfigureAwait(false);
-        }
+        var (toAdd, toRemove) = LabelProtocol.ComputeTerminalTransition(currentLabels, phase, commandsToConsume);
 
         if (toAdd.Count > 0)
         {

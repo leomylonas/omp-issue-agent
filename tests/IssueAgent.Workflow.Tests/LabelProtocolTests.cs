@@ -96,4 +96,30 @@ public sealed class LabelProtocolTests
         Assert.Empty(toAdd);
         Assert.Empty(toRemove);
     }
+
+    [Fact]
+    public void ComputeTerminalTransitionRemovesOperationalLabelsAndConsumesCommand()
+    {
+        var current = new[] { "agent:phase:implementing", "agent:state:working", "agent:cmd:cancel", "bug" };
+
+        var (toAdd, toRemove) = LabelProtocol.ComputeTerminalTransition(
+            current,
+            WorkflowPhase.Cancelled,
+            [WorkflowCommand.Cancel]);
+
+        Assert.Equal(["agent:phase:cancelled"], toAdd);
+        Assert.Equal(["agent:phase:implementing", "agent:state:working", "agent:cmd:cancel"], toRemove);
+    }
+
+    [Fact]
+    public void LabelCatalogIncludesEveryHumanCommand()
+    {
+        var labels = LabelCatalog.All.Select(label => label.Name);
+
+        Assert.Contains(WorkflowCommandLabels.Replan, labels);
+        Assert.Contains(WorkflowCommandLabels.Implement, labels);
+        Assert.Contains(WorkflowCommandLabels.Revise, labels);
+        Assert.Contains(WorkflowCommandLabels.Continue, labels);
+        Assert.Contains(WorkflowCommandLabels.Cancel, labels);
+    }
 }

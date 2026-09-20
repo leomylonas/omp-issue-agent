@@ -147,6 +147,8 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
             remoteHead,
             worktreeDirty,
             PlanInputHashPresent: content.State.PlanInputHash is { Length: > 0 },
+            ReviewFeedbackProvenancePresent: state.Phase is not (WorkflowPhase.Review or WorkflowPhase.Revising) ||
+                content.State.ReviewFeedbackCutoff is not null,
             LocalHeadIsAncestorOfRemote: localHeadIsAncestorOfRemote));
 
         if (decision.Action == ReconciliationAction.WaitForHuman)
@@ -312,6 +314,7 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
         CancellationToken cancellationToken)
     {
         var workItem = new ProviderWorkItemReference(config.Repository, ProviderWorkItemKind.Issue, issueNumber);
+        await LabelCatalog.EnsureAllAsync(dependencies.Provider, config.Repository, cancellationToken).ConfigureAwait(false);
         var currentLabels = await dependencies.Provider.GetLabelsAsync(workItem, cancellationToken).ConfigureAwait(false);
         var (toAdd, toRemove) = LabelProtocol.ComputeTransition(
             currentLabels,

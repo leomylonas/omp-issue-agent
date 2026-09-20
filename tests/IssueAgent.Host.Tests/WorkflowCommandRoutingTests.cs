@@ -73,6 +73,17 @@ public sealed class WorkflowCommandRoutingTests
     }
 
     [Fact]
+    public void ContinueRouteRepublishesRevisionCheckpointAfterNewFeedbackGate()
+    {
+        var pausedRevision = CreateState(WorkflowPhase.Revising, WorkflowOperationalState.Waiting) with
+        {
+            WaitingReason = WaitingReason.NewFeedbackDuringRevision,
+        };
+
+        Assert.Equal(WorkflowCommand.Revise, WorkflowCommandRouting.ContinueRoute(pausedRevision, pausedRevision));
+    }
+
+    [Fact]
     public void ContinueRouteDoesNotGuessFailedOperationWithoutProvenance()
     {
         var failed = CreateState(WorkflowPhase.Failed, WorkflowOperationalState.Waiting);

@@ -11,8 +11,13 @@ public static class OmpProcessClientFactory
         TimeSpan? shutdownGracePeriod = null)
     {
         var sessionDirectory = FindSessionDirectory(arguments);
-        var transport = NdjsonRpcTransport.Start(executablePath, arguments, workingDirectory, allowedEnvironment);
-        return new OmpProcessClient(transport, shutdownGracePeriod ?? TimeSpan.FromSeconds(15), sessionDirectory);
+        return new OmpRoleProcessClient(
+            executablePath,
+            arguments,
+            workingDirectory,
+            allowedEnvironment,
+            shutdownGracePeriod ?? TimeSpan.FromSeconds(15),
+            sessionDirectory);
     }
 
     private static string FindSessionDirectory(IReadOnlyList<string> arguments)

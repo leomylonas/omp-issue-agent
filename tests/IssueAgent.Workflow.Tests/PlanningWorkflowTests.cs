@@ -43,6 +43,11 @@ public sealed class PlanningWorkflowTests : IDisposable
         Assert.Contains("agent:phase:planned", provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
         Assert.Contains("agent:state:waiting", provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
         Assert.DoesNotContain("agent:phase:planning", provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
+        Assert.Contains(WorkflowCommandLabels.Replan, provider.CreatedLabels);
+        Assert.Contains(WorkflowCommandLabels.Implement, provider.CreatedLabels);
+        Assert.Contains(WorkflowCommandLabels.Revise, provider.CreatedLabels);
+        Assert.Contains(WorkflowCommandLabels.Continue, provider.CreatedLabels);
+        Assert.Contains(WorkflowCommandLabels.Cancel, provider.CreatedLabels);
 
         var notification = Assert.Single(notifier.Notifications);
         Assert.Equal(WorkflowNotificationKind.PlanReady, notification.Kind);

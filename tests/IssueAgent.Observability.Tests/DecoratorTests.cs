@@ -200,6 +200,7 @@ public sealed class ObservableOmpClientTests
 
         Assert.Contains(logger.Messages, message => message.Contains("full prompt payload", StringComparison.Ordinal));
         Assert.Contains(logger.Messages, message => message.Contains("\"Text\":\"working\"", StringComparison.Ordinal));
+        Assert.Contains(logger.Messages, message => message.Contains("\"Type\":\"message\",\"Text\":\"working\"", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -209,13 +210,13 @@ public sealed class ObservableOmpClientTests
         using var metrics = new IssueAgentMetrics();
         var logger = new RecordingLogger<ObservableOmpClient>();
         var decorated = new ObservableOmpClient(
-            new FakeOmpClient { ToolResult = $"{{\"token\":\"{secret}\"}}" },
+            new FakeOmpClient { ToolResult = "{\"token\":\"\\u0065xecution-secret-value\"}" },
             metrics,
             logger);
         var request = new OmpRunRequest(
             "session-1",
             "/tmp",
-            "prompt",
+            $"prompt {secret}",
             new Dictionary<string, string> { ["EXECUTION_TOKEN"] = secret });
 
         await foreach (var _ in decorated.RunAsync(request, CancellationToken.None))
@@ -225,6 +226,7 @@ public sealed class ObservableOmpClientTests
         var logs = string.Join(Environment.NewLine, logger.Messages);
         Assert.DoesNotContain(secret, logs, StringComparison.Ordinal);
         Assert.Contains("[REDACTED]", logs, StringComparison.Ordinal);
+        Assert.DoesNotContain("\\u0065xecution-secret-value", logs, StringComparison.Ordinal);
     }
 
     [Fact]

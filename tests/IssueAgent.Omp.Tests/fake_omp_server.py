@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Scripted OMP typed-RPC server used to test NDJSON framing and session events."""
 import json
+import os
 import sys
 
 
@@ -28,6 +29,10 @@ def main():
         "maxFrameBytes": 1048576,
         "maxReassembledFrameBytes": 67108864,
     })
+    argument_log = os.environ.get("OMP_ARGUMENT_LOG")
+    if argument_log:
+        with open(argument_log, "a", encoding="utf-8") as log:
+            log.write(" ".join(sys.argv[1:]) + "\n")
     session_id = "fake-session-1"
     session_file = "/tmp/fake-session-1.jsonl"
     hang_abort = False
@@ -45,7 +50,11 @@ def main():
             response(request_id, command, {"provider": request.get("provider"), "id": request.get("modelId")})
         elif command == "switch_session":
             session_file = request.get("sessionPath", session_file)
-            session_id = "mismatched-session" if "mismatch" in session_file else "existing-session"
+            session_id = (
+                "mismatched-session" if "mismatch" in session_file
+                else "fake-session-1" if "fake-session-1" in session_file
+                else "existing-session"
+            )
             response(request_id, command, {"cancelled": False})
         elif command == "get_state":
             response(request_id, command, {"sessionId": session_id, "sessionFile": session_file})

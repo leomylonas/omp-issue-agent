@@ -21,6 +21,7 @@ public sealed record ReconciliationInput(
     string? RemoteBranchHeadCommit,
     bool LocalWorktreeDirty = false,
     bool PlanInputHashPresent = true,
+    bool ReviewFeedbackProvenancePresent = true,
     bool LocalHeadIsAncestorOfRemote = false);
 
 /// <summary>
@@ -65,6 +66,12 @@ public static class ReconciliationDecider
         if (!input.PlanInputHashPresent)
         {
             return Wait(WaitingReason.ReplanRequired, "The canonical plan is missing its required input hash; replan is required before the workflow can resume.");
+        }
+
+        if ((input.RemoteLabels.Phase is WorkflowPhase.Review or WorkflowPhase.Revising) &&
+            !input.ReviewFeedbackProvenancePresent)
+        {
+            return Wait(WaitingReason.CorruptState, "The canonical review-feedback checkpoint is missing; review work cannot be safely resumed.");
         }
 
         if (string.Equals(document.State, "working", StringComparison.Ordinal))

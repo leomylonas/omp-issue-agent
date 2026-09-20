@@ -23,29 +23,12 @@ public sealed class OmpProcessClient(
                 null,
                 cancellationToken).ConfigureAwait(false))
             .ConfigureAwait(false);
-        await SelectRoleAsync(role, cancellationToken).ConfigureAwait(false);
         var state = RequireData(
             await transport.SendCommandAsync("get_state", null, cancellationToken).ConfigureAwait(false));
         var sessionId = RequireString(state, "sessionId");
         return new OmpSession(sessionId, role, RequireSessionFile(ExtractSessionFile(state, sessionId)));
     }
 
-    public async ValueTask SelectRoleAsync(string role, CancellationToken cancellationToken)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(role);
-        if (!OmpModel.TryParse(role, out var model))
-        {
-            throw new OmpRpcException(
-                $"OMP role '{role}' must be configured as a supported 'provider/modelId' selector.");
-        }
-
-        await RequireSuccessAsync(
-            await transport.SendCommandAsync(
-                "set_model",
-                new JsonObject { ["provider"] = model.Provider, ["modelId"] = model.ModelId },
-                cancellationToken).ConfigureAwait(false))
-            .ConfigureAwait(false);
-    }
 
     public async ValueTask<OmpSession> ResumeSessionAsync(
         string sessionId,
@@ -333,22 +316,5 @@ public sealed class OmpProcessClient(
         ?? throw new InvalidOperationException($"OMP payload was missing required property '{property}'.");
 }
 
-/// <summary>OMP's supported model-selection command requires an explicit provider and model id.</summary>
-public sealed record OmpModel(string Provider, string ModelId)
-{
-    public static bool TryParse(string value, out OmpModel model)
-    {
-        var separator = value.IndexOf('/');
-        if (separator <= 0 || separator == value.Length - 1)
-        {
-            model = default!;
-            return false;
-        }
-
-        model = new OmpModel(value[..separator], value[(separator + 1)..]);
-        return true;
-    }
-
-}
 
 public sealed class OmpRpcException(string message) : Exception(message);
