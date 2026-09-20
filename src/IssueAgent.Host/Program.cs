@@ -1,9 +1,6 @@
 using IssueAgent.Configuration;
 using IssueAgent.Host;
 using IssueAgent.Observability;
-using OpenTelemetry.Metrics;
-using OpenTelemetry.Resources;
-using OpenTelemetry.Trace;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -110,36 +107,7 @@ builder.Services.AddSingleton<WorkflowShutdownCoordinator>();
 builder.Services.AddSingleton<OmpRuntimeEnvironmentFactory>();
 builder.Services.AddSingleton<WorkflowDispatcher>();
 builder.Services.AddSingleton<IssueAgentMetrics>();
-builder.Services.AddOpenTelemetry()
-    .ConfigureResource(resource => resource.AddService("IssueAgent"))
-    .WithMetrics(metrics =>
-    {
-        metrics.AddMeter(IssueAgentMetrics.MeterName);
-        metrics.AddPrometheusExporter();
-    })
-    .WithTracing(tracing =>
-    {
-        var samplingRatio = builder.Configuration.GetValue<double?>("OpenTelemetry:TraceSamplingRatio") ?? 1.0;
-        if (samplingRatio is < 0 or > 1)
-        {
-            throw new InvalidOperationException("OpenTelemetry:TraceSamplingRatio must be between 0 and 1.");
-        }
-
-        tracing.SetSampler(new TraceIdRatioBasedSampler(samplingRatio));
-        tracing.AddSource(IssueAgentActivitySource.Name);
-        tracing.AddHttpClientInstrumentation(options => options.EnrichWithHttpRequestMessage = (activity, request) =>
-        {
-            if (request.RequestUri is { IsAbsoluteUri: true } uri)
-            {
-                activity.SetTag("url.full", HttpSpanRedactor.RedactUrl(uri));
-            }
-        });
-        var endpoint = builder.Configuration["OpenTelemetry:OtlpEndpoint"];
-        if (!string.IsNullOrWhiteSpace(endpoint))
-        {
-            tracing.AddOtlpExporter(options => options.Endpoint = new Uri(endpoint));
-        }
-    });
+HostOpenTelemetry.Configure(builder.Services, builder.Configuration);
 
 builder.Services.AddSingleton<ReadinessState>();
 builder.Services.AddHostedService<Worker>();

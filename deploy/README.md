@@ -187,6 +187,6 @@ described for Compose, using `127.0.0.1:8081`.
 
 ## Optional integrations
 
-`issue-agent.env` contains examples for OTLP tracing, Telegram, and Slack. Configure notification
+`issue-agent.env` contains examples for OTLP metrics and tracing, Telegram, and Slack. Configure notification
 tokens through mounted secret files and start `docker-compose.notifications.yml` with the base
 Compose file; do not place token values or webhook credentials directly in the env file.

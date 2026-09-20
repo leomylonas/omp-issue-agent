@@ -60,6 +60,18 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
         var mergeRequest = await dependencies.Provider
             .FindMergeRequestAsync(config.Repository, state.Branch, state.TargetBranch, cancellationToken)
             .ConfigureAwait(false);
+        if (mergeRequest is not null && !MatchesWorkflowIdentity(config.Repository, state, content, mergeRequest))
+        {
+            return await PauseForHumanAsync(
+                config,
+                issueNumber,
+                canonicalComment,
+                content,
+                state,
+                WaitingReason.ManualIntervention,
+                "The branch-matched PR/MR does not match both this workflow's marker and stored identity. Local workflow data was preserved for human review.",
+                cancellationToken).ConfigureAwait(false);
+        }
         if (mergeRequest?.IsMerged == true)
         {
             var outcome = await new CancellationWorkflow(dependencies)
@@ -219,6 +231,18 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
             canonicalComment,
             decision.Explanation);
     }
+
+    private static bool MatchesWorkflowIdentity(
+        RepositoryRef repository,
+        WorkflowState state,
+        CanonicalCommentContent content,
+        ProviderMergeRequest mergeRequest) =>
+        mergeRequest.Description.Contains($"<!-- issue-agent:workflow:{state.WorkflowId} -->", StringComparison.Ordinal) &&
+        string.Equals(
+            content.State.PullOrMergeRequest,
+            $"{repository.Id}#{mergeRequest.Number}",
+            StringComparison.Ordinal);
+
     private static bool IsInitialPlanningBootstrapCheckpoint(WorkflowState state) =>
         state.Phase == WorkflowPhase.Planning &&
         state.OperationalState == WorkflowOperationalState.Working &&
@@ -252,14 +276,19 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
         {
             await PersistCanonicalStateAsync(config, issueNumber, canonicalComment, content, waitingState, cancellationToken)
                 .ConfigureAwait(false);
-            if (reason == WaitingReason.AmbiguousCommand)
-            {
-                await AddWaitingLabelWithoutRepairingAmbiguousManagedLabelsAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                await TransitionLabelsAsync(config, issueNumber, waitingState.Phase, cancellationToken).ConfigureAwait(false);
-            }
+        }
+
+        if (reason == WaitingReason.AmbiguousCommand)
+        {
+            await AddWaitingLabelWithoutRepairingAmbiguousManagedLabelsAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            await TransitionLabelsAsync(config, issueNumber, waitingState.Phase, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!alreadyRecorded)
+        {
             await dependencies.Notifier.NotifyAsync(
                 new WorkflowNotification(
                     WorkflowNotificationKind.HumanActionRequired,

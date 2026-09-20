@@ -17,6 +17,7 @@ public sealed class FakeGitProvider : IGitProvider
 
     public List<(long IssueNumber, long CommentId, string Body)> UpdatedComments { get; } = [];
     public int UpdateIssueCommentFailuresRemaining { get; set; }
+    public int AddLabelsFailuresRemaining { get; set; }
 
 
     public Dictionary<int, ProviderMergeRequest> MergeRequests { get; } = [];
@@ -129,6 +130,12 @@ public sealed class FakeGitProvider : IGitProvider
 
     public ValueTask AddLabelsAsync(ProviderWorkItemReference workItem, IReadOnlyCollection<string> labels, CancellationToken cancellationToken)
     {
+        if (AddLabelsFailuresRemaining > 0)
+        {
+            AddLabelsFailuresRemaining--;
+            throw new InvalidOperationException("Simulated provider label add failure.");
+        }
+
         var key = (workItem.Repository.Id, workItem.Kind, workItem.Number);
         if (!Labels.TryGetValue(key, out var set))
         {

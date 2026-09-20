@@ -503,6 +503,9 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
 
         if (remoteHead is null)
         {
+            // Recovery replays privileged publication work without rerunning OMP. Capture its own
+            // baseline because human input may arrive after the original attempt was checkpointed.
+            var inputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
             await deps.Git.PublishChangedSubmodulesAsync(
                 config.Repository.Id,
                 worktreePath,
@@ -515,6 +518,28 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             {
                 await deps.Git.UploadLfsObjectsAsync(
                     config.Repository.Id, worktreePath, currentState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+            }
+
+            // Submodule publication and LFS upload can both take long enough for new human input
+            // to arrive. Do not make the checkpointed branch visible until that input is reviewed.
+            var latestInputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
+            if (IsPlanStale(latestInputSnapshot, existingContent))
+            {
+                return await PauseForStalePlanAsync(
+                    config, issueNumber, currentState, existingContent, implementationResult, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (latestInputSnapshot != inputSnapshot)
+            {
+                return await PauseAsync(
+                    config,
+                    issueNumber,
+                    currentState,
+                    existingContent,
+                    implementationResult,
+                    WaitingReason.NewInputDuringImplementation,
+                    "New or edited human input arrived during publication recovery. The current worktree was retained; choose continue, replan, or cancel.",
+                    cancellationToken).ConfigureAwait(false);
             }
 
             await deps.Git.PushAsync(

@@ -119,6 +119,42 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task RepeatedWaitingPauseRetriesLabelTransitionAfterLabelFailure()
+    {
+        var (state, canonical) = SeedWorkflow(WorkflowPhase.Implementing, WorkflowOperationalState.Waiting, WaitingReason.ManualIntervention);
+        var labels = provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)];
+        labels.Remove(WorkflowLabels.WaitingState);
+        labels.Add(WorkflowLabels.WorkingState);
+        provider.AddLabelsFailuresRemaining = 1;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => CreateService().PauseForHumanAsync(
+            CreateConfig(),
+            1,
+            canonical,
+            CanonicalCommentMarkdown.Parse(canonical.Body),
+            state,
+            WaitingReason.ManualIntervention,
+            "The retained workflow requires human review.",
+            CancellationToken.None));
+
+        var result = await CreateService().PauseForHumanAsync(
+            CreateConfig(),
+            1,
+            canonical,
+            CanonicalCommentMarkdown.Parse(canonical.Body),
+            state,
+            WaitingReason.ManualIntervention,
+            "The retained workflow requires human review.",
+            CancellationToken.None);
+
+        Assert.Equal(ReconciliationDisposition.Waiting, result.Disposition);
+        Assert.Contains(WorkflowLabels.WaitingState, labels);
+        Assert.DoesNotContain(WorkflowLabels.WorkingState, labels);
+        Assert.Empty(provider.UpdatedComments);
+        Assert.Empty(notifier.Notifications);
+    }
+
+    [Fact]
     public async Task InterruptedPlanningRecordsItsOriginalPhaseBeforeWaiting()
     {
         var (state, canonical) = SeedWorkflow(WorkflowPhase.Planning, WorkflowOperationalState.Working, waitingReason: null);
@@ -185,7 +221,7 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
             state.Branch,
             state.TargetBranch,
             "Fix",
-            "Description",
+            $"<!-- issue-agent:workflow:{state.WorkflowId} -->",
             IsDraft: false,
             IsMerged: true,
             IsClosed: true,
@@ -210,7 +246,7 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
             state.Branch,
             state.TargetBranch,
             "Fix",
-            "Description",
+            $"<!-- issue-agent:workflow:{state.WorkflowId} -->",
             IsDraft: false,
             IsMerged: false,
             IsClosed: true,
@@ -223,6 +259,54 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
         Assert.False(Directory.Exists(WorktreePath(state)));
         var persisted = CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body);
         Assert.Equal("cancelled", persisted.State.Phase);
+    }
+
+    [Fact]
+    public async Task TerminalRequestWithMismatchedStoredIdentityPausesWithoutCleaningLocalState()
+    {
+        var (state, canonical) = SeedWorkflow(WorkflowPhase.Review, WorkflowOperationalState.Waiting, WaitingReason.ReviewRequested);
+        provider.MergeRequests[8] = new ProviderMergeRequest(
+            Repository,
+            8,
+            state.Branch,
+            state.TargetBranch,
+            "Unrelated fix",
+            $"<!-- issue-agent:workflow:{state.WorkflowId} -->",
+            IsDraft: false,
+            IsMerged: true,
+            IsClosed: true,
+            new AttachmentSource("merge-request-description", "8"));
+
+        var result = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
+
+        Assert.Equal(ReconciliationDisposition.Waiting, result.Disposition);
+        Assert.Equal(WaitingReason.ManualIntervention, result.State!.WaitingReason);
+        Assert.True(Directory.Exists(WorktreePath(state)));
+        Assert.Contains("identity", result.Explanation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TerminalRequestWithoutWorkflowMarkerPausesWithoutCleaningLocalState()
+    {
+        var (state, canonical) = SeedWorkflow(WorkflowPhase.Review, WorkflowOperationalState.Waiting, WaitingReason.ReviewRequested);
+        provider.MergeRequests[7] = new ProviderMergeRequest(
+            Repository,
+            7,
+            state.Branch,
+            state.TargetBranch,
+            "Unrelated fix",
+            "A human-created merge request on the same branch.",
+            IsDraft: false,
+            IsMerged: true,
+            IsClosed: true,
+            new AttachmentSource("merge-request-description", "7"));
+
+        var result = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
+
+        Assert.Equal(ReconciliationDisposition.Waiting, result.Disposition);
+        Assert.Equal(WaitingReason.ManualIntervention, result.State!.WaitingReason);
+        Assert.True(Directory.Exists(WorktreePath(state)));
+        Assert.Contains("marker", result.Explanation, StringComparison.Ordinal);
     }
 
     [Fact]

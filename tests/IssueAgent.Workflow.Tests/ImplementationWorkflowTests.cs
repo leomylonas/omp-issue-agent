@@ -490,6 +490,56 @@ public sealed class ImplementationWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsyncRecoveryPausesBeforePushWhenInputArrivesDuringLfsUpload()
+    {
+        var plannedState = await SeedApprovedPlanAsync();
+        git.RemoteBranchCommitToReturn = null;
+        git.LfsRequired = true;
+        git.OnLfsUpload = () => provider.AddComment(
+            Repository,
+            1,
+            "alice",
+            "Please include this recovery constraint.",
+            clock.UtcNow.AddMinutes(1));
+        var interruptedState = plannedState with
+        {
+            Phase = WorkflowPhase.Implementing,
+            OperationalState = WorkflowOperationalState.Waiting,
+            WaitingReason = WaitingReason.ManualIntervention,
+            ExpectedImplementationHead = git.BranchCommitToReturn,
+            PublicationStage = ImplementationPublicationStage.ResultCheckpointed,
+        };
+        var canonical = Assert.Single(provider.IssueComments[(Repository.Id, 1)]);
+        var existing = CanonicalCommentMarkdown.Parse(canonical.Body);
+        await provider.UpdateIssueCommentAsync(
+            Repository,
+            1,
+            canonical.Id,
+            CanonicalCommentMarkdown.Render(existing with
+            {
+                ImplementationResult = "**Durably recorded implementation summary.**",
+                State = CanonicalStateSerializer.ToDocument(interruptedState, null),
+            }),
+            CancellationToken.None);
+
+        var omp = new FakeOmpClient();
+        var outcome = await CreateWorkflow().RunAsync(
+            CreateConfig(),
+            WorkflowMode.Full,
+            1,
+            interruptedState,
+            omp,
+            CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WaitingReason.NewInputDuringImplementation, outcome.State.WaitingReason);
+        Assert.Equal(ImplementationPublicationStage.ResultCheckpointed, outcome.State.PublicationStage);
+        Assert.Empty(omp.RunRequests);
+        Assert.Equal(0, git.PushCallCount);
+        Assert.Empty(provider.MergeRequests);
+    }
+
+    [Fact]
     public async Task RunAsyncRedoesImplementationWhenNoDurableResultWasRecordedBeforeInterruption()
     {
         var plannedState = await SeedApprovedPlanAsync();
