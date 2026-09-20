@@ -73,7 +73,7 @@ public sealed class WorkflowCommandRoutingTests
     }
 
     [Fact]
-    public void ContinueRouteRepublishesRevisionCheckpointAfterNewFeedbackGate()
+    public void ContinueFromNewFeedbackDuringRevisionStartsFreshRevision()
     {
         var pausedRevision = CreateState(WorkflowPhase.Revising, WorkflowOperationalState.Waiting) with
         {
@@ -81,6 +81,10 @@ public sealed class WorkflowCommandRoutingTests
         };
 
         Assert.Equal(WorkflowCommand.Revise, WorkflowCommandRouting.ContinueRoute(pausedRevision, pausedRevision));
+        Assert.False(WorkflowDispatcher.ShouldPublishRetainedRevision(
+            pausedRevision,
+            Content(pausedRevision, implementationResult: "Retained revision."),
+            WorkflowCommand.Revise));
     }
 
     [Fact]

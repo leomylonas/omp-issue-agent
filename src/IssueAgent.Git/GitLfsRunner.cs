@@ -216,7 +216,8 @@ public static class GitLfsRunner
 
     private static bool TryGetLfsRemoteUri(string url, out Uri remote)
     {
-        if (Uri.TryCreate(url, UriKind.Absolute, out remote!) &&
+        if ((Uri.TryCreate(url, UriKind.Absolute, out remote!) ||
+             TryNormalizeScpLikeSshRemote(url, out remote)) &&
             (remote.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
              remote.Scheme.Equals("ssh", StringComparison.OrdinalIgnoreCase)) &&
             !string.IsNullOrEmpty(remote.Host))
@@ -226,6 +227,25 @@ public static class GitLfsRunner
 
         remote = null!;
         return false;
+    }
+
+    private static bool TryNormalizeScpLikeSshRemote(string url, out Uri remote)
+    {
+        var colon = url.IndexOf(':');
+        if (colon <= 0 || colon == url.Length - 1 || url.AsSpan(colon).StartsWith("://"))
+        {
+            remote = null!;
+            return false;
+        }
+
+        var authority = url[..colon];
+        if (authority.Contains('/') || authority.Contains('\\') || string.IsNullOrWhiteSpace(authority))
+        {
+            remote = null!;
+            return false;
+        }
+
+        return Uri.TryCreate($"ssh://{authority}/{url[(colon + 1)..]}", UriKind.Absolute, out remote!);
     }
 
     private static Uri? TryGetHttpsUri(string url) =>

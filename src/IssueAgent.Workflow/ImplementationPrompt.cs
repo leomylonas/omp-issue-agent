@@ -158,9 +158,36 @@ public static class ImplementationPromptBuilder
         }
 
         builder.AppendLine();
+        AppendReviewAttachments(builder, context.PullOrMergeRequest?.Attachments);
+        builder.AppendLine();
         AppendIssueSummary(builder, context.PrimaryIssue);
         AppendOutputContract(builder);
         return builder.ToString();
+    }
+
+    private static void AppendReviewAttachments(StringBuilder builder, IReadOnlyList<AttachmentReference>? attachments)
+    {
+        if (attachments is not { Count: > 0 })
+        {
+            return;
+        }
+
+        builder.AppendLine("## Review attachments");
+        foreach (var attachment in attachments)
+        {
+            if (attachment.IsOmitted)
+            {
+                builder.Append("- OMITTED ").Append(attachment.SafeFileName)
+                    .Append(" (").Append(attachment.Provenance).Append("): ")
+                    .AppendLine(attachment.OmissionReason);
+            }
+            else
+            {
+                builder.Append("- AVAILABLE ").Append(attachment.SafeFileName)
+                    .Append(" (").Append(attachment.Provenance).Append("): ")
+                    .AppendLine(attachment.LocalPath);
+            }
+        }
     }
 
     private const string OutputContract =

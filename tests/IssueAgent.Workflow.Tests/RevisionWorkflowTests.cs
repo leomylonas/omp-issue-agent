@@ -64,6 +64,44 @@ public sealed class RevisionWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RevisionPromptIncludesAvailableAndOmittedReviewAttachments()
+    {
+        var state = await SeedReviewStateAsync();
+        var context = new AgentContext(
+            new IssueContext(Repository.Id, 1, "Bug", "Description", [], [], []),
+            [],
+            null,
+            new MergeRequestContext(
+                1,
+                "Description",
+                [],
+                [],
+                [
+                    new AttachmentReference(
+                        "https://example.test/review.log",
+                        "review.log",
+                        "/workspace/workflows/1/attachments/review.log",
+                        "review-thread-comment:12:thread-3",
+                        42),
+                    new AttachmentReference(
+                        "https://example.test/large.zip",
+                        "large.zip",
+                        string.Empty,
+                        "merge-request-comment:13",
+                        0,
+                        IsOmitted: true,
+                        OmissionReason: "attachment exceeds the configured size limit"),
+                ]),
+            state);
+
+        var prompt = ImplementationPromptBuilder.BuildRevisionPrompt(context, []);
+
+        Assert.Contains("## Review attachments", prompt, StringComparison.Ordinal);
+        Assert.Contains("AVAILABLE review.log (review-thread-comment:12:thread-3): /workspace/workflows/1/attachments/review.log", prompt, StringComparison.Ordinal);
+        Assert.Contains("OMITTED large.zip (merge-request-comment:13): attachment exceeds the configured size limit", prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RunAsyncIncludesFeedbackEditedAfterThePriorCutoff()
     {
         var state = await SeedReviewStateAsync();

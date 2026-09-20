@@ -411,8 +411,7 @@ public sealed partial class WorkflowDispatcher(
             // Keep the acknowledgement label until the routed workflow records its working
             // checkpoint and transitions phase/state labels. A process crash before that durable
             // hand-off then leaves the command available for safe replay.
-            publishRetainedRevision = routedCommand == WorkflowCommand.Revise &&
-                HasRetainedRevisionCheckpoint(state, reconciled.Content!);
+            publishRetainedRevision = ShouldPublishRetainedRevision(state, reconciled.Content!, routedCommand);
             command = routedCommand;
         }
 
@@ -519,6 +518,14 @@ public sealed partial class WorkflowDispatcher(
     private static bool HasRetainedRevisionCheckpoint(WorkflowState state, CanonicalCommentContent content) =>
         state.Phase == WorkflowPhase.Revising &&
         content.ImplementationResult is { Length: > 0 };
+
+    internal static bool ShouldPublishRetainedRevision(
+        WorkflowState state,
+        CanonicalCommentContent content,
+        WorkflowCommand? routedCommand) =>
+        routedCommand == WorkflowCommand.Revise &&
+        state.WaitingReason != WaitingReason.NewFeedbackDuringRevision &&
+        HasRetainedRevisionCheckpoint(state, content);
 
 
 

@@ -68,6 +68,21 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
     }
 
     [Fact]
+    public void TrustedLfsConfigurationNormalizesScpLikeSshEndpoint()
+    {
+        var startInfo = new ProcessStartInfo();
+
+        InvokeAddTrustedLfsEndpointConfiguration(
+            startInfo,
+            "remote-user@git.trusted.example:octo/widgets.git");
+
+        Assert.Equal(
+            ["-c", "lfs.url=ssh://remote-user@git.trusted.example/octo/widgets.git",
+             "-c", "lfs.pushurl=ssh://remote-user@git.trusted.example/octo/widgets.git"],
+            startInfo.ArgumentList);
+    }
+
+    [Fact]
     public void ApplyAuthenticationBundlesSystemAndPemAdditionalCaForHttpsLfs()
     {
         var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example/octo/widgets.git");

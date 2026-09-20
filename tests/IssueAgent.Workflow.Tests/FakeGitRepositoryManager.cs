@@ -14,6 +14,7 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
     public Action? OnCreateWorktree { get; set; }
 
     public bool LfsRequired { get; set; }
+    public Action? OnLfsUpload { get; set; }
 
     public bool MergeSucceeds { get; set; } = true;
 
@@ -105,6 +106,10 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask UploadLfsObjectsAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    public ValueTask UploadLfsObjectsAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken)
+    {
+        OnLfsUpload?.Invoke();
+        return ValueTask.CompletedTask;
+    }
 
 }

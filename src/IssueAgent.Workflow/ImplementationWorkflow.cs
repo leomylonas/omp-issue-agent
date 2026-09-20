@@ -305,11 +305,9 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             }
         }
 
-        // Re-check human input immediately before publication. A single check here covers the
-        // whole remaining implementation window, including the corrective pass and conflict
-        // resolution above, and compares title/description content plus per-comment identity/edit
-        // timestamps rather than a bare count, so an edited comment or attachment is caught even if
-        // the comment count is unchanged (specification §22).
+        // Re-check human input immediately before publication. This gate covers the corrective pass
+        // and conflict resolution above; the identical gate after LFS upload covers the final
+        // upload window before the branch becomes visible to reviewers.
         var latestInputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
         if (IsPlanStale(latestInputSnapshot, workingContent))
         {
@@ -360,6 +358,28 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         if (deps.Git.WorktreeRequiresLfs(worktreePath))
         {
             await deps.Git.UploadLfsObjectsAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+        }
+
+        // LFS upload can take long enough for human input to arrive. Do not push a branch based on
+        // work that was produced without that input.
+        latestInputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
+        if (IsPlanStale(latestInputSnapshot, workingContent))
+        {
+            return await PauseForStalePlanAsync(
+                config, issueNumber, workingState, checkpointContent, resultMarkdown, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (latestInputSnapshot != inputSnapshot)
+        {
+            return await PauseAsync(
+                config,
+                issueNumber,
+                workingState,
+                checkpointContent,
+                resultMarkdown,
+                WaitingReason.NewInputDuringImplementation,
+                "New or edited human input arrived during LFS upload. The current worktree was retained; choose continue, replan, or cancel.",
+                cancellationToken).ConfigureAwait(false);
         }
 
         await deps.Git.PushAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
@@ -426,16 +446,16 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             ? new ReviewFeedbackSnapshot(
                 existingCutoff,
                 new HashSet<string>(existingContent.State.ReviewFeedbackIds ?? [], StringComparer.Ordinal))
-            : await CaptureReviewFeedbackSnapshotAsync(config, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
+            : new ReviewFeedbackSnapshot(deps.Clock.UtcNow, new HashSet<string>(StringComparer.Ordinal));
         var stateWithFeedbackSnapshot = state with
         {
             ReviewFeedbackCutoff = feedbackSnapshot.Cutoff,
             ReviewFeedbackIds = feedbackSnapshot.Ids,
         };
 
-        // Persist the observation boundary before publishing review. If this turn is interrupted
-        // after the MR exists, recovery reuses this snapshot instead of advancing past feedback
-        // that arrived while publication was incomplete.
+        // This records the start of review, not feedback that happened to be visible while the
+        // draft was being published. No review feedback has been processed at this point, so its
+        // identifiers must not be checkpointed as handled. Recovery reuses an existing boundary.
         var checkpointContent = existingContent with
         {
             State = CanonicalStateSerializer.ToDocument(
@@ -471,43 +491,8 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             cancellationToken).ConfigureAwait(false);
         return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, publishedState, "Implementation published; awaiting review.");
     }
-    /// <summary>Captures the review-feedback observation boundary before publishing review. The
-    /// durable identifiers complement the timestamp cursor when provider timestamps have coarse
-    /// precision or recovery resumes an interrupted publication.</summary>
+
     private sealed record ReviewFeedbackSnapshot(DateTimeOffset Cutoff, IReadOnlySet<string> Ids);
-
-    private async Task<ReviewFeedbackSnapshot> CaptureReviewFeedbackSnapshotAsync(
-        WorkflowRepositoryConfig config,
-        long mergeRequestNumber,
-        CancellationToken cancellationToken)
-    {
-        var cutoff = deps.Clock.UtcNow;
-        var ids = new HashSet<string>(StringComparer.Ordinal);
-        await foreach (var comment in deps.Provider
-            .GetMergeRequestCommentsAsync(config.Repository, mergeRequestNumber, cancellationToken)
-            .ConfigureAwait(false))
-        {
-            if ((!config.IgnoreBotComments || !comment.IsBot) && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
-            {
-                ids.Add($"comment:{comment.Id}");
-            }
-        }
-
-        await foreach (var thread in deps.Provider
-            .GetReviewThreadsAsync(config.Repository, mergeRequestNumber, cancellationToken)
-            .ConfigureAwait(false))
-        {
-            foreach (var comment in thread.Comments)
-            {
-                if ((!config.IgnoreBotComments || !comment.IsBot) && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
-                {
-                    ids.Add($"thread:{thread.Id}:{comment.Id}");
-                }
-            }
-        }
-
-        return new ReviewFeedbackSnapshot(cutoff, ids);
-    }
 
     private async Task<ProviderMergeRequest> FindOrCreateMergeRequestAsync(
         WorkflowRepositoryConfig config,
@@ -663,20 +648,18 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         string attachmentsPath,
         CancellationToken cancellationToken)
     {
-        var baseline = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
-        var context = await deps.ContextBuilder
-            .BuildAsync(config.Repository, issueNumber, workingState, currentPlan, mergeRequest: null, attachmentsPath, cancellationToken)
-            .ConfigureAwait(false);
-        var reconciled = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
-        if (reconciled != baseline)
+        while (true)
         {
-            context = await deps.ContextBuilder
+            var baseline = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
+            var context = await deps.ContextBuilder
                 .BuildAsync(config.Repository, issueNumber, workingState, currentPlan, mergeRequest: null, attachmentsPath, cancellationToken)
                 .ConfigureAwait(false);
-            baseline = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
+            var reconciled = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
+            if (reconciled == baseline)
+            {
+                return (context, baseline);
+            }
         }
-
-        return (context, baseline);
     }
 
     private sealed record InputSnapshot(string Title, string Description, string CommentsDigest);

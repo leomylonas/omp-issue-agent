@@ -40,11 +40,17 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         }
         else
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var options = new CloneOptions
             {
                 IsBare = true,
                 Checkout = false,
-                FetchOptions = { CredentialsProvider = CredentialsHandlerFor(authentication, TryGetHost(cloneUrl)), CertificateCheck = CertificateCheckHandlerFor(authentication.TlsTrust) },
+                FetchOptions =
+                {
+                    CredentialsProvider = CredentialsHandlerFor(authentication, TryGetHost(cloneUrl)),
+                    CertificateCheck = CertificateCheckHandlerFor(authentication.TlsTrust),
+                    OnTransferProgress = _ => !cancellationToken.IsCancellationRequested,
+                },
             };
             Repository.Clone(cloneUrl, path, options);
         }
@@ -62,6 +68,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         }
         else
         {
+            cancellationToken.ThrowIfCancellationRequested();
             using var repo = new Repository(path);
             var remote = repo.Network.Remotes["origin"];
             var refSpecs = remote.FetchRefSpecs.Select(r => r.Specification);
@@ -69,6 +76,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
             {
                 CredentialsProvider = CredentialsHandlerFor(authentication, TryGetHost(remote.Url)),
                 CertificateCheck = CertificateCheckHandlerFor(authentication.TlsTrust),
+                OnTransferProgress = _ => !cancellationToken.IsCancellationRequested,
             }, logMessage: null);
         }
 
@@ -236,6 +244,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
     public async ValueTask UpdateSubmodulesAsync(string repositoryId, string worktreePath, Func<string, GitAuthentication?> authenticationResolver, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(authenticationResolver);
+        cancellationToken.ThrowIfCancellationRequested();
         var rootPath = Path.GetFullPath(worktreePath);
         await UpdateSubmodulesRecursivelyAsync(rootPath, rootPath, authenticationResolver, new HashSet<string>(StringComparer.Ordinal), cancellationToken).ConfigureAwait(false);
     }
@@ -276,6 +285,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
             {
                 try
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     repo.Submodules.Update(submodule.Name, new SubmoduleUpdateOptions
                     {
                         Init = true,
@@ -283,6 +293,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
                         {
                             CredentialsProvider = CredentialsHandlerFor(effectiveAuthentication, host),
                             CertificateCheck = CertificateCheckHandlerFor(effectiveAuthentication.TlsTrust),
+                            OnTransferProgress = _ => !cancellationToken.IsCancellationRequested,
                         },
                     });
                 }
@@ -427,6 +438,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
             return;
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         using var repo = new Repository(bareRepositoryPath);
         if (repo.Branches[branchName] is null)
         {
@@ -438,6 +450,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         {
             CredentialsProvider = CredentialsHandlerFor(authentication, TryGetHost(remote.Url)),
             CertificateCheck = CertificateCheckHandlerFor(authentication.TlsTrust),
+            OnPushTransferProgress = (_, _, _) => !cancellationToken.IsCancellationRequested,
         });
     }
 

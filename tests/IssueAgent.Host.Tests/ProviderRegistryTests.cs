@@ -38,6 +38,36 @@ public sealed class ProviderRegistryTests
         Assert.Equal("token-c", registry.GetSubmoduleGitAuthentication("repository-a", "other.example.test")?.HttpsToken);
     }
 
+    [Fact]
+    public void SubmoduleAuthenticationTreatsTrustCollectionsAsSetsAndRejectsDifferentValues()
+    {
+        var equivalent = CreateRegistry(
+            Repository("repository-a", "https://git.example.test/team/a.git", "shared-token",
+                ["ca-a.pem", "ca-b.pem"], ["sha256:tls-a", "sha256:tls-b"], ["sha256:ssh-a", "sha256:ssh-b"]),
+            Repository("repository-b", "https://git.example.test/team/b.git", "shared-token",
+                ["ca-b.pem", "ca-a.pem"], ["sha256:tls-a", "sha256:tls-b"], ["SHA256:SSH-B", "SHA256:SSH-A"]),
+            Repository("repository-local", "/srv/git/local.git", "token-local",
+                ["ca-a.pem", "ca-b.pem"], ["sha256:tls-a", "sha256:tls-b"]));
+
+        Assert.Equal("shared-token", equivalent.GetSubmoduleGitAuthentication("repository-local", "git.example.test")?.HttpsToken);
+
+        var differentSshFingerprint = CreateRegistry(
+            Repository("repository-a", "https://git.example.test/team/a.git", "shared-token",
+                ["ca-a.pem", "ca-b.pem"], ["sha256:tls-a", "sha256:tls-b"], ["sha256:ssh-a", "sha256:ssh-b"]),
+            Repository("repository-b", "https://git.example.test/team/b.git", "shared-token",
+                ["ca-a.pem", "ca-b.pem"], ["sha256:tls-a", "sha256:tls-b"], ["sha256:ssh-a", "sha256:ssh-c"]),
+            Repository("repository-local", "/srv/git/local.git", "token-local",
+                ["ca-a.pem", "ca-b.pem"], ["sha256:tls-a", "sha256:tls-b"]));
+        Assert.Null(differentSshFingerprint.GetSubmoduleGitAuthentication("repository-local", "git.example.test"));
+        Assert.Throws<InvalidOperationException>(() => CreateRegistry(
+            Repository("repository-a", "https://git.example.test/team/a.git", "shared-token",
+                ["ca-a.pem", "ca-b.pem"], ["sha256:tls-a", "sha256:tls-b"], ["sha256:ssh-a", "sha256:ssh-b"]),
+            Repository("repository-b", "https://git.example.test/team/b.git", "shared-token",
+                ["ca-a.pem", "ca-c.pem"], ["sha256:tls-a", "sha256:tls-b"], ["sha256:ssh-a", "sha256:ssh-b"]),
+            Repository("repository-local", "/srv/git/local.git", "token-local",
+                ["ca-a.pem", "ca-b.pem"], ["sha256:tls-a", "sha256:tls-b"])));
+    }
+
     private static ProviderRegistry CreateRegistry(params EffectiveRepositoryConfiguration[] repositories)
     {
         var source = new ProviderOptions
@@ -59,7 +89,13 @@ public sealed class ProviderRegistryTests
         return new ProviderRegistry(configuration, new IssueAgentMetrics(), LoggerFactory.Create(_ => { }));
     }
 
-    private static EffectiveRepositoryConfiguration Repository(string id, string cloneUrl, string token) => new(
+    private static EffectiveRepositoryConfiguration Repository(
+        string id,
+        string cloneUrl,
+        string token,
+        IReadOnlyList<string>? additionalCaCertificatePaths = null,
+        IReadOnlyList<string>? tlsFingerprints = null,
+        IReadOnlyList<string>? sshFingerprints = null) => new(
         new RepositoryOptions { Id = id, Name = id, CloneUrl = cloneUrl },
         "github",
         ProviderKind.GitHub,
@@ -83,11 +119,11 @@ public sealed class ProviderRegistryTests
             null,
             null,
             null,
-            ConfiguredTlsTrustMode.System,
-            [],
-            [],
-            null,
-            []),
+            additionalCaCertificatePaths is null ? ConfiguredTlsTrustMode.System : ConfiguredTlsTrustMode.SystemPlusAdditionalCa,
+            additionalCaCertificatePaths ?? [],
+            tlsFingerprints ?? [],
+            sshFingerprints is null ? null : ConfiguredSshHostVerificationMode.Pinned,
+            sshFingerprints ?? []),
         "Test",
         "test@example.test",
         null,

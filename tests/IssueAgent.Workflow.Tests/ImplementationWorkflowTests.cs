@@ -33,8 +33,6 @@ public sealed class ImplementationWorkflowTests : IDisposable
     public async Task RunAsyncPublishesDraftMergeRequestAndSetsReviewWaiting()
     {
         var state = await SeedApprovedPlanAsync();
-        var reviewFeedbackSnapshotCaptured = false;
-        provider.OnReviewThreadsEnumeration = () => reviewFeedbackSnapshotCaptured = true;
         var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """
             {"summary":"Added a guard clause.","keyChanges":["Guard clause in Save()"],"decisions":["Chose guard clause for clarity."],"checksRun":["dotnet test"],"knownFailures":[],"deviations":[],"risks":[]}
             """));
@@ -52,8 +50,75 @@ public sealed class ImplementationWorkflowTests : IDisposable
         var updated = provider.UpdatedComments[^1];
         Assert.Contains("Added a guard clause.", updated.Body, StringComparison.Ordinal);
         Assert.Contains(provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)], l => l == "agent:phase:review");
-        Assert.Equal(WorkflowNotificationKind.ImplementationReady, Assert.Single(notifier.Notifications).Kind);
-        Assert.True(reviewFeedbackSnapshotCaptured);
+    }
+
+    [Fact]
+    public async Task RunAsyncRetriesContextUntilInputBaselineIsStable()
+    {
+        var state = await SeedApprovedPlanAsync();
+        var changes = 0;
+        provider.OnIssueRelationshipsEnumeration = () =>
+        {
+            if (changes++ < 2)
+            {
+                provider.AddComment(
+                    Repository,
+                    1,
+                    "alice",
+                    $"Constraint {changes}",
+                    clock.UtcNow.AddMinutes(changes));
+            }
+        };
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1", clock.UtcNow,
+            """{"summary":"Implemented.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await CreateWorkflow().RunAsync(CreateConfig(), WorkflowMode.Full, 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
+        Assert.Equal(3, changes);
+    }
+
+    [Fact]
+    public async Task RunAsyncPausesWhenInputArrivesDuringLfsUpload()
+    {
+        var state = await SeedApprovedPlanAsync();
+        git.LfsRequired = true;
+        git.OnLfsUpload = () => provider.AddComment(Repository, 1, "alice", "Please include this constraint.", clock.UtcNow.AddMinutes(1));
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1", clock.UtcNow,
+            """{"summary":"Implemented.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await CreateWorkflow().RunAsync(CreateConfig(), WorkflowMode.Full, 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WaitingReason.NewInputDuringImplementation, outcome.State.WaitingReason);
+        Assert.Equal(0, git.PushCallCount);
+        Assert.Empty(provider.MergeRequests);
+    }
+
+    [Fact]
+    public async Task RunAsyncLeavesInitialReviewFeedbackUncheckpointedForFirstRevision()
+    {
+        var state = await SeedApprovedPlanAsync();
+        provider.MergeRequestComments[(Repository.Id, 1)] =
+        [
+            new ProviderComment(1, "bob", "Please add validation.", clock.UtcNow, clock.UtcNow,
+                new AttachmentSource("merge-request-comment", "1"), false),
+        ];
+        var implementationOmp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1", clock.UtcNow,
+            """{"summary":"Implemented.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var review = await CreateWorkflow().RunAsync(CreateConfig(), WorkflowMode.Full, 1, state, implementationOmp, CancellationToken.None);
+        var revisionOmp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1", clock.UtcNow,
+            """{"summary":"Addressed feedback.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, review.State, revisionOmp, CancellationToken.None);
+
+        Assert.Empty(review.State.ReviewFeedbackIds!);
+        Assert.Contains("Please add validation.", Assert.Single(revisionOmp.RunRequests).Prompt, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -220,8 +285,6 @@ public sealed class ImplementationWorkflowTests : IDisposable
             CancellationToken.None);
         provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] =
             ["agent:phase:implementing", "agent:state:waiting", "agent:cmd:continue"];
-        var reviewFeedbackSnapshotCaptured = false;
-        provider.OnReviewThreadsEnumeration = () => reviewFeedbackSnapshotCaptured = true;
         var omp = new FakeOmpClient();
 
         var outcome = await CreateWorkflow().RunAsync(
@@ -236,7 +299,6 @@ public sealed class ImplementationWorkflowTests : IDisposable
         Assert.Empty(omp.RunRequests);
         Assert.Single(provider.MergeRequests);
         Assert.Contains("Durably recorded implementation summary.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
-        Assert.True(reviewFeedbackSnapshotCaptured);
     }
 
     [Fact]

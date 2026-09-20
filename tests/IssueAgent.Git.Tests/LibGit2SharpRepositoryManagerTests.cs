@@ -40,6 +40,29 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task HttpsRemoteOperationsHonorCancellationBeforeStartingTransfer()
+    {
+        var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out var baseCommit));
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            manager.EnsureBareRepositoryAsync("repo-cancel-clone", remotePath, TempGitFixtures.AnonymousAuthentication(), cancellation.Token).AsTask());
+
+        await manager.EnsureBareRepositoryAsync("repo-cancel-fetch", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            manager.FetchAsync("repo-cancel-fetch", TempGitFixtures.AnonymousAuthentication(), cancellation.Token).AsTask());
+
+        var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
+        await manager.CreateWorktreeAsync("repo-cancel-fetch", "wt-cancel", worktreePath, "agent/issue-cancel", baseCommit, CancellationToken.None);
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            manager.UpdateSubmodulesAsync("repo-cancel-fetch", worktreePath, _ => null, cancellation.Token).AsTask());
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            manager.PushAsync("repo-cancel-fetch", worktreePath, "agent/issue-cancel", TempGitFixtures.AnonymousAuthentication(), cancellation.Token).AsTask());
+    }
+
+    [Fact]
     public async Task EnsureBareRepositoryAsyncClonesLazilyAndIsIdempotent()
     {
         var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out _));
