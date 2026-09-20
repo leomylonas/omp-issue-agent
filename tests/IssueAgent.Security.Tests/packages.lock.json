@@ -177,9 +177,13 @@
           "xunit.v3.runner.common": "[3.2.2]"
         }
       },
+      "issueagent.domain": {
+        "type": "Project"
+      },
       "issueagent.git": {
         "type": "Project",
         "dependencies": {
+          "IssueAgent.Domain": "[1.0.0, )",
           "LibGit2Sharp": "[0.32.0, )"
         }
       }

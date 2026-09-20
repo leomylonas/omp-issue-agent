@@ -63,6 +63,25 @@ public sealed class RetryingGitRepositoryManager(IGitRepositoryManager inner, Re
     public ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, Func<string, GitAuthentication?> submoduleAuthenticationResolver, CancellationToken cancellationToken) =>
         RetryAsync(token => inner.MaterializeLfsContentAsync(repositoryId, worktreePath, authentication, submoduleAuthenticationResolver, token), cancellationToken);
 
+    public ValueTask PublishChangedSubmodulesAsync(
+        string repositoryId,
+        string worktreePath,
+        string baseCommit,
+        string branchName,
+        GitAuthentication authentication,
+        Func<string, GitAuthentication?> submoduleAuthenticationResolver,
+        CancellationToken cancellationToken) =>
+        RetryAsync(
+            token => inner.PublishChangedSubmodulesAsync(
+                repositoryId,
+                worktreePath,
+                baseCommit,
+                branchName,
+                authentication,
+                submoduleAuthenticationResolver,
+                token),
+            cancellationToken);
+
     public ValueTask UploadLfsObjectsAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken) =>
         RetryAsync(token => inner.UploadLfsObjectsAsync(repositoryId, worktreePath, branchName, authentication, token), cancellationToken);
 

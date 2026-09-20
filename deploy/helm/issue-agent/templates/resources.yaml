@@ -28,6 +28,8 @@ spec:
       app.kubernetes.io/component: issue-agent
       {{- include "issue-agent.selectorLabels" . | nindent 6 }}
   jobLabel: {{ .Values.serviceMonitor.jobLabel | quote }}
+  targetLabels:
+    - app.kubernetes.io/instance
   endpoints:
     - port: http
       path: /metrics
@@ -46,24 +48,24 @@ spec:
     - name: issue-agent
       rules:
         - alert: IssueAgentDown
-          expr: up{job="{{ include "issue-agent.name" . }}"} == 0 or absent(up{job="{{ include "issue-agent.name" . }}"})
+          expr: up{app_kubernetes_io_instance="{{ .Release.Name }}"} == 0 or absent(up{app_kubernetes_io_instance="{{ .Release.Name }}"})
           for: 5m
         - alert: IssueAgentPollingStalled
-          expr: increase(issueagent_poll_count_total[{{ .Values.prometheusRule.pollingStalledFor }}]) == 0 or absent(issueagent_poll_count_total{job="{{ include "issue-agent.name" . }}"})
+          expr: increase(issueagent_poll_count_total{app_kubernetes_io_instance="{{ .Release.Name }}"}[{{ .Values.prometheusRule.pollingStalledFor }}]) == 0 or absent(issueagent_poll_count_total{app_kubernetes_io_instance="{{ .Release.Name }}"})
           for: {{ .Values.prometheusRule.pollingStalledFor }}
         - alert: IssueAgentProviderFailures
-          expr: rate(issueagent_provider_errors_total[10m]) > 0 or rate(issueagent_poll_errors_total[10m]) > 0
+          expr: rate(issueagent_provider_errors_total{app_kubernetes_io_instance="{{ .Release.Name }}"}[10m]) > 0 or rate(issueagent_poll_errors_total{app_kubernetes_io_instance="{{ .Release.Name }}"}[10m]) > 0
           for: 10m
         - alert: IssueAgentOmpFailures
-          expr: rate(issueagent_omp_errors_total[10m]) > 0
+          expr: rate(issueagent_omp_errors_total{app_kubernetes_io_instance="{{ .Release.Name }}"}[10m]) > 0
           for: 10m
         - alert: IssueAgentGitFailures
-          expr: rate(issueagent_git_errors_total[10m]) > 0 or rate(issueagent_lfs_errors_total[10m]) > 0
+          expr: rate(issueagent_git_errors_total{app_kubernetes_io_instance="{{ .Release.Name }}"}[10m]) > 0 or rate(issueagent_lfs_errors_total{app_kubernetes_io_instance="{{ .Release.Name }}"}[10m]) > 0
           for: 10m
         - alert: IssueAgentWorkflowFailures
-          expr: rate(issueagent_plans_errors_total[10m]) > 0 or rate(issueagent_implementations_errors_total[10m]) > 0
+          expr: rate(issueagent_plans_errors_total{app_kubernetes_io_instance="{{ .Release.Name }}"}[10m]) > 0 or rate(issueagent_implementations_errors_total{app_kubernetes_io_instance="{{ .Release.Name }}"}[10m]) > 0
           for: 10m
         - alert: IssueAgentLongRunningOperations
-          expr: issueagent_operations_oldest_active_age_seconds > {{ .Values.prometheusRule.longRunningOperationThresholdSeconds }}
+          expr: issueagent_operations_oldest_active_age_seconds{app_kubernetes_io_instance="{{ .Release.Name }}"} > {{ .Values.prometheusRule.longRunningOperationThresholdSeconds }}
           for: 5m
 {{- end }}

@@ -39,7 +39,19 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
         string executablePath,
         IReadOnlyList<string> arguments,
         string workingDirectory,
-        IReadOnlyDictionary<string, string> allowedEnvironment)
+        IReadOnlyDictionary<string, string> allowedEnvironment) =>
+        StartAsync(executablePath, arguments, workingDirectory, allowedEnvironment, TimeSpan.FromSeconds(10), CancellationToken.None)
+            .GetAwaiter()
+            .GetResult();
+
+    /// <summary>Starts OMP and bounds readiness by the caller and configured operation deadline.</summary>
+    public static async Task<NdjsonRpcTransport> StartAsync(
+        string executablePath,
+        IReadOnlyList<string> arguments,
+        string workingDirectory,
+        IReadOnlyDictionary<string, string> allowedEnvironment,
+        TimeSpan? timeout,
+        CancellationToken cancellationToken)
     {
         var startInfo = new ProcessStartInfo(executablePath)
         {
@@ -63,9 +75,10 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
         var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException($"Failed to start OMP process '{executablePath}'.");
         var transport = new NdjsonRpcTransport(process);
+        using var deadline = CreateDeadline(timeout, cancellationToken);
         try
         {
-            transport.ready.Task.Wait(TimeSpan.FromSeconds(10));
+            await transport.ready.Task.WaitAsync(deadline.Token).ConfigureAwait(false);
             if (!transport.ready.Task.IsCompletedSuccessfully)
             {
                 throw new InvalidOperationException("OMP process exited without sending its ready frame.");
@@ -73,11 +86,22 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
         }
         catch
         {
-            transport.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            await transport.DisposeAsync().ConfigureAwait(false);
             throw;
         }
 
         return transport;
+    }
+
+    private static CancellationTokenSource CreateDeadline(TimeSpan? timeout, CancellationToken cancellationToken)
+    {
+        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (timeout is { } configuredTimeout)
+        {
+            deadline.CancelAfter(configuredTimeout);
+        }
+
+        return deadline;
     }
 
     /// <summary>Non-response OMP frames (agent events, UI requests, and metadata updates) in

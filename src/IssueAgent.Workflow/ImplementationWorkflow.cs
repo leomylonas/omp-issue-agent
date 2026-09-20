@@ -364,6 +364,15 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         var checkpointContent = workingContent with { ImplementationResult = resultMarkdown };
         await UpsertCanonicalCommentAsync(config, issueNumber, checkpointContent, cancellationToken).ConfigureAwait(false);
 
+        await deps.Git.PublishChangedSubmodulesAsync(
+            config.Repository.Id,
+            worktreePath,
+            latestTargetCommit,
+            workingState.Branch,
+            config.GitAuthentication,
+            config.SubmoduleAuthenticationResolver ?? (_ => null),
+            cancellationToken).ConfigureAwait(false);
+
         if (deps.Git.WorktreeRequiresLfs(worktreePath))
         {
             await deps.Git.UploadLfsObjectsAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);

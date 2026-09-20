@@ -12,7 +12,8 @@ public static class OmpProcessClientFactory
         string workingDirectory,
         IReadOnlyDictionary<string, string> allowedEnvironment,
         TimeSpan? shutdownGracePeriod = null,
-        RetryPolicy? retryPolicy = null)
+        RetryPolicy? retryPolicy = null,
+        TimeSpan? timeout = null)
     {
         var sessionDirectory = FindSessionDirectory(arguments);
         return new OmpRoleProcessClient(
@@ -22,7 +23,8 @@ public static class OmpProcessClientFactory
             allowedEnvironment,
             shutdownGracePeriod ?? TimeSpan.FromSeconds(15),
             sessionDirectory,
-            retryPolicy ?? RetryPolicy.Default);
+            retryPolicy ?? RetryPolicy.Default,
+            timeout);
     }
 
     private static string FindSessionDirectory(IReadOnlyList<string> arguments)

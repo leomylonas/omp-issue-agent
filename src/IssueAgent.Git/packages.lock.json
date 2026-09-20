@@ -15,6 +15,9 @@
         "type": "Transitive",
         "resolved": "2.0.324",
         "contentHash": "5YZVGNuO9nYFQfzRQGPGY9fdpSsABwlF2jSaZ7ydxCfjvt5Krbj/eHbXkvvgAQzp4lkjvgDrlAuuI4KTmqhDlA=="
+      },
+      "issueagent.domain": {
+        "type": "Project"
       }
     }
   }

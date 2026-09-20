@@ -154,6 +154,76 @@ public sealed class OmpProcessClientTests
     }
 
     [Fact]
+    public async Task ConfiguredTimeoutBoundsSessionCreationAndStateLookup()
+    {
+        await using var client = StartClient(
+            configuredTimeout: TimeSpan.FromMilliseconds(50),
+            hangCommands: "new_session");
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => client.CreateSessionAsync("plan", CancellationToken.None).AsTask());
+
+        await using var stateClient = StartClient(
+            configuredTimeout: TimeSpan.FromMilliseconds(50),
+            hangCommands: "get_state");
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => stateClient.CreateSessionAsync("plan", CancellationToken.None).AsTask());
+    }
+
+    [Fact]
+    public async Task ConfiguredTimeoutBoundsSessionResumeAndAbortControls()
+    {
+        var sessionFile = Path.Combine(Path.GetTempPath(), "persisted", "session.jsonl");
+        await using var resumeClient = StartClient(
+            configuredTimeout: TimeSpan.FromMilliseconds(50),
+            hangCommands: "switch_session");
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => resumeClient.ResumeSessionAsync("existing-session", sessionFile, CancellationToken.None).AsTask());
+
+        await using var abortClient = StartClient(
+            configuredTimeout: TimeSpan.FromMilliseconds(50),
+            hangCommands: "abort");
+        var session = await abortClient.CreateSessionAsync("plan", CancellationToken.None);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => abortClient.CancelAsync(session.SessionId, CancellationToken.None).AsTask());
+    }
+
+    [Fact]
+    public async Task ConfiguredTimeoutBoundsStartupAndRoleModelSelection()
+    {
+        var environment = new Dictionary<string, string>
+        {
+            ["PATH"] = Environment.GetEnvironmentVariable("PATH") ?? string.Empty,
+            ["OMP_READY_DELAY_MS"] = "200",
+        };
+        await using var startupClient = OmpProcessClientFactory.Start(
+            "python3",
+            [ScriptPath, "--mode", "rpc", "--session-dir", Path.GetTempPath()],
+            AppContext.BaseDirectory,
+            environment,
+            timeout: TimeSpan.FromMilliseconds(50));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => startupClient.CreateSessionAsync("plan", CancellationToken.None).AsTask());
+
+        environment["OMP_READY_DELAY_MS"] = "0";
+        environment["OMP_HANG_COMMANDS"] = "set_model";
+        await using var roleClient = OmpProcessClientFactory.Start(
+            "python3",
+            [ScriptPath, "--mode", "rpc", "--session-dir", Path.GetTempPath()],
+            AppContext.BaseDirectory,
+            environment,
+            timeout: TimeSpan.FromMilliseconds(50));
+        await roleClient.CreateSessionAsync("plan", CancellationToken.None);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => roleClient.SelectRoleAsync("task", CancellationToken.None).AsTask());
+    }
+
+    [Fact]
     public async Task StandardErrorIsDrainedWithoutExposingItsContentsInProcessDiagnostics()
     {
         var transport = NdjsonRpcTransport.Start(
@@ -242,14 +312,31 @@ public sealed class OmpProcessClientTests
             () => run.WaitAsync(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken));
     }
 
-    private static OmpProcessClient StartClient(TimeSpan? abortGracePeriod = null)
+    private static OmpProcessClient StartClient(
+        TimeSpan? abortGracePeriod = null,
+        TimeSpan? configuredTimeout = null,
+        string? hangCommands = null)
     {
+        var environment = new Dictionary<string, string>
+        {
+            ["PATH"] = Environment.GetEnvironmentVariable("PATH") ?? string.Empty,
+        };
+        if (hangCommands is not null)
+        {
+            environment["OMP_HANG_COMMANDS"] = hangCommands;
+        }
+
         var transport = NdjsonRpcTransport.Start(
             "python3",
             [ScriptPath],
             AppContext.BaseDirectory,
-            new Dictionary<string, string> { ["PATH"] = Environment.GetEnvironmentVariable("PATH") ?? string.Empty });
-        return new OmpProcessClient(transport, TimeSpan.FromSeconds(5), Path.GetTempPath(), abortGracePeriod);
+            environment);
+        return new OmpProcessClient(
+            transport,
+            TimeSpan.FromSeconds(5),
+            Path.GetTempPath(),
+            abortGracePeriod,
+            configuredTimeout: configuredTimeout);
     }
 
     private static async Task<List<OmpEvent>> CollectAsync(IAsyncEnumerable<OmpEvent> source)

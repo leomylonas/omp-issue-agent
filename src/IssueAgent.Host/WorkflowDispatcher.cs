@@ -773,7 +773,8 @@ public sealed partial class WorkflowDispatcher(
             workingDirectory,
             runtime.Config.OmpAllowedEnvironment,
             options.Value.ShutdownGracePeriod,
-            options.Value.Retry.ToPolicy());
+            options.Value.Retry.ToPolicy(),
+            runtime.OmpTimeout);
         var observableClient = new ObservableOmpClient(
             client,
             metrics,

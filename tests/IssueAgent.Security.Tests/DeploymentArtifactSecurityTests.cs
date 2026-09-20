@@ -263,10 +263,22 @@ public sealed class DeploymentArtifactSecurityTests
         Assert.Contains(".head_branch == env.GITHUB_REF_NAME", release, StringComparison.Ordinal);
         Assert.Contains(".head_sha == env.GITHUB_SHA", release, StringComparison.Ordinal);
         Assert.DoesNotContain("/commits/${GITHUB_SHA}/check-runs", release, StringComparison.Ordinal);
-        Assert.Contains("absent(up{", resources, StringComparison.Ordinal);
-        Assert.Contains("absent(issueagent_poll_count_total", resources, StringComparison.Ordinal);
+        const string releaseMetricLabel = "app_kubernetes_io_instance=\"{{ .Release.Name }}\"";
+        Assert.Contains("targetLabels:\n    - app.kubernetes.io/instance", resources, StringComparison.Ordinal);
+        Assert.Contains($"absent(up{{{releaseMetricLabel}}})", resources, StringComparison.Ordinal);
+        Assert.Contains($"increase(issueagent_poll_count_total{{{releaseMetricLabel}}}", resources, StringComparison.Ordinal);
+        Assert.Contains($"absent(issueagent_poll_count_total{{{releaseMetricLabel}}})", resources, StringComparison.Ordinal);
+        Assert.Contains($"rate(issueagent_provider_errors_total{{{releaseMetricLabel}}}", resources, StringComparison.Ordinal);
+        Assert.Contains($"rate(issueagent_poll_errors_total{{{releaseMetricLabel}}}", resources, StringComparison.Ordinal);
+        Assert.Contains($"rate(issueagent_omp_errors_total{{{releaseMetricLabel}}}", resources, StringComparison.Ordinal);
+        Assert.Contains($"rate(issueagent_git_errors_total{{{releaseMetricLabel}}}", resources, StringComparison.Ordinal);
+        Assert.Contains($"rate(issueagent_lfs_errors_total{{{releaseMetricLabel}}}", resources, StringComparison.Ordinal);
+        Assert.Contains($"rate(issueagent_plans_errors_total{{{releaseMetricLabel}}}", resources, StringComparison.Ordinal);
+        Assert.Contains($"rate(issueagent_implementations_errors_total{{{releaseMetricLabel}}}", resources, StringComparison.Ordinal);
+        Assert.Contains($"issueagent_operations_oldest_active_age_seconds{{{releaseMetricLabel}}}", resources, StringComparison.Ordinal);
+        Assert.Contains("helm lint deploy/helm/issue-agent", ci, StringComparison.Ordinal);
+        Assert.Contains("--set serviceMonitor.enabled=true", ci, StringComparison.Ordinal);
         Assert.Contains("cancel-in-progress: true", ci, StringComparison.Ordinal);
-        Assert.Contains("issueagent_poll_errors_total", resources, StringComparison.Ordinal);
     }
 
     [Fact]

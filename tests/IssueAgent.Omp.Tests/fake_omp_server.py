@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import time
 
 
 def send(obj):
@@ -31,6 +32,9 @@ def emit_standard_error():
 
 
 def main():
+    ready_delay_ms = int(os.environ.get("OMP_READY_DELAY_MS", "0"))
+    if ready_delay_ms > 0:
+        time.sleep(ready_delay_ms / 1000)
     send({
         "type": "ready",
         "protocolVersion": 1,
@@ -60,6 +64,8 @@ def main():
         if command_log:
             with open(command_log, "a", encoding="utf-8") as log:
                 log.write(command + " " + json.dumps(request) + "\n")
+        if command in os.environ.get("OMP_HANG_COMMANDS", "").split(","):
+            continue
 
         if command == "new_session":
             emit_standard_error()

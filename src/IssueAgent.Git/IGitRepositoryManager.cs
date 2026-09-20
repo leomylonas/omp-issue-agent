@@ -101,6 +101,18 @@ public interface IGitRepositoryManager
     /// <c>git-lfs</c> is not available.</summary>
     ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, Func<string, GitAuthentication?> submoduleAuthenticationResolver, CancellationToken cancellationToken);
 
+    /// <summary>Recursively publishes every changed submodule commit, including its LFS objects,
+    /// before its parent gitlink can be published. A changed gitlink whose checked-out repository
+    /// or commit cannot be safely published fails closed.</summary>
+    ValueTask PublishChangedSubmodulesAsync(
+        string repositoryId,
+        string worktreePath,
+        string baseCommit,
+        string branchName,
+        GitAuthentication authentication,
+        Func<string, GitAuthentication?> submoduleAuthenticationResolver,
+        CancellationToken cancellationToken);
+
     /// <summary>Uploads LFS objects referenced by <paramref name="branchName"/> that the remote does
     /// not already have. Must be called, and must succeed, before <see cref="PushAsync"/> publishes
     /// the corresponding ref.</summary>

@@ -11,23 +11,26 @@ public sealed class OmpProcessClient(
     TimeSpan shutdownGracePeriod,
     string sessionDirectory,
     TimeSpan? abortGracePeriod = null,
-    RetryPolicy? configuredRetryPolicy = null) : IOmpClient
+    RetryPolicy? configuredRetryPolicy = null,
+    TimeSpan? configuredTimeout = null) : IOmpClient
 {
     private readonly string sessionDirectory = NormalizeSessionDirectory(sessionDirectory);
     private readonly TimeSpan abortGracePeriod = abortGracePeriod ?? TimeSpan.FromSeconds(5);
     private readonly SemaphoreSlim dispatchGate = new(1, 1);
     private readonly RetryPolicy retryPolicy = configuredRetryPolicy ?? RetryPolicy.Default;
+    private readonly TimeSpan? configuredTimeout = configuredTimeout;
     private int cancellationRequested;
 
     public async ValueTask<OmpSession> CreateSessionAsync(string role, CancellationToken cancellationToken)
     {
+        using var deadline = CreateDeadline(cancellationToken);
         await RequireSuccessAsync(
             await transport.SendCommandAsync(
                 "new_session",
                 null,
-                cancellationToken).ConfigureAwait(false))
+                deadline.Token).ConfigureAwait(false))
             .ConfigureAwait(false);
-        var state = RequireData(await GetStateAsync(cancellationToken).ConfigureAwait(false));
+        var state = RequireData(await GetStateAsync(deadline.Token).ConfigureAwait(false));
         var sessionId = RequireString(state, "sessionId");
         return new OmpSession(sessionId, role, RequireSessionFile(ExtractSessionFile(state, sessionId)));
     }
@@ -38,13 +41,14 @@ public sealed class OmpProcessClient(
         string sessionFile,
         CancellationToken cancellationToken)
     {
+        using var deadline = CreateDeadline(cancellationToken);
         var persistedSessionFile = RequireSessionFile(sessionFile);
         var response = await transport.SendCommandAsync(
             "switch_session",
             new JsonObject { ["sessionPath"] = persistedSessionFile },
-            cancellationToken).ConfigureAwait(false);
+            deadline.Token).ConfigureAwait(false);
         await RequireSuccessAsync(response).ConfigureAwait(false);
-        var state = RequireData(await GetStateAsync(cancellationToken).ConfigureAwait(false));
+        var state = RequireData(await GetStateAsync(deadline.Token).ConfigureAwait(false));
         var activeSessionId = RequireString(state, "sessionId");
         if (!string.Equals(activeSessionId, sessionId, StringComparison.Ordinal))
         {
@@ -58,7 +62,8 @@ public sealed class OmpProcessClient(
 
     internal async ValueTask<OmpModel> GetSelectedModelAsync(CancellationToken cancellationToken)
     {
-        var state = RequireData(await GetStateAsync(cancellationToken).ConfigureAwait(false));
+        using var deadline = CreateDeadline(cancellationToken);
+        var state = RequireData(await GetStateAsync(deadline.Token).ConfigureAwait(false));
         var model = state["model"] as JsonObject
             ?? throw new OmpRpcException("OMP state was missing the selected model.");
         return new OmpModel(
@@ -69,6 +74,7 @@ public sealed class OmpProcessClient(
 
     internal async ValueTask SelectModelAsync(OmpModel model, CancellationToken cancellationToken)
     {
+        using var deadline = CreateDeadline(cancellationToken);
         await RequireSuccessAsync(
             await transport.SendCommandAsync(
                 "set_model",
@@ -77,7 +83,7 @@ public sealed class OmpProcessClient(
                     ["provider"] = model.Provider,
                     ["modelId"] = model.Id,
                 },
-                cancellationToken).ConfigureAwait(false))
+                deadline.Token).ConfigureAwait(false))
             .ConfigureAwait(false);
     }
 
@@ -170,7 +176,7 @@ public sealed class OmpProcessClient(
             timeoutCts?.IsCancellationRequested == true && !cancellationToken.IsCancellationRequested)
         {
             Interlocked.Exchange(ref cancellationRequested, 1);
-            await RequestAbortAsync(suppressErrors: true).ConfigureAwait(false);
+            await RequestAbortAsync(suppressErrors: true, cancellationToken: CancellationToken.None).ConfigureAwait(false);
             Interlocked.Exchange(ref cancellationRequested, 0);
             events.Add(new OmpErrorEvent(request.SessionId, DateTimeOffset.UtcNow, "OMP run timed out.", false));
         }
@@ -184,14 +190,13 @@ public sealed class OmpProcessClient(
         // Prompt acknowledgement can legitimately remain pending while OMP is working. Abort is a
         // separately correlated RPC command, so it must bypass the prompt-dispatch gate or an
         // explicit cancellation would wait for the very acknowledgement it needs to interrupt.
-        await RequestAbortAsync(suppressErrors: false).ConfigureAwait(false);
+        await RequestAbortAsync(suppressErrors: false, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task RequestAbortAsync(bool suppressErrors)
+    private async Task RequestAbortAsync(bool suppressErrors, CancellationToken cancellationToken)
     {
-        // Once cancellation owns the gate, its abort uses an independent deadline so shutdown
-        // remains bounded even if the caller token is cancelled after acquiring the gate.
-        using var abortCts = new CancellationTokenSource(abortGracePeriod);
+        // Abort has its own linked deadline because a timed-out run's token is already cancelled.
+        using var abortCts = CreateDeadline(cancellationToken, abortGracePeriod);
         try
         {
             await RequireSuccessAsync(
@@ -215,10 +220,23 @@ public sealed class OmpProcessClient(
         dispatchGate.Dispose();
     }
 
-    private Task<System.Text.Json.Nodes.JsonObject> GetStateAsync(CancellationToken cancellationToken) =>
+    private Task<JsonObject> GetStateAsync(CancellationToken cancellationToken) =>
         retryPolicy.ExecuteAsync(
             token => transport.SendCommandAsync("get_state", null, token),
             cancellationToken);
+
+    private CancellationTokenSource CreateDeadline(
+        CancellationToken cancellationToken,
+        TimeSpan? fallbackTimeout = null)
+    {
+        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if ((configuredTimeout ?? fallbackTimeout) is { } timeout)
+        {
+            deadline.CancelAfter(timeout);
+        }
+
+        return deadline;
+    }
 
     private static string NormalizeSessionDirectory(string value)
     {

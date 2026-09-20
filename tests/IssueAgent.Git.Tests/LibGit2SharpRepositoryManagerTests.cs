@@ -845,6 +845,78 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
         Assert.Empty(Directory.EnumerateFileSystemEntries(outsidePath));
     }
 
+    [Fact]
+    public async Task PublishChangedSubmodulesAsyncPushesChangedGitlinkCommitBeforeParentPublication()
+    {
+        var childRemotePath = Track(TempGitFixtures.CreateBareRemoteRepository(out _));
+        var parentPath = Track(TempGitFixtures.CreateTempDirectory());
+        Repository.Init(parentPath);
+        RunGitCli(parentPath, "-c", "protocol.file.allow=always", "submodule", "add", childRemotePath, "dependencies/child");
+        RunGitCli(parentPath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-am", "Add child submodule");
+        var baseCommit = new Repository(parentPath).Head.Tip.Sha;
+
+        await manager.EnsureBareRepositoryAsync("publish-submodule", parentPath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
+        await manager.CreateWorktreeAsync("publish-submodule", "publish-submodule-wt", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
+        await manager.UpdateSubmodulesAsync("publish-submodule", worktreePath, _ => null, CancellationToken.None);
+
+        var childPath = Path.Combine(worktreePath, "dependencies", "child");
+        File.WriteAllText(Path.Combine(childPath, "published.txt"), "child publication");
+        RunGitCli(childPath, "add", "published.txt");
+        RunGitCli(childPath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Update child");
+        var childCommit = new Repository(childPath).Head.Tip.Sha;
+        RunGitCli(worktreePath, "add", "dependencies/child");
+        RunGitCli(worktreePath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Update child gitlink");
+
+        await manager.PublishChangedSubmodulesAsync(
+            "publish-submodule",
+            worktreePath,
+            baseCommit,
+            "agent/issue-1",
+            TempGitFixtures.AnonymousAuthentication(),
+            _ => null,
+            CancellationToken.None);
+
+        using var childRemote = new Repository(childRemotePath);
+        Assert.Equal(childCommit, childRemote.Branches["agent/issue-1"]!.Tip.Sha);
+    }
+
+    [Fact]
+    public async Task PublishChangedSubmodulesAsyncRejectsAnUninitializedChangedGitlink()
+    {
+        var childRemotePath = Track(TempGitFixtures.CreateBareRemoteRepository(out _));
+        var parentPath = Track(TempGitFixtures.CreateTempDirectory());
+        Repository.Init(parentPath);
+        RunGitCli(parentPath, "-c", "protocol.file.allow=always", "submodule", "add", childRemotePath, "dependencies/child");
+        RunGitCli(parentPath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-am", "Add child submodule");
+        var baseCommit = new Repository(parentPath).Head.Tip.Sha;
+
+        await manager.EnsureBareRepositoryAsync("reject-uninitialized-submodule", parentPath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
+        await manager.CreateWorktreeAsync("reject-uninitialized-submodule", "reject-uninitialized-submodule-wt", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
+        await manager.UpdateSubmodulesAsync("reject-uninitialized-submodule", worktreePath, _ => null, CancellationToken.None);
+
+        var childPath = Path.Combine(worktreePath, "dependencies", "child");
+        File.WriteAllText(Path.Combine(childPath, "unpublished.txt"), "unpublished");
+        RunGitCli(childPath, "add", "unpublished.txt");
+        RunGitCli(childPath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Unpublished child");
+        RunGitCli(worktreePath, "add", "dependencies/child");
+        RunGitCli(worktreePath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Update child gitlink");
+        Directory.Delete(childPath, recursive: true);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            manager.PublishChangedSubmodulesAsync(
+                "reject-uninitialized-submodule",
+                worktreePath,
+                baseCommit,
+                "agent/issue-1",
+                TempGitFixtures.AnonymousAuthentication(),
+                _ => null,
+                CancellationToken.None).AsTask());
+
+        Assert.Contains("not initialized", exception.Message, StringComparison.Ordinal);
+    }
+
     private static void WithFakeCommand(string command, string script, Action action)
     {
         lock (PathLock)

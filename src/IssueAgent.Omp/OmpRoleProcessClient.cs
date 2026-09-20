@@ -17,7 +17,8 @@ internal sealed class OmpRoleProcessClient(
     IReadOnlyDictionary<string, string> allowedEnvironment,
     TimeSpan shutdownGracePeriod,
     string sessionDirectory,
-    RetryPolicy retryPolicy) : IOmpClient
+    RetryPolicy retryPolicy,
+    TimeSpan? timeout) : IOmpClient
 {
     private OmpProcessClient? inner;
     private OmpSession? session;
@@ -26,7 +27,7 @@ internal sealed class OmpRoleProcessClient(
     public async ValueTask<OmpSession> CreateSessionAsync(string role, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(role);
-        await StartForRoleAsync(role).ConfigureAwait(false);
+        await StartForRoleAsync(role, cancellationToken).ConfigureAwait(false);
         session = await inner!.CreateSessionAsync(role, cancellationToken).ConfigureAwait(false);
         activeRole = role;
         return session;
@@ -34,7 +35,7 @@ internal sealed class OmpRoleProcessClient(
 
     public async ValueTask<OmpSession> ResumeSessionAsync(string sessionId, string sessionFile, CancellationToken cancellationToken)
     {
-        await StartForRoleAsync(role: null).ConfigureAwait(false);
+        await StartForRoleAsync(role: null, cancellationToken).ConfigureAwait(false);
         session = await inner!.ResumeSessionAsync(sessionId, sessionFile, cancellationToken).ConfigureAwait(false);
         activeRole = null;
         return session;
@@ -50,14 +51,14 @@ internal sealed class OmpRoleProcessClient(
 
         if (session is null)
         {
-            await StartForRoleAsync(role).ConfigureAwait(false);
+            await StartForRoleAsync(role, cancellationToken).ConfigureAwait(false);
             activeRole = role;
             return;
         }
 
         var persistedSession = session.SessionFile
             ?? throw new OmpRpcException($"OMP session '{session.SessionId}' did not provide a durable session file.");
-        await StartForRoleAsync(role).ConfigureAwait(false);
+        await StartForRoleAsync(role, cancellationToken).ConfigureAwait(false);
         var selectedModel = await inner!.GetSelectedModelAsync(cancellationToken).ConfigureAwait(false);
         session = await inner.ResumeSessionAsync(session.SessionId, persistedSession, cancellationToken).ConfigureAwait(false);
         await inner.SelectModelAsync(selectedModel, cancellationToken).ConfigureAwait(false);
@@ -91,7 +92,7 @@ internal sealed class OmpRoleProcessClient(
         }
     }
 
-    private async ValueTask StartForRoleAsync(string? role)
+    private async ValueTask StartForRoleAsync(string? role, CancellationToken cancellationToken)
     {
         if (inner is not null)
         {
@@ -101,8 +102,15 @@ internal sealed class OmpRoleProcessClient(
         var startupArguments = role is null
             ? arguments
             : arguments.Concat(["--model", role]).ToArray();
-        var transport = NdjsonRpcTransport.Start(executablePath, startupArguments, workingDirectory, allowedEnvironment);
-        inner = new OmpProcessClient(transport, shutdownGracePeriod, sessionDirectory, configuredRetryPolicy: retryPolicy);
+        var transport = await NdjsonRpcTransport
+            .StartAsync(executablePath, startupArguments, workingDirectory, allowedEnvironment, timeout, cancellationToken)
+            .ConfigureAwait(false);
+        inner = new OmpProcessClient(
+            transport,
+            shutdownGracePeriod,
+            sessionDirectory,
+            configuredRetryPolicy: retryPolicy,
+            configuredTimeout: timeout);
         activeRole = null;
     }
 }

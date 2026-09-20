@@ -156,6 +156,21 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
         return ValueTask.CompletedTask;
     }
 
+    public int PublishChangedSubmodulesCallCount { get; private set; }
+
+    public ValueTask PublishChangedSubmodulesAsync(
+        string repositoryId,
+        string worktreePath,
+        string baseCommit,
+        string branchName,
+        GitAuthentication authentication,
+        Func<string, GitAuthentication?> submoduleAuthenticationResolver,
+        CancellationToken cancellationToken)
+    {
+        PublishChangedSubmodulesCallCount++;
+        return ValueTask.CompletedTask;
+    }
+
     public ValueTask UploadLfsObjectsAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken)
     {
         OnLfsUpload?.Invoke();

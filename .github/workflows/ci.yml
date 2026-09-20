@@ -81,6 +81,7 @@ jobs:
             --set omp.authBroker.image.tag=0.1.0 \
             --set-file secret.stringData.OMP_AUTH_BROKER_TOKEN=.github/fixtures/omp-auth-broker-token \
             --set prometheusRule.enabled=true \
+            --set serviceMonitor.enabled=true \
             --set grafana.dashboard.enabled=true >/tmp/issue-agent-broker.yaml
           docker run --rm --interactive ghcr.io/yannh/kubeconform:v0.7.0 \
             -strict \

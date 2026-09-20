@@ -30,6 +30,8 @@ public sealed class FakeGitProvider : IGitProvider
     public string Name => "fake";
 
     public string DefaultBranch { get; set; } = "main";
+    public ProviderIdentity CurrentIdentity { get; set; } = new("issue-agent", "IssueAgent");
+
 
     public void AddIssue(RepositoryRef repository, long number, string title, string description, IReadOnlySet<string>? labels = null, DateTimeOffset? updatedAt = null)
     {
@@ -56,7 +58,7 @@ public sealed class FakeGitProvider : IGitProvider
             isBot));
     }
 
-    public ValueTask<ProviderIdentity> GetCurrentIdentityAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
+    public ValueTask<ProviderIdentity> GetCurrentIdentityAsync(CancellationToken cancellationToken) => ValueTask.FromResult(CurrentIdentity);
 
     public ValueTask<string> GetDefaultBranchAsync(RepositoryRef repository, CancellationToken cancellationToken) => ValueTask.FromResult(DefaultBranch);
 
@@ -89,7 +91,7 @@ public sealed class FakeGitProvider : IGitProvider
     public ValueTask<ProviderComment> CreateIssueCommentAsync(RepositoryRef repository, long issueNumber, string body, CancellationToken cancellationToken)
     {
         CreatedComments.Add((issueNumber, body));
-        var comment = new ProviderComment(999, "issue-agent-bot", body, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, new AttachmentSource("issue-comment", issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)), false);
+        var comment = new ProviderComment(999, CurrentIdentity.Login, body, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, new AttachmentSource("issue-comment", issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)), false);
         var key = (repository.Id, issueNumber);
         if (!IssueComments.TryGetValue(key, out var list))
         {

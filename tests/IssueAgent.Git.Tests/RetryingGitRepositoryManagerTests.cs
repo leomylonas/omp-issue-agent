@@ -23,12 +23,15 @@ public sealed class RetryingGitRepositoryManagerTests
         await manager.UpdateSubmodulesAsync("repo", "/tmp/worktree", _ => authentication, CancellationToken.None);
         await manager.MaterializeLfsContentAsync("repo", "/tmp/worktree", authentication, _ => authentication, CancellationToken.None);
         await manager.UploadLfsObjectsAsync("repo", "/tmp/worktree", "agent/issue-1", authentication, CancellationToken.None);
+        await manager.PublishChangedSubmodulesAsync("repo", "/tmp/worktree", "abc123", "agent/issue-1", authentication, _ => authentication, CancellationToken.None);
+
 
         Assert.Equal(2, inner.Calls["clone"]);
         Assert.Equal(2, inner.Calls["fetch"]);
         Assert.Equal(2, inner.Calls["submodule"]);
         Assert.Equal(2, inner.Calls["lfs-pull"]);
         Assert.Equal(2, inner.Calls["lfs-push"]);
+        Assert.Equal(2, inner.Calls["publish-submodules"]);
     }
 
     [Fact]
@@ -87,6 +90,8 @@ public sealed class RetryingGitRepositoryManagerTests
         public ValueTask RemoveLocalBranchAsync(string repositoryId, string branchName, CancellationToken cancellationToken) => ValueTask.CompletedTask;
         public bool WorktreeRequiresLfs(string worktreePath) => false;
         public ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication auth, Func<string, GitAuthentication?> submoduleAuthenticationResolver, CancellationToken cancellationToken) => Attempt("lfs-pull");
+        public ValueTask PublishChangedSubmodulesAsync(string repositoryId, string worktreePath, string baseCommit, string branchName, GitAuthentication authentication, Func<string, GitAuthentication?> submoduleAuthenticationResolver, CancellationToken cancellationToken) => Attempt("publish-submodules");
+
         public ValueTask UploadLfsObjectsAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication auth, CancellationToken cancellationToken) => Attempt("lfs-push");
 
         private ValueTask Attempt(string operation)

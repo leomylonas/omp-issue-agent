@@ -91,6 +91,27 @@ public sealed class ObservableGitRepositoryManager(IGitRepositoryManager inner, 
     public async ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, Func<string, GitAuthentication?> submoduleAuthenticationResolver, CancellationToken cancellationToken) =>
         await RunLfsAsync("materialize", repositoryId, () => inner.MaterializeLfsContentAsync(repositoryId, worktreePath, authentication, submoduleAuthenticationResolver, cancellationToken).AsTask(), cancellationToken).ConfigureAwait(false);
 
+    public async ValueTask PublishChangedSubmodulesAsync(
+        string repositoryId,
+        string worktreePath,
+        string baseCommit,
+        string branchName,
+        GitAuthentication authentication,
+        Func<string, GitAuthentication?> submoduleAuthenticationResolver,
+        CancellationToken cancellationToken) =>
+        await RunAsync(
+            "publish-changed-submodules",
+            repositoryId,
+            () => inner.PublishChangedSubmodulesAsync(
+                repositoryId,
+                worktreePath,
+                baseCommit,
+                branchName,
+                authentication,
+                submoduleAuthenticationResolver,
+                cancellationToken).AsTask(),
+            cancellationToken).ConfigureAwait(false);
+
     public async ValueTask UploadLfsObjectsAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken) =>
         await RunLfsAsync("upload", repositoryId, () => inner.UploadLfsObjectsAsync(repositoryId, worktreePath, branchName, authentication, cancellationToken).AsTask(), cancellationToken).ConfigureAwait(false);
 

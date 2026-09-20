@@ -50,6 +50,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
         var updated = provider.UpdatedComments[^1];
         Assert.Contains("Added a guard clause.", updated.Body, StringComparison.Ordinal);
         Assert.Contains(provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)], l => l == "agent:phase:review");
+        Assert.Equal(1, git.PublishChangedSubmodulesCallCount);
     }
 
     [Fact]
@@ -680,6 +681,8 @@ public sealed class ImplementationWorkflowTests : IDisposable
         public ValueTask RemoveLocalBranchAsync(string repositoryId, string branchName, CancellationToken cancellationToken) => inner.RemoveLocalBranchAsync(repositoryId, branchName, cancellationToken);
         public bool WorktreeRequiresLfs(string worktreePath) => inner.WorktreeRequiresLfs(worktreePath);
         public ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, Func<string, GitAuthentication?> submoduleAuthenticationResolver, CancellationToken cancellationToken) => inner.MaterializeLfsContentAsync(repositoryId, worktreePath, authentication, submoduleAuthenticationResolver, cancellationToken);
+        public ValueTask PublishChangedSubmodulesAsync(string repositoryId, string worktreePath, string baseCommit, string branchName, GitAuthentication authentication, Func<string, GitAuthentication?> submoduleAuthenticationResolver, CancellationToken cancellationToken) => inner.PublishChangedSubmodulesAsync(repositoryId, worktreePath, baseCommit, branchName, authentication, submoduleAuthenticationResolver, cancellationToken);
+
         public ValueTask UploadLfsObjectsAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken) => inner.UploadLfsObjectsAsync(repositoryId, worktreePath, branchName, authentication, cancellationToken);
     }
 }

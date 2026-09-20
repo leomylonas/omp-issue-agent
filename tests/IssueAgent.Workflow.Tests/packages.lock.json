@@ -182,6 +182,7 @@
       "issueagent.git": {
         "type": "Project",
         "dependencies": {
+          "IssueAgent.Domain": "[1.0.0, )",
           "LibGit2Sharp": "[0.32.0, )"
         }
       },

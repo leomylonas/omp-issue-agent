@@ -17,22 +17,30 @@ public enum WorkflowOutcomeStatus
 public sealed record WorkflowOutcome(WorkflowOutcomeStatus Status, WorkflowState State, string? Message = null);
 
 /// <summary>Locates the single canonical IssueAgent comment on an issue by its hidden locator
-/// marker (specification §17). Human edits to this comment are never authoritative control input.</summary>
+/// marker (specification §17). Durable state is accepted only from the authenticated provider
+/// identity; an untrusted user can reproduce the marker but cannot control workflow state.</summary>
 public static class CanonicalCommentLocator
 {
     public static async Task<ProviderComment?> FindAsync(IGitProvider provider, RepositoryRef repository, long issueNumber, CancellationToken cancellationToken)
     {
+        var authenticatedIdentity = await provider.GetCurrentIdentityAsync(cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(authenticatedIdentity.Login))
+        {
+            throw new CanonicalCommentCorruptException("Authenticated provider identity has no login; canonical workflow state cannot be trusted.");
+        }
+
         ProviderComment? canonicalComment = null;
         await foreach (var comment in provider.GetIssueCommentsAsync(repository, issueNumber, cancellationToken).ConfigureAwait(false))
         {
-            if (!CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
+            if (!CanonicalCommentMarkdown.IsCanonicalComment(comment.Body) ||
+                !string.Equals(comment.AuthorLogin, authenticatedIdentity.Login, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
 
             if (canonicalComment is not null)
             {
-                throw new CanonicalCommentCorruptException("Multiple comments contain the canonical state locator marker.");
+                throw new CanonicalCommentCorruptException("Multiple comments from the authenticated provider identity contain the canonical state locator marker.");
             }
 
             canonicalComment = comment;

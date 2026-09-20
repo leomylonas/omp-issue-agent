@@ -600,6 +600,122 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         }
     }
 
+    public async ValueTask PublishChangedSubmodulesAsync(
+        string repositoryId,
+        string worktreePath,
+        string baseCommit,
+        string branchName,
+        GitAuthentication authentication,
+        Func<string, GitAuthentication?> submoduleAuthenticationResolver,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(submoduleAuthenticationResolver);
+        using var repository = new Repository(worktreePath);
+        var baseTree = repository.Lookup<Commit>(baseCommit)?.Tree
+            ?? throw new GitReferenceNotFoundException($"Base commit '{baseCommit}' was not found.");
+        var head = repository.Head.Tip
+            ?? throw new GitReferenceNotFoundException("Worktree has no HEAD commit.");
+
+        foreach (var change in repository.Diff.Compare<TreeChanges>(baseTree, head.Tree)
+                     .Where(change => change.Status != ChangeKind.Deleted &&
+                                      head.Tree[change.Path]?.TargetType == TreeEntryTargetType.GitLink))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var submodulePath = GetSafeSubmodulePath(Path.GetFullPath(worktreePath), Path.GetFullPath(worktreePath), change.Path);
+            if (!Directory.Exists(submodulePath))
+            {
+                throw new InvalidOperationException(
+                    $"Changed submodule '{change.Path}' is not initialized and cannot be published safely.");
+            }
+
+            var expectedCommit = head.Tree[change.Path]!.Target.Id.Sha;
+            await PublishSubmoduleRecursivelyAsync(
+                submodulePath,
+                expectedCommit,
+                branchName,
+                submoduleAuthenticationResolver,
+                new HashSet<string>(StringComparer.Ordinal),
+                cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task PublishSubmoduleRecursivelyAsync(
+        string repositoryPath,
+        string expectedCommit,
+        string branchName,
+        Func<string, GitAuthentication?> authenticationResolver,
+        ISet<string> visitedRepositoryPaths,
+        CancellationToken cancellationToken)
+    {
+        using var repository = new Repository(repositoryPath);
+        var repositoryIdentity = Path.GetFullPath(repository.Info.Path);
+        if (!visitedRepositoryPaths.Add(repositoryIdentity))
+        {
+            return;
+        }
+
+        var head = repository.Head.Tip
+            ?? throw new InvalidOperationException($"Changed submodule '{repositoryPath}' has no HEAD commit.");
+        if (!string.Equals(head.Sha, expectedCommit, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Changed submodule '{repositoryPath}' is checked out at '{head.Sha}', not its committed gitlink '{expectedCommit}'.");
+        }
+
+        var remote = repository.Network.Remotes["origin"]
+            ?? throw new InvalidOperationException($"Changed submodule '{repositoryPath}' has no origin remote.");
+        var host = TryGetHost(remote.Url);
+        var authentication = host is null
+            ? GitAuthentication.Anonymous(TlsTrust.System)
+            : authenticationResolver(host) ?? GitAuthentication.Anonymous(TlsTrust.System);
+
+        foreach (var submodule in repository.Submodules)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var submodulePath = GetSafeSubmodulePath(repositoryPath, repositoryPath, submodule.Path);
+            if (!Directory.Exists(submodulePath))
+            {
+                throw new InvalidOperationException(
+                    $"Nested submodule '{submodule.Path}' of changed submodule '{repositoryPath}' is not initialized and cannot be published safely.");
+            }
+
+            var gitlink = head.Tree[submodule.Path];
+            if (gitlink?.TargetType != TreeEntryTargetType.GitLink)
+            {
+                throw new InvalidOperationException(
+                    $"Nested submodule '{submodule.Path}' of changed submodule '{repositoryPath}' has no committed gitlink.");
+            }
+
+            await PublishSubmoduleRecursivelyAsync(
+                submodulePath,
+                gitlink.Target.Id.Sha,
+                branchName,
+                authenticationResolver,
+                visitedRepositoryPaths,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        if (GitLfsRunner.RepositoryRequiresLfs(repositoryPath))
+        {
+            await GitLfsRunner.UploadObjectsAsync(repositoryPath, remote.Url, head.Sha, authentication, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (authentication.Mode == GitAuthenticationMode.Ssh)
+        {
+            await GitSshTransport.PushCommitAsync(repositoryPath, head.Sha, branchName, authentication, cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        repository.Network.Push(remote, $"{head.Sha}:refs/heads/{branchName}", new PushOptions
+        {
+            CredentialsProvider = CredentialsHandlerFor(authentication, host),
+            CertificateCheck = CertificateCheckHandlerFor(authentication.TlsTrust),
+            OnPushTransferProgress = (_, _, _) => !cancellationToken.IsCancellationRequested,
+        });
+    }
+
     public async ValueTask UploadLfsObjectsAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken)
     {
         await GitLfsRunner.UploadObjectsAsync(
