@@ -212,10 +212,10 @@ public static class EffectiveConfigurationResolver
             ?? provider.DefaultOwnerOrNamespace
             ?? throw new InvalidOperationException($"Repository '{repository.Id}' requires an owner/namespace.");
         var settings = Merge(root.Defaults, provider.Defaults, repository.Settings);
-        var cloneUrl = repository.CloneUrl ?? DeriveCloneUrl(provider.Kind, provider.BaseUri, owner, repositoryName);
+        var git = ResolveGit(settings.Git, providerToken, environmentReader, fileReader);
+        var cloneUrl = repository.CloneUrl ?? DeriveCloneUrl(provider.Kind, provider.BaseUri, owner, repositoryName, git);
         var targetBranch = repository.TargetBranch;
         var startDate = repository.StartDate ?? root.StartDate;
-        var git = ResolveGit(settings.Git, providerToken, environmentReader, fileReader);
         var roles = new Dictionary<string, string>(root.Omp.Roles, StringComparer.Ordinal);
         foreach (var pair in settings.OmpRoles) roles[pair.Key] = pair.Value;
         return new EffectiveRepositoryConfiguration(
@@ -372,7 +372,12 @@ public static class EffectiveConfigurationResolver
             git?.SshTrust?.Fingerprints ?? []);
     }
 
-    private static string DeriveCloneUrl(ProviderKind kind, Uri baseUri, string owner, string repository)
+    private static string DeriveCloneUrl(
+        ProviderKind kind,
+        Uri baseUri,
+        string owner,
+        string repository,
+        EffectiveGitConfiguration git)
     {
         var builder = new UriBuilder(baseUri) { Query = string.Empty, Fragment = string.Empty };
         var path = builder.Path.TrimEnd('/');
@@ -385,6 +390,12 @@ public static class EffectiveConfigurationResolver
         };
         builder.Host = builder.Host.Equals("api.github.com", StringComparison.OrdinalIgnoreCase) ? "github.com" : builder.Host;
         builder.Path = $"{path}/{owner}/{repository}.git";
+        if (git.Mode == ConfiguredGitAuthenticationMode.Ssh)
+        {
+            builder.Scheme = Uri.UriSchemeSsh;
+            builder.Port = -1;
+            builder.UserName = git.SshUsername ?? string.Empty;
+        }
         return builder.Uri.ToString();
     }
 }

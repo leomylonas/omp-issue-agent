@@ -112,6 +112,12 @@ public sealed partial class GitSshTransport
         }
 
         var options = new StringBuilder("ssh -i ").Append(Quote(keyPath)).Append(" -o IdentitiesOnly=yes");
+        if (!string.IsNullOrWhiteSpace(authentication.SshUsername))
+        {
+            // The provider configuration, rather than a mutable remote URL, owns the SSH identity.
+            // This also applies to submodule and LFS SSH commands.
+            options.Append(" -o User=").Append(Quote(authentication.SshUsername));
+        }
 
         if (trust.Mode == SshHostVerificationMode.None)
         {

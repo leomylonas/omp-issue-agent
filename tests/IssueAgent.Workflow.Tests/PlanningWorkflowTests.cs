@@ -148,6 +148,29 @@ public sealed class PlanningWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunInitialPlanningAsyncReconcilesNewBotCommentsWhenConfigured()
+    {
+        provider.AddIssue(Repository, 1, "Bug", "Original description");
+        var omp = new FakeOmpClient().EnqueueSessionId("session-1");
+        omp.EnqueueRun(
+            onStart: () => provider.AddComment(Repository, 1, "review-bot", "Automated finding.", clock.UtcNow.AddMinutes(1), isBot: true),
+            new OmpCompletedEvent("session-1", clock.UtcNow, """{"planText":"Initial plan","decisions":[]}"""));
+        omp.EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"planText":"Plan addresses the automated finding.","decisions":[]}"""));
+
+        await CreateWorkflow(ignoreBotComments: false).RunInitialPlanningAsync(
+            CreateConfig() with { IgnoreBotComments = false },
+            1,
+            omp,
+            CancellationToken.None);
+
+        Assert.Equal(2, omp.RunRequests.Count);
+        Assert.Contains("Automated finding.", omp.RunRequests[1].Prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RunReplanAsyncEditsExistingCommentInPlaceAndIncrementsRevision()
     {
         provider.AddIssue(Repository, 1, "Bug", "Description");
@@ -248,10 +271,13 @@ public sealed class PlanningWorkflowTests : IDisposable
         Assert.Null(resolver!("any-unconfigured-host.example"));
     }
 
-    private PlanningWorkflow CreateWorkflow()
+    private PlanningWorkflow CreateWorkflow(bool ignoreBotComments = true)
     {
         var attachmentPipeline = new AttachmentPipeline(provider, new AttachmentLimits());
-        var contextBuilder = new AgentContextBuilder(provider, attachmentPipeline, new AgentContextBuilderOptions());
+        var contextBuilder = new AgentContextBuilder(
+            provider,
+            attachmentPipeline,
+            new AgentContextBuilderOptions { IgnoreBotComments = ignoreBotComments });
         var deps = new WorkflowDependencies(provider, git, contextBuilder, notifier, clock);
         return new PlanningWorkflow(deps);
     }

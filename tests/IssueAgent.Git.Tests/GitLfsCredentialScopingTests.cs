@@ -44,12 +44,26 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
 
         InvokeAddTrustedLfsEndpointConfiguration(
             startInfo,
-            "https://git.trusted.example/octo/widgets.git",
-            new GitAuthentication { Mode = GitAuthenticationMode.Token, HttpsToken = "super-secret-token" });
+            "https://git.trusted.example/octo/widgets.git");
 
         Assert.Equal(
             ["-c", "lfs.url=https://git.trusted.example/octo/widgets.git/info/lfs",
              "-c", "lfs.pushurl=https://git.trusted.example/octo/widgets.git/info/lfs"],
+            startInfo.ArgumentList);
+    }
+
+    [Fact]
+    public void TrustedLfsConfigurationPinsSshEndpointToCanonicalRemote()
+    {
+        var startInfo = new ProcessStartInfo();
+
+        InvokeAddTrustedLfsEndpointConfiguration(
+            startInfo,
+            "ssh://remote-user@git.trusted.example/octo/widgets.git");
+
+        Assert.Equal(
+            ["-c", "lfs.url=ssh://remote-user@git.trusted.example/octo/widgets.git/info/lfs",
+             "-c", "lfs.pushurl=ssh://remote-user@git.trusted.example/octo/widgets.git/info/lfs"],
             startInfo.ArgumentList);
     }
 
@@ -217,13 +231,12 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
 
     private static void InvokeAddTrustedLfsEndpointConfiguration(
         ProcessStartInfo startInfo,
-        string canonicalRemoteUrl,
-        GitAuthentication authentication)
+        string canonicalRemoteUrl)
     {
         var method = typeof(GitLfsRunner).GetMethod(
             "AddTrustedLfsEndpointConfiguration",
             BindingFlags.NonPublic | BindingFlags.Static)!;
-        method.Invoke(null, [startInfo, canonicalRemoteUrl, authentication]);
+        method.Invoke(null, [startInfo, canonicalRemoteUrl]);
     }
 
     private static string RunAskPass(ProcessStartInfo authenticationStartInfo, string prompt)

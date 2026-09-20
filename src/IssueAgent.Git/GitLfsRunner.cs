@@ -104,7 +104,7 @@ public static class GitLfsRunner
             // it per process rather than writing `git lfs install` state into the worktree.
             startInfo.ArgumentList.Add("-c");
             startInfo.ArgumentList.Add("lfs.repositoryformatversion=0");
-            AddTrustedLfsEndpointConfiguration(startInfo, canonicalRemoteUrl, authentication);
+            AddTrustedLfsEndpointConfiguration(startInfo, canonicalRemoteUrl);
 
             foreach (var argument in arguments)
             {
@@ -192,23 +192,37 @@ public static class GitLfsRunner
 
     private static void AddTrustedLfsEndpointConfiguration(
         ProcessStartInfo startInfo,
-        string canonicalRemoteUrl,
-        GitAuthentication authentication)
+        string canonicalRemoteUrl)
     {
-        if (authentication.Mode is not (GitAuthenticationMode.ProviderToken or GitAuthenticationMode.Token) ||
-            TryGetHttpsUri(canonicalRemoteUrl) is not { } remote)
+        if (!TryGetLfsRemoteUri(canonicalRemoteUrl, out var remote))
         {
             return;
         }
 
         // git-lfs reads repository-local lfs.url/lfs.pushurl, which OMP can modify while working.
         // Command-line config has precedence, so force both operations to the configured remote
-        // rather than accepting a same-host path redirect from mutable worktree config.
+        // rather than accepting a same-host path redirect from mutable worktree config. This is
+        // required for SSH too: its endpoint remains SSH so git-lfs obtains its transfer action
+        // through the canonical SSH remote.
         var endpoint = new Uri(remote.GetLeftPart(UriPartial.Path).TrimEnd('/') + "/info/lfs").AbsoluteUri;
         startInfo.ArgumentList.Add("-c");
         startInfo.ArgumentList.Add($"lfs.url={endpoint}");
         startInfo.ArgumentList.Add("-c");
         startInfo.ArgumentList.Add($"lfs.pushurl={endpoint}");
+    }
+
+    private static bool TryGetLfsRemoteUri(string url, out Uri remote)
+    {
+        if (Uri.TryCreate(url, UriKind.Absolute, out remote!) &&
+            (remote.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+             remote.Scheme.Equals("ssh", StringComparison.OrdinalIgnoreCase)) &&
+            !string.IsNullOrEmpty(remote.Host))
+        {
+            return true;
+        }
+
+        remote = null!;
+        return false;
     }
 
     private static Uri? TryGetHttpsUri(string url) =>

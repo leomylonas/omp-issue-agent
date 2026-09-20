@@ -61,7 +61,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         await deps.Git.CreateWorktreeAsync(config.Repository.Id, workflowId.ToString(), worktreePath, branchName, baseCommit, cancellationToken)
             .ConfigureAwait(false);
         await PrepareWorktreeContentAsync(config, worktreePath, cancellationToken).ConfigureAwait(false);
-        var planningInput = await CaptureInputSnapshotAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var planningInput = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
         var context = await deps.ContextBuilder
             .BuildAsync(config.Repository, issueNumber, initialState, currentPlan: null, mergeRequest: null, attachmentsPath, cancellationToken)
             .ConfigureAwait(false);
@@ -151,7 +151,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         await PrepareWorktreeContentAsync(config, worktreePath, cancellationToken).ConfigureAwait(false);
         var currentPlan = new PlanContext(existingContent.State.PlanRevision, existingContent.PlanText, existingContent.DecisionsAndRationale);
 
-        var planningInput = await CaptureInputSnapshotAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var planningInput = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
         var context = await deps.ContextBuilder
             .BuildAsync(config.Repository, issueNumber, workingState, currentPlan, mergeRequest: null, attachmentsPath, cancellationToken)
             .ConfigureAwait(false);
@@ -203,15 +203,15 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
 
     private sealed record ReconciledPlanningResult(PlanningResult Result, InputSnapshot Input);
     private async Task<InputSnapshot> CaptureInputSnapshotAsync(
-        RepositoryRef repository,
+        WorkflowRepositoryConfig config,
         long issueNumber,
         CancellationToken cancellationToken)
     {
-        var issue = await deps.Provider.GetIssueAsync(repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var issue = await deps.Provider.GetIssueAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
         var commentStamps = new List<string>();
-        await foreach (var comment in deps.Provider.GetIssueCommentsAsync(repository, issueNumber, cancellationToken).ConfigureAwait(false))
+        await foreach (var comment in deps.Provider.GetIssueCommentsAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false))
         {
-            if (!comment.IsBot && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
+            if ((!config.IgnoreBotComments || !comment.IsBot) && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
             {
                 commentStamps.Add($"{comment.Id}:{comment.UpdatedAt:O}:{comment.Body}");
             }
@@ -238,7 +238,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         var baseline = inputSnapshot;
         while (true)
         {
-            var latest = await CaptureInputSnapshotAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+            var latest = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
             if (latest == baseline)
             {
                 return new ReconciledPlanningResult(result, baseline);

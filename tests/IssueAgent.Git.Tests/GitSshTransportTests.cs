@@ -43,6 +43,31 @@ public sealed class GitSshTransportTests : IDisposable
     }
 
     [Fact]
+    public void CloneUsesConfiguredSshUsernameInsteadOfUsernameInRemoteUrl()
+    {
+        var bareRemotePath = Track(TempGitFixtures.CreateBareRemoteRepository(out _));
+        var clonePath = Track(TempGitFixtures.CreateTempDirectory());
+        Directory.Delete(clonePath);
+        var sshArgumentsPath = Path.Combine(Track(TempGitFixtures.CreateTempDirectory()), "ssh-arguments");
+
+        WithFakeCommand(
+            "ssh",
+            $"#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{sshArgumentsPath}\"\nexec git-upload-pack \"{bareRemotePath}\"\n",
+            () => GitSshTransport.CloneBare(
+                $"remote-user@localhost:{bareRemotePath}",
+                clonePath,
+                new GitAuthentication
+                {
+                    Mode = GitAuthenticationMode.Ssh,
+                    SshPrivateKey = "test private key",
+                    SshUsername = "configured-user",
+                    SshTrust = new SshTrust { Mode = SshHostVerificationMode.None },
+                }));
+
+        Assert.Contains("User=configured-user", File.ReadAllText(sshArgumentsPath), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ScanAndVerifyHostKeysRejectsFingerprintWithDifferentBase64LetterCase()
     {
         var key = Convert.ToBase64String(Encoding.UTF8.GetBytes("test SSH host key"));

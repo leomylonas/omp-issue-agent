@@ -350,6 +350,89 @@ public sealed class ImplementationWorkflowTests : IDisposable
         Assert.Contains("Implemented the plan.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task RunAsyncPausesBeforePushForBotInputWhenConfigured()
+    {
+        var state = await SeedApprovedPlanAsync();
+        var omp = new FakeOmpClient();
+        omp.EnqueueRun(
+            onStart: () => provider.AddComment(
+                Repository,
+                1,
+                "review-bot",
+                "Automated finding.",
+                clock.UtcNow.AddMinutes(1),
+                isBot: true),
+            new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"summary":"Implemented the plan.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await CreateWorkflow(ignoreBotComments: false).RunAsync(
+            CreateConfig() with { IgnoreBotComments = false },
+            WorkflowMode.Full,
+            1,
+            state,
+            omp,
+            CancellationToken.None);
+
+        Assert.Equal(WaitingReason.NewInputDuringImplementation, outcome.State.WaitingReason);
+        Assert.Equal(0, git.PushCallCount);
+    }
+
+    [Fact]
+    public async Task RunAsyncRecoveryPreservesReviewSnapshotAndExposesUnobservedFeedback()
+    {
+        var plannedState = await SeedApprovedPlanAsync();
+        var checkpointCutoff = clock.UtcNow;
+        var interruptedState = plannedState with
+        {
+            Phase = WorkflowPhase.Implementing,
+            OperationalState = WorkflowOperationalState.Waiting,
+            WaitingReason = WaitingReason.ManualIntervention,
+            ReviewFeedbackCutoff = checkpointCutoff,
+            ReviewFeedbackIds = new HashSet<string>(StringComparer.Ordinal) { "comment:1" },
+        };
+        var canonical = Assert.Single(provider.IssueComments[(Repository.Id, 1)]);
+        var content = CanonicalCommentMarkdown.Parse(canonical.Body);
+        await provider.UpdateIssueCommentAsync(
+            Repository,
+            1,
+            canonical.Id,
+            CanonicalCommentMarkdown.Render(content with
+            {
+                ImplementationResult = "Durably recorded implementation summary.",
+                State = CanonicalStateSerializer.ToDocument(interruptedState, "github/octo/widgets#1"),
+            }),
+            CancellationToken.None);
+        provider.MergeRequestComments[(Repository.Id, 1)] =
+        [
+            new ProviderComment(2, "bob", "Feedback at the observation boundary.", checkpointCutoff, checkpointCutoff,
+                new AttachmentSource("merge-request-comment", "2"), false),
+        ];
+
+        var recovered = await CreateWorkflow().RunAsync(
+            CreateConfig(),
+            WorkflowMode.Full,
+            1,
+            interruptedState,
+            new FakeOmpClient(),
+            CancellationToken.None);
+
+        Assert.Equal(checkpointCutoff, recovered.State.ReviewFeedbackCutoff);
+        Assert.Equal(["comment:1"], recovered.State.ReviewFeedbackIds);
+
+        provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)].Add(WorkflowCommandLabels.Revise);
+        var revisionOmp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"summary":"Addressed feedback.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+        await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, recovered.State, revisionOmp, CancellationToken.None);
+
+        Assert.Contains("Feedback at the observation boundary.", Assert.Single(revisionOmp.RunRequests).Prompt, StringComparison.Ordinal);
+    }
+
     private async Task<WorkflowState> SeedApprovedPlanAsync()
     {
         provider.AddIssue(Repository, 1, "Bug", "Original description");
@@ -366,12 +449,16 @@ public sealed class ImplementationWorkflowTests : IDisposable
         return state;
     }
 
-    private ImplementationWorkflow CreateWorkflow() => new(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock));
+    private ImplementationWorkflow CreateWorkflow(bool ignoreBotComments = true) =>
+        new(new WorkflowDependencies(provider, git, CreateContextBuilder(ignoreBotComments), notifier, clock));
 
-    private AgentContextBuilder CreateContextBuilder()
+    private AgentContextBuilder CreateContextBuilder(bool ignoreBotComments = true)
     {
         var attachmentPipeline = new AttachmentPipeline(provider, new AttachmentLimits());
-        return new AgentContextBuilder(provider, attachmentPipeline, new AgentContextBuilderOptions());
+        return new AgentContextBuilder(
+            provider,
+            attachmentPipeline,
+            new AgentContextBuilderOptions { IgnoreBotComments = ignoreBotComments });
     }
 
     private WorkflowRepositoryConfig CreateConfig() => new(

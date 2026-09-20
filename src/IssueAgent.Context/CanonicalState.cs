@@ -30,6 +30,7 @@ public sealed record CanonicalStateDocument
     public string? PullOrMergeRequest { get; init; }
     public required DateTimeOffset UpdatedAt { get; init; }
     public DateTimeOffset? ReviewFeedbackCutoff { get; init; }
+    public List<string>? ReviewFeedbackIds { get; init; }
 }
 
 /// <summary>Serializes <see cref="DateTimeOffset"/> as a round-trippable ISO-8601 scalar instead of
@@ -86,6 +87,7 @@ public static partial class CanonicalStateSerializer
         PullOrMergeRequest = pullOrMergeRequest,
         UpdatedAt = state.UpdatedAt,
         ReviewFeedbackCutoff = state.ReviewFeedbackCutoff,
+        ReviewFeedbackIds = state.ReviewFeedbackIds?.OrderBy(id => id, StringComparer.Ordinal).ToList(),
     };
 
     public static WorkflowState ToWorkflowState(CanonicalStateDocument document)
@@ -119,7 +121,8 @@ public static partial class CanonicalStateSerializer
             document.PlanInputHash,
             document.OmpSessionFile,
             document.InterruptedPhase is { } interruptedPhase ? ParseEnum<WorkflowPhase>(interruptedPhase, "interruptedPhase") : null,
-            document.ReviewFeedbackCutoff);
+            document.ReviewFeedbackCutoff,
+            document.ReviewFeedbackIds is null ? null : new HashSet<string>(document.ReviewFeedbackIds, StringComparer.Ordinal));
     }
 
     [GeneratedRegex(@"^[A-Za-z0-9]([A-Za-z0-9._/-]*[A-Za-z0-9])?$")]

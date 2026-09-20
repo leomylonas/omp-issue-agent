@@ -190,6 +190,10 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
         {
             failures.Add("IssueAgent:Omp:ExecutablePath is required.");
         }
+        if (options.Omp.Timeout is { } timeout && timeout <= TimeSpan.Zero)
+        {
+            failures.Add("IssueAgent:Omp:Timeout must be greater than zero.");
+        }
         foreach (var (secretName, source) in options.Omp.ExecutionSecrets)
         {
             if (!source.IsExactlyOneSource())

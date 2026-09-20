@@ -97,7 +97,8 @@ public sealed record WorkflowState(
     string? PlanInputHash = null,
     string? OmpSessionFile = null,
     WorkflowPhase? InterruptedPhase = null,
-    DateTimeOffset? ReviewFeedbackCutoff = null)
+    DateTimeOffset? ReviewFeedbackCutoff = null,
+    IReadOnlySet<string>? ReviewFeedbackIds = null)
 {
     public void EnsureValid()
     {

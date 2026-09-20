@@ -66,6 +66,43 @@ public sealed class EffectiveConfigurationResolverTests
     }
 
     [Fact]
+    public void ResolveDerivesConfiguredUserSshCloneUrl()
+    {
+        var options = CreateOptions() with
+        {
+            Providers =
+            [
+                CreateProvider() with
+                {
+                    Repositories =
+                    [
+                        new RepositoryOptions
+                        {
+                            Id = "github/octo/widgets",
+                            Name = "octo/widgets",
+                            Settings = new RepositorySettingsOptions
+                            {
+                                Git = new GitTransportOptions
+                                {
+                                    Mode = ConfiguredGitAuthenticationMode.Ssh,
+                                    SshPrivateKey = new SecretSource { Env = "SSH_KEY" },
+                                    SshUsername = "deploy",
+                                    SshTrust = new SshTrustOptions { Mode = ConfiguredSshHostVerificationMode.Pinned, Fingerprints = ["sha256:host"] },
+                                },
+                            },
+                        },
+                    ],
+                },
+            ],
+        };
+
+        var repository = Assert.Single(Assert.Single(
+            EffectiveConfigurationResolver.Resolve(options, name => name == "SSH_KEY" ? "private-key" : "token", _ => throw new InvalidOperationException()).Providers).Repositories);
+
+        Assert.Equal("ssh://deploy@github.com/octo/widgets.git", repository.CloneUrl);
+    }
+
+    [Fact]
     public void ResolveInheritsIssueClosingSettingThroughProviderAndRepository()
     {
         var options = CreateOptions() with

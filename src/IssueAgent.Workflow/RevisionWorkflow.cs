@@ -93,8 +93,13 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             .ConfigureAwait(false);
 
         var reviewFeedbackCutoff = existingContent.State.ReviewFeedbackCutoff.Value;
+        var observedFeedbackIds = existingContent.State.ReviewFeedbackIds is { } ids
+            ? new HashSet<string>(ids, StringComparer.Ordinal)
+            : null;
         var feedback = context.PullOrMergeRequest is { } mrContext
-            ? mrContext.Comments.Concat(mrContext.ReviewThreads).Where(c => (c.UpdatedAt ?? c.CreatedAt) > reviewFeedbackCutoff).ToList()
+            ? mrContext.Comments.Concat(mrContext.ReviewThreads)
+                .Where(comment => IsNewFeedbackSinceCheckpoint(comment, reviewFeedbackCutoff, observedFeedbackIds))
+                .ToList()
             : [];
         await omp.SelectRoleAsync(config.RevisionRole, cancellationToken).ConfigureAwait(false);
         var revisionOutcome = await OmpRunCollector
@@ -214,6 +219,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             // Advancing it to a later write time could silently skip feedback that arrives while
             // publishing the branch.
             ReviewFeedbackCutoff = feedbackAfterRevision.Cutoff,
+            ReviewFeedbackIds = feedbackAfterRevision.Ids,
         };
 
         var content = new CanonicalCommentContent(
@@ -251,7 +257,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         }
     }
 
-    private sealed record FeedbackSnapshot(HashSet<string> Entries, DateTimeOffset Cutoff);
+    private sealed record FeedbackSnapshot(HashSet<string> Entries, HashSet<string> Ids, DateTimeOffset Cutoff);
 
     private async Task<FeedbackSnapshot> CaptureFeedbackSnapshotAsync(
         WorkflowRepositoryConfig config,
@@ -262,28 +268,47 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         // Record the observation boundary before enumerating provider pages. Feedback that arrives
         // after it cannot be advanced past by a concurrent publication checkpoint.
         var cutoff = deps.Clock.UtcNow;
-        var snapshot = new HashSet<string>(StringComparer.Ordinal);
+        var entries = new HashSet<string>(StringComparer.Ordinal);
+        var ids = new HashSet<string>(StringComparer.Ordinal);
         await foreach (var comment in deps.Provider.GetMergeRequestCommentsAsync(repository, mergeRequestNumber, cancellationToken).ConfigureAwait(false))
         {
             if ((!config.IgnoreBotComments || !comment.IsBot) && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
             {
-                snapshot.Add($"comment:{comment.Id}:{comment.UpdatedAt:O}:{comment.Body}");
+                entries.Add($"comment:{comment.Id}:{comment.UpdatedAt:O}:{comment.Body}");
+                ids.Add($"comment:{comment.Id}");
             }
         }
 
         await foreach (var thread in deps.Provider.GetReviewThreadsAsync(repository, mergeRequestNumber, cancellationToken).ConfigureAwait(false))
         {
-            snapshot.Add($"thread:{thread.Id}:resolved={thread.IsResolved}");
+            entries.Add($"thread:{thread.Id}:resolved={thread.IsResolved}");
             foreach (var comment in thread.Comments)
             {
                 if ((!config.IgnoreBotComments || !comment.IsBot) && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
                 {
-                    snapshot.Add($"thread:{thread.Id}:{comment.Id}:{comment.UpdatedAt:O}:{comment.Body}");
+                    entries.Add($"thread:{thread.Id}:{comment.Id}:{comment.UpdatedAt:O}:{comment.Body}");
+                    ids.Add($"thread:{thread.Id}:{comment.Id}");
                 }
             }
         }
 
-        return new FeedbackSnapshot(snapshot, cutoff);
+        return new FeedbackSnapshot(entries, ids, cutoff);
+    }
+
+    private static bool IsNewFeedbackSinceCheckpoint(
+        HumanComment comment,
+        DateTimeOffset cutoff,
+        HashSet<string>? observedFeedbackIds)
+    {
+        if ((comment.UpdatedAt ?? comment.CreatedAt) > cutoff || observedFeedbackIds is null)
+        {
+            return (comment.UpdatedAt ?? comment.CreatedAt) > cutoff;
+        }
+
+        var id = comment.CommentId is { } commentId
+            ? comment.ThreadId is { } threadId ? $"thread:{threadId}:{commentId}" : $"comment:{commentId}"
+            : null;
+        return id is null || !observedFeedbackIds.Contains(id);
     }
 
     private Task<WorkflowOutcome> PauseForMaterialDeviationAsync(

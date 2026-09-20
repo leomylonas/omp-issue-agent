@@ -35,6 +35,26 @@ public sealed class IssueAgentOptionsValidatorTests
         Assert.Contains(result.Failures!, failure => failure.Contains("exactly one", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void ValidateRejectsNonPositiveGlobalOmpTimeout(int seconds)
+    {
+        var options = CreateOptions() with
+        {
+            Omp = new OmpOptions
+            {
+                ExecutablePath = "/usr/local/bin/omp",
+                Timeout = TimeSpan.FromSeconds(seconds),
+            },
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("IssueAgent:Omp:Timeout must be greater than zero.", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void SecretSourceResolvesExactlyOneConfiguredSource()
     {

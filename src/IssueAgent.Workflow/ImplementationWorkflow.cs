@@ -121,7 +121,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         var context = await deps.ContextBuilder
             .BuildAsync(config.Repository, issueNumber, workingState, currentPlan, mergeRequest: null, attachmentsPath, cancellationToken)
             .ConfigureAwait(false);
-        var inputSnapshot = await CaptureInputSnapshotAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var inputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
 
         await omp.SelectRoleAsync(config.ImplementationRole, cancellationToken).ConfigureAwait(false);
         var implementOutcome = await OmpRunCollector
@@ -182,7 +182,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Implementing, WorkflowOperationalState.Working, [WorkflowCommand.Continue], cancellationToken).ConfigureAwait(false);
 
         var worktreePath = WorktreePath(config, currentState.WorkflowId);
-        var inputSnapshot = await CaptureInputSnapshotAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var inputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
         await omp.SelectRoleAsync(config.ImplementationRole, cancellationToken).ConfigureAwait(false);
         var continuationOutcome = await OmpRunCollector
             .RunToCompletionAsync(
@@ -307,7 +307,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         // resolution above, and compares title/description content plus per-comment identity/edit
         // timestamps rather than a bare count, so an edited comment or attachment is caught even if
         // the comment count is unchanged (specification §22).
-        var latestInputSnapshot = await CaptureInputSnapshotAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var latestInputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
         if (latestInputSnapshot != inputSnapshot)
         {
             return await PauseAsync(
@@ -392,21 +392,38 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         string implementationResult,
         CancellationToken cancellationToken)
     {
-        var reviewFeedbackCutoff = await CaptureReviewFeedbackCutoffAsync(
-            config.Repository,
-            mergeRequest.Number,
-            cancellationToken).ConfigureAwait(false);
+        var feedbackSnapshot = existingContent.State.ReviewFeedbackCutoff is { } existingCutoff
+            ? new ReviewFeedbackSnapshot(
+                existingCutoff,
+                new HashSet<string>(existingContent.State.ReviewFeedbackIds ?? [], StringComparer.Ordinal))
+            : await CaptureReviewFeedbackSnapshotAsync(config, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
+        var stateWithFeedbackSnapshot = state with
+        {
+            ReviewFeedbackCutoff = feedbackSnapshot.Cutoff,
+            ReviewFeedbackIds = feedbackSnapshot.Ids,
+        };
+
+        // Persist the observation boundary before publishing review. If this turn is interrupted
+        // after the MR exists, recovery reuses this snapshot instead of advancing past feedback
+        // that arrived while publication was incomplete.
+        var checkpointContent = existingContent with
+        {
+            State = CanonicalStateSerializer.ToDocument(
+                stateWithFeedbackSnapshot,
+                $"{config.Repository.Id}#{mergeRequest.Number}"),
+        };
+        await UpsertCanonicalCommentAsync(config, issueNumber, checkpointContent, cancellationToken).ConfigureAwait(false);
+
         var publishedAt = deps.Clock.UtcNow;
-        var publishedState = state with
+        var publishedState = stateWithFeedbackSnapshot with
         {
             Phase = WorkflowPhase.Review,
             OperationalState = WorkflowOperationalState.Waiting,
             WaitingReason = WaitingReason.ReviewRequested,
             InterruptedPhase = null,
             UpdatedAt = publishedAt,
-            ReviewFeedbackCutoff = reviewFeedbackCutoff,
         };
-        var content = existingContent with
+        var content = checkpointContent with
         {
             ImplementationResult = implementationResult,
             State = CanonicalStateSerializer.ToDocument(
@@ -424,28 +441,42 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             cancellationToken).ConfigureAwait(false);
         return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, publishedState, "Implementation published; awaiting review.");
     }
-    /// <summary>Establishes the review-feedback cursor before publishing the review checkpoint.
-    /// Enumerating both feedback surfaces makes the cursor a real provider observation boundary,
-    /// including when a previously published implementation is recovered.</summary>
-    private async Task<DateTimeOffset> CaptureReviewFeedbackCutoffAsync(
-        RepositoryRef repository,
+    /// <summary>Captures the review-feedback observation boundary before publishing review. The
+    /// durable identifiers complement the timestamp cursor when provider timestamps have coarse
+    /// precision or recovery resumes an interrupted publication.</summary>
+    private sealed record ReviewFeedbackSnapshot(DateTimeOffset Cutoff, IReadOnlySet<string> Ids);
+
+    private async Task<ReviewFeedbackSnapshot> CaptureReviewFeedbackSnapshotAsync(
+        WorkflowRepositoryConfig config,
         long mergeRequestNumber,
         CancellationToken cancellationToken)
     {
         var cutoff = deps.Clock.UtcNow;
-        await foreach (var _ in deps.Provider
-            .GetMergeRequestCommentsAsync(repository, mergeRequestNumber, cancellationToken)
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        await foreach (var comment in deps.Provider
+            .GetMergeRequestCommentsAsync(config.Repository, mergeRequestNumber, cancellationToken)
             .ConfigureAwait(false))
         {
+            if ((!config.IgnoreBotComments || !comment.IsBot) && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
+            {
+                ids.Add($"comment:{comment.Id}");
+            }
         }
 
-        await foreach (var _ in deps.Provider
-            .GetReviewThreadsAsync(repository, mergeRequestNumber, cancellationToken)
+        await foreach (var thread in deps.Provider
+            .GetReviewThreadsAsync(config.Repository, mergeRequestNumber, cancellationToken)
             .ConfigureAwait(false))
         {
+            foreach (var comment in thread.Comments)
+            {
+                if ((!config.IgnoreBotComments || !comment.IsBot) && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
+                {
+                    ids.Add($"thread:{thread.Id}:{comment.Id}");
+                }
+            }
         }
 
-        return cutoff;
+        return new ReviewFeedbackSnapshot(cutoff, ids);
     }
 
     private async Task<ProviderMergeRequest> FindOrCreateMergeRequestAsync(
@@ -569,17 +600,17 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
     private sealed record InputSnapshot(string Title, string Description, string CommentsDigest);
 
     private async Task<InputSnapshot> CaptureInputSnapshotAsync(
-        RepositoryRef repository,
+        WorkflowRepositoryConfig config,
         long issueNumber,
         CancellationToken cancellationToken)
     {
-        var issue = await deps.Provider.GetIssueAsync(repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var issue = await deps.Provider.GetIssueAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
         var commentStamps = new List<string>();
         await foreach (var comment in deps.Provider
-            .GetIssueCommentsAsync(repository, issueNumber, cancellationToken)
+            .GetIssueCommentsAsync(config.Repository, issueNumber, cancellationToken)
             .ConfigureAwait(false))
         {
-            if (!comment.IsBot && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
+            if ((!config.IgnoreBotComments || !comment.IsBot) && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
             {
                 commentStamps.Add($"{comment.Id}:{comment.UpdatedAt:O}");
             }
