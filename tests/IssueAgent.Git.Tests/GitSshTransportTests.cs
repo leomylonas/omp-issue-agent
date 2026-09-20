@@ -8,11 +8,11 @@ namespace IssueAgent.Git.Tests;
 /// verification (specification §§11 and 36).</summary>
 public sealed class GitSshTransportTests : IDisposable
 {
-    private static readonly object PathLock = new();
+    private static readonly SemaphoreSlim PathLock = new(1, 1);
     private readonly List<string> cleanupPaths = [];
 
     [Fact]
-    public void PushNeverExecutesPrePushHook()
+    public async Task PushNeverExecutesPrePushHook()
     {
         var bareRemotePath = Track(TempGitFixtures.CreateBareRemoteRepository(out _));
         var worktreePath = Track(TempGitFixtures.CreateTempDirectory());
@@ -34,8 +34,8 @@ public sealed class GitSshTransportTests : IDisposable
         File.WriteAllText(hookPath, $"#!/bin/sh\ntouch \"{markerPath}\"\n");
         MakeExecutable(hookPath);
 
-        WithFakeCommand("ssh", $"#!/bin/sh\nexec git-receive-pack \"{bareRemotePath}\"\n", () =>
-            GitSshTransport.Push(worktreePath, "agent/issue-1", SshAuthentication()));
+        await WithFakeCommandAsync("ssh", $"#!/bin/sh\nexec git-receive-pack \"{bareRemotePath}\"\n", () =>
+            GitSshTransport.PushAsync(worktreePath, "agent/issue-1", SshAuthentication(), CancellationToken.None).AsTask());
 
         Assert.False(File.Exists(markerPath));
         using var bareRepository = new Repository(bareRemotePath);
@@ -43,17 +43,17 @@ public sealed class GitSshTransportTests : IDisposable
     }
 
     [Fact]
-    public void CloneUsesConfiguredSshUsernameInsteadOfUsernameInRemoteUrl()
+    public async Task CloneUsesConfiguredSshUsernameInsteadOfUsernameInRemoteUrl()
     {
         var bareRemotePath = Track(TempGitFixtures.CreateBareRemoteRepository(out _));
         var clonePath = Track(TempGitFixtures.CreateTempDirectory());
         Directory.Delete(clonePath);
         var sshArgumentsPath = Path.Combine(Track(TempGitFixtures.CreateTempDirectory()), "ssh-arguments");
 
-        WithFakeCommand(
+        await WithFakeCommandAsync(
             "ssh",
             $"#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{sshArgumentsPath}\"\nexec git-upload-pack \"{bareRemotePath}\"\n",
-            () => GitSshTransport.CloneBare(
+            () => GitSshTransport.CloneBareAsync(
                 $"remote-user@localhost:{bareRemotePath}",
                 clonePath,
                 new GitAuthentication
@@ -62,7 +62,8 @@ public sealed class GitSshTransportTests : IDisposable
                     SshPrivateKey = "test private key",
                     SshUsername = "configured-user",
                     SshTrust = new SshTrust { Mode = SshHostVerificationMode.None },
-                }));
+                },
+                CancellationToken.None).AsTask());
 
         Assert.Contains("User=configured-user", File.ReadAllText(sshArgumentsPath), StringComparison.Ordinal);
     }
@@ -77,8 +78,8 @@ public sealed class GitSshTransportTests : IDisposable
 
         WithFakeCommand("ssh-keyscan", $"#!/bin/sh\nprintf '%s\\n' '{keyscanLine}'\n", () =>
         {
-            var exception = Assert.Throws<InvalidOperationException>(() => GitSshTransport.ScanAndVerifyHostKeys(
-                "example.test", 22, new SshTrust { Mode = SshHostVerificationMode.Pinned, Fingerprints = [wrongCaseFingerprint] }));
+            var exception = Assert.Throws<InvalidOperationException>(() => GitSshTransport.ScanAndVerifyHostKeysAsync(
+                "example.test", 22, new SshTrust { Mode = SshHostVerificationMode.Pinned, Fingerprints = [wrongCaseFingerprint] }, CancellationToken.None).AsTask().GetAwaiter().GetResult());
 
             Assert.Contains("No SSH host key", exception.Message, StringComparison.Ordinal);
         });
@@ -92,8 +93,8 @@ public sealed class GitSshTransportTests : IDisposable
 
         WithFakeCommand("ssh-keyscan", $"#!/bin/sh\nprintf '%s\\n' '{keyscanLine}'\n", () =>
         {
-            var knownHosts = GitSshTransport.ScanAndVerifyHostKeys(
-                "example.test", 22, new SshTrust { Mode = SshHostVerificationMode.Pinned, Fingerprints = [FingerprintFor(key)] });
+            var knownHosts = GitSshTransport.ScanAndVerifyHostKeysAsync(
+                "example.test", 22, new SshTrust { Mode = SshHostVerificationMode.Pinned, Fingerprints = [FingerprintFor(key)] }, CancellationToken.None).AsTask().GetAwaiter().GetResult();
 
             Assert.Equal(keyscanLine + "\n", knownHosts);
         });
@@ -104,11 +105,41 @@ public sealed class GitSshTransportTests : IDisposable
     {
         WithFakeCommand("ssh-keyscan", "#!/bin/sh\necho unavailable >&2\nexit 7\n", () =>
         {
-            var exception = Assert.Throws<InvalidOperationException>(() => GitSshTransport.ScanAndVerifyHostKeys(
-                "example.test", 22, new SshTrust { Mode = SshHostVerificationMode.Pinned, Fingerprints = ["sha256:unused"] }));
+            var exception = Assert.Throws<InvalidOperationException>(() => GitSshTransport.ScanAndVerifyHostKeysAsync(
+                "example.test", 22, new SshTrust { Mode = SshHostVerificationMode.Pinned, Fingerprints = ["sha256:unused"] }, CancellationToken.None).AsTask().GetAwaiter().GetResult());
 
             Assert.Contains("exit code 7", exception.Message, StringComparison.Ordinal);
         });
+    }
+
+    [Fact]
+    public async Task CloneBareAsyncCancellationTerminatesGitDescendants()
+    {
+        var clonePath = Track(TempGitFixtures.CreateTempDirectory());
+        Directory.Delete(clonePath);
+        var signalsPath = Track(TempGitFixtures.CreateTempDirectory());
+        var startedPath = Path.Combine(signalsPath, "started");
+        var descendantPath = Path.Combine(signalsPath, "descendant-survived");
+
+        await WithFakeCommandAsync(
+            "ssh",
+            $"#!/bin/sh\ntouch \"{startedPath}\"\n(sleep 1; touch \"{descendantPath}\") &\nwait\n",
+            async () =>
+            {
+                using var cancellation = new CancellationTokenSource();
+                var clone = GitSshTransport.CloneBareAsync(
+                    "git@localhost:/unreachable.git",
+                    clonePath,
+                    SshAuthentication(),
+                    cancellation.Token).AsTask();
+                await WaitForFileAsync(startedPath);
+                cancellation.Cancel();
+
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => clone);
+            });
+
+        await Task.Delay(TimeSpan.FromSeconds(1.2), TestContext.Current.CancellationToken);
+        Assert.False(File.Exists(descendantPath));
     }
 
     private static GitAuthentication SshAuthentication() => new()
@@ -139,7 +170,6 @@ public sealed class GitSshTransportTests : IDisposable
 
         throw new InvalidOperationException("The generated SHA-256 fingerprint contained no letters.");
     }
-
     private static void RunGitCli(string workingDirectory, params string[] arguments)
     {
         var startInfo = new System.Diagnostics.ProcessStartInfo("git")
@@ -162,17 +192,10 @@ public sealed class GitSshTransportTests : IDisposable
         }
     }
 
-    private static void MakeExecutable(string path)
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        }
-    }
-
     private static void WithFakeCommand(string command, string script, Action action)
     {
-        lock (PathLock)
+        PathLock.Wait();
+        try
         {
             var commandDirectory = TempGitFixtures.CreateTempDirectory();
             var commandPath = Path.Combine(commandDirectory, command);
@@ -191,7 +214,62 @@ public sealed class GitSshTransportTests : IDisposable
                 Directory.Delete(commandDirectory, recursive: true);
             }
         }
+        finally
+        {
+            PathLock.Release();
+        }
     }
+
+    private static async Task WithFakeCommandAsync(string command, string script, Func<Task> action)
+    {
+        await PathLock.WaitAsync();
+        try
+        {
+            var commandDirectory = TempGitFixtures.CreateTempDirectory();
+            var commandPath = Path.Combine(commandDirectory, command);
+            File.WriteAllText(commandPath, script);
+            MakeExecutable(commandPath);
+
+            var originalPath = Environment.GetEnvironmentVariable("PATH");
+            try
+            {
+                Environment.SetEnvironmentVariable("PATH", commandDirectory + Path.PathSeparator + originalPath);
+                await action();
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("PATH", originalPath);
+                Directory.Delete(commandDirectory, recursive: true);
+            }
+        }
+        finally
+        {
+            PathLock.Release();
+        }
+    }
+
+    private static async Task WaitForFileAsync(string path)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (!File.Exists(path))
+        {
+            if (DateTime.UtcNow >= deadline)
+            {
+                throw new TimeoutException($"Timed out waiting for '{path}'.");
+            }
+
+            await Task.Delay(25);
+        }
+    }
+
+    private static void MakeExecutable(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
 
     private string Track(string path)
     {

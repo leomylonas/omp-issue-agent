@@ -22,33 +22,37 @@ namespace IssueAgent.Git;
 /// </summary>
 public sealed partial class GitSshTransport
 {
-    public static void CloneBare(string cloneUrl, string destinationPath, GitAuthentication authentication) =>
-        RunGit(["clone", "--bare", "--", cloneUrl, destinationPath], workingDirectory: null, cloneUrl, authentication);
+    public static ValueTask CloneBareAsync(string cloneUrl, string destinationPath, GitAuthentication authentication, CancellationToken cancellationToken) =>
+        RunGitAsync(["clone", "--bare", "--", cloneUrl, destinationPath], workingDirectory: null, cloneUrl, authentication, cancellationToken);
 
-    public static void Fetch(string bareRepositoryPath, GitAuthentication authentication) =>
-        RunGit(["fetch", "--all", "--prune"], bareRepositoryPath, GetOriginUrl(bareRepositoryPath), authentication);
+    public static async ValueTask FetchAsync(string bareRepositoryPath, GitAuthentication authentication, CancellationToken cancellationToken) =>
+        await RunGitAsync(["fetch", "--all", "--prune"], bareRepositoryPath, await GetOriginUrlAsync(bareRepositoryPath, cancellationToken).ConfigureAwait(false), authentication, cancellationToken).ConfigureAwait(false);
 
-    public static void Push(string worktreePath, string branchName, GitAuthentication authentication) =>
-        RunGit(["push", "origin", "--", $"{branchName}:{branchName}"], worktreePath, GetOriginUrl(worktreePath), authentication);
+    public static async ValueTask PushAsync(string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken) =>
+        await RunGitAsync(["push", "origin", "--", $"{branchName}:{branchName}"], worktreePath, await GetOriginUrlAsync(worktreePath, cancellationToken).ConfigureAwait(false), authentication, cancellationToken).ConfigureAwait(false);
 
     /// <summary>Initializes and fetches one submodule through the Git/SSH transport.</summary>
-    public static void UpdateSubmodule(string repositoryPath, string submodulePath, string remoteUrl, GitAuthentication authentication) =>
-        RunGit(["submodule", "update", "--init", "--", submodulePath], repositoryPath, remoteUrl, authentication);
+    public static ValueTask UpdateSubmoduleAsync(string repositoryPath, string submodulePath, string remoteUrl, GitAuthentication authentication, CancellationToken cancellationToken) =>
+        RunGitAsync(["submodule", "update", "--init", "--", submodulePath], repositoryPath, remoteUrl, authentication, cancellationToken);
 
-    private static string GetOriginUrl(string workingDirectory)
+    private static async ValueTask<string> GetOriginUrlAsync(string workingDirectory, CancellationToken cancellationToken)
     {
-        using var process = Process.Start(new ProcessStartInfo("git")
+        var result = await RunProcessAsync(new ProcessStartInfo("git")
         {
             ArgumentList = { "-c", "core.hooksPath=/dev/null", "-C", workingDirectory, "remote", "get-url", "origin" },
             RedirectStandardOutput = true,
+            RedirectStandardError = true,
             UseShellExecute = false,
-        }) ?? throw new InvalidOperationException("Failed to start git process.");
-        var url = process.StandardOutput.ReadToEnd().Trim();
-        process.WaitForExit();
-        return url;
+        }, cancellationToken).ConfigureAwait(false);
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"Could not resolve the origin remote: {result.StandardError}");
+        }
+
+        return result.StandardOutput.Trim();
     }
 
-    private static void RunGit(IReadOnlyList<string> arguments, string? workingDirectory, string remoteUrl, GitAuthentication authentication)
+    private static async ValueTask RunGitAsync(IReadOnlyList<string> arguments, string? workingDirectory, string remoteUrl, GitAuthentication authentication, CancellationToken cancellationToken)
     {
         if (authentication.Mode != GitAuthenticationMode.Ssh)
         {
@@ -61,7 +65,7 @@ public sealed partial class GitSshTransport
         var isolatedHome = Directory.CreateTempSubdirectory("issueagent-git-home-").FullName;
         try
         {
-            var sshCommand = BuildSshCommand(authentication, trust, remoteUrl, isolatedHome);
+            var sshCommand = await BuildSshCommandAsync(authentication, trust, remoteUrl, isolatedHome, cancellationToken).ConfigureAwait(false);
 
             var startInfo = new ProcessStartInfo("git")
             {
@@ -83,12 +87,10 @@ public sealed partial class GitSshTransport
             startInfo.Environment["GIT_SSH_COMMAND"] = sshCommand;
             startInfo.Environment["GIT_TERMINAL_PROMPT"] = "0";
 
-            using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start git process.");
-            var stderr = process.StandardError.ReadToEnd();
-            process.WaitForExit();
-            if (process.ExitCode != 0)
+            var result = await RunProcessAsync(startInfo, cancellationToken).ConfigureAwait(false);
+            if (result.ExitCode != 0)
             {
-                throw new InvalidOperationException($"git {string.Join(' ', arguments)} failed with exit code {process.ExitCode}: {stderr}");
+                throw new InvalidOperationException($"git {string.Join(' ', arguments)} failed with exit code {result.ExitCode}: {result.StandardError}");
             }
         }
         finally
@@ -97,10 +99,10 @@ public sealed partial class GitSshTransport
         }
     }
 
-    public static string BuildSshCommandForLfs(GitAuthentication authentication, SshTrust trust, string remoteUrl, string isolatedHome) =>
-        BuildSshCommand(authentication, trust, remoteUrl, isolatedHome);
+    public static ValueTask<string> BuildSshCommandForLfsAsync(GitAuthentication authentication, SshTrust trust, string remoteUrl, string isolatedHome, CancellationToken cancellationToken) =>
+        BuildSshCommandAsync(authentication, trust, remoteUrl, isolatedHome, cancellationToken);
 
-    private static string BuildSshCommand(GitAuthentication authentication, SshTrust trust, string remoteUrl, string isolatedHome)
+    private static async ValueTask<string> BuildSshCommandAsync(GitAuthentication authentication, SshTrust trust, string remoteUrl, string isolatedHome, CancellationToken cancellationToken)
     {
         var keyPath = Path.Combine(isolatedHome, "id_agent");
         File.WriteAllText(keyPath, authentication.SshPrivateKey ?? throw new InvalidOperationException("SSH authentication requires a private key."));
@@ -126,7 +128,7 @@ public sealed partial class GitSshTransport
         }
 
         var (host, port) = ParseSshHostAndPort(remoteUrl);
-        var knownHostsContent = ScanAndVerifyHostKeys(host, port, trust);
+        var knownHostsContent = await ScanAndVerifyHostKeysAsync(host, port, trust, cancellationToken).ConfigureAwait(false);
         var knownHostsPath = Path.Combine(isolatedHome, "known_hosts");
         File.WriteAllText(knownHostsPath, knownHostsContent);
 
@@ -160,26 +162,22 @@ public sealed partial class GitSshTransport
     /// <summary>Runs <c>ssh-keyscan</c> against <paramref name="host"/>, verifies each offered key's
     /// SHA-256 fingerprint against <paramref name="trust"/>, and returns only matching key lines
     /// suitable for a <c>known_hosts</c> file. Throws if none match.</summary>
-    public static string ScanAndVerifyHostKeys(string host, int port, SshTrust trust)
+    public static async ValueTask<string> ScanAndVerifyHostKeysAsync(string host, int port, SshTrust trust, CancellationToken cancellationToken)
     {
-        using var process = Process.Start(new ProcessStartInfo("ssh-keyscan")
+        var result = await RunProcessAsync(new ProcessStartInfo("ssh-keyscan")
         {
             ArgumentList = { "-T", "5", "-p", port.ToString(System.Globalization.CultureInfo.InvariantCulture), host },
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
-        }) ?? throw new InvalidOperationException("Failed to start ssh-keyscan.");
-
-        var output = process.StandardOutput.ReadToEnd();
-        var stderr = process.StandardError.ReadToEnd();
-        process.WaitForExit();
-        if (process.ExitCode != 0)
+        }, cancellationToken).ConfigureAwait(false);
+        if (result.ExitCode != 0)
         {
-            throw new InvalidOperationException($"ssh-keyscan failed for '{host}:{port}' with exit code {process.ExitCode}: {stderr.Trim()}");
+            throw new InvalidOperationException($"ssh-keyscan failed for '{host}:{port}' with exit code {result.ExitCode}: {result.StandardError.Trim()}");
         }
 
         var matchedLines = new List<string>();
-        foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (var line in result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             if (line.StartsWith('#'))
             {
@@ -215,6 +213,36 @@ public sealed partial class GitSshTransport
         }
 
         return string.Join('\n', matchedLines) + "\n";
+    }
+
+    private static async ValueTask<(int ExitCode, string StandardOutput, string StandardError)> RunProcessAsync(ProcessStartInfo startInfo, CancellationToken cancellationToken)
+    {
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException($"Failed to start {startInfo.FileName}.");
+        var standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var standardError = process.StandardError.ReadToEndAsync(cancellationToken);
+        try
+        {
+            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+            }
+            catch (InvalidOperationException) when (process.HasExited)
+            {
+                // The child exited between checking its state and terminating its process tree.
+            }
+
+            await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+
+        return (process.ExitCode, await standardOutput.ConfigureAwait(false), await standardError.ConfigureAwait(false));
     }
 
     private static string NormalizeFingerprint(string fingerprint)

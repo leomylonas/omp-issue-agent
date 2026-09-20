@@ -228,22 +228,24 @@ public sealed class GitHubProvider(
         ProviderLabel label,
         CancellationToken cancellationToken)
     {
-        try
+        if (await LabelExistsAsync(repository, label.Name, cancellationToken).ConfigureAwait(false))
         {
-            await ExecuteReadWithCancellationAsync(
-                token => client.Connection.Get<Label>(
-                    new Uri($"repos/{repository.OwnerOrNamespace}/{repository.Name}/labels/{Uri.EscapeDataString(label.Name)}", UriKind.Relative),
-                    null,
-                    null,
-                    token),
-                cancellationToken).ConfigureAwait(false);
+            return;
         }
-        catch (NotFoundException)
+
+        try
         {
             await ExecuteWithRetryAsync(
                 token => PostAsync<Label>(client.Connection, new Uri($"repos/{repository.OwnerOrNamespace}/{repository.Name}/labels", UriKind.Relative), new NewLabel(label.Name, label.Color) { Description = label.Description }, null, null, new Dictionary<string, string>(), token),
                 cancellationToken,
                 isIdempotent: false).ConfigureAwait(false);
+        }
+        catch (ApiException exception) when (exception.StatusCode == HttpStatusCode.UnprocessableEntity)
+        {
+            if (!await LabelExistsAsync(repository, label.Name, cancellationToken).ConfigureAwait(false))
+            {
+                throw;
+            }
         }
     }
 
@@ -460,6 +462,25 @@ public sealed class GitHubProvider(
         comment.UpdatedAt ?? comment.CreatedAt,
         new AttachmentSource("issue-comment", issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture), comment.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)),
         comment.User.Login.EndsWith("[bot]", StringComparison.Ordinal));
+
+    private async Task<bool> LabelExistsAsync(RepositoryRef repository, string labelName, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ExecuteReadWithCancellationAsync(
+                token => client.Connection.Get<Label>(
+                    new Uri($"repos/{repository.OwnerOrNamespace}/{repository.Name}/labels/{Uri.EscapeDataString(labelName)}", UriKind.Relative),
+                    null,
+                    null,
+                    token),
+                cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (NotFoundException)
+        {
+            return false;
+        }
+    }
 
     private static Task<T> ExecuteWithRetryAsync<T>(
         Func<CancellationToken, Task<T>> execute,

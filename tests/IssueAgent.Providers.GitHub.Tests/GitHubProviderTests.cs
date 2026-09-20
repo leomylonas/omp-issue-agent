@@ -458,6 +458,33 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
+    public async Task EnsureLabelAsyncAcceptsDuplicateCreateWhenLabelAppearsConcurrently()
+    {
+        const string labelPath = "/api/v3/repos/octo/widgets/labels/agent:phase:planning";
+        fixture.Server
+            .Given(Request.Create().WithPath(labelPath).UsingGet())
+            .InScenario("github-label-create-race")
+            .WillSetStateTo("creating")
+            .RespondWith(Response.Create().WithStatusCode(404).WithHeader("Content-Type", "application/json").WithBody("""{"message":"Not Found"}"""));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/labels").UsingPost())
+            .InScenario("github-label-create-race")
+            .WhenStateIs("creating")
+            .WillSetStateTo("created")
+            .RespondWith(Response.Create().WithStatusCode(422).WithHeader("Content-Type", "application/json").WithBody("""{"message":"Validation Failed"}"""));
+        fixture.Server
+            .Given(Request.Create().WithPath(labelPath).UsingGet())
+            .InScenario("github-label-create-race")
+            .WhenStateIs("created")
+            .RespondWith(JsonResponse("""{"name":"agent:phase:planning","color":"custom","description":"created concurrently"}"""));
+
+        await fixture.Provider.EnsureLabelAsync(Repository, new ProviderLabel("agent:phase:planning", "ededed", "Planning"), CancellationToken.None);
+
+        Assert.Equal(2, fixture.Server.LogEntries.Count(e => e.RequestMessage!.Path == labelPath && e.RequestMessage.Method == "GET"));
+        Assert.Single(fixture.Server.LogEntries, e => e.RequestMessage!.Path == "/api/v3/repos/octo/widgets/labels" && e.RequestMessage.Method == "POST");
+    }
+
+    [Fact]
     public async Task EnsureLabelAsyncDoesNotCreateWhenLabelAlreadyExists()
     {
         fixture.Server

@@ -62,7 +62,8 @@ public interface IGitRepositoryManager
     ValueTask UpdateSubmodulesAsync(string repositoryId, string worktreePath, Func<string, GitAuthentication?> authenticationResolver, CancellationToken cancellationToken);
 
     /// <summary>Rebases the worktree's current branch onto <paramref name="ontoCommit"/>. Returns
-    /// <see langword="false"/> and aborts cleanly if conflicts occur.</summary>
+    /// <see langword="false"/> and leaves conflicts as a merge when replaying the rebase conflicts,
+    /// so OMP can resolve the files with an ordinary Git commit that incorporates the target.</summary>
     ValueTask<bool> TryRebaseOntoAsync(string repositoryId, string worktreePath, string ontoCommit, GitIdentity identity, CancellationToken cancellationToken);
 
     /// <summary>Merges <paramref name="commit"/> into the worktree's current branch. Returns

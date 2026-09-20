@@ -118,7 +118,7 @@ public static class GitLfsRunner
             startInfo.Environment["GIT_TERMINAL_PROMPT"] = "0";
             startInfo.Environment["GIT_LFS_SKIP_SMUDGE"] = "0";
 
-            ApplyAuthentication(startInfo, canonicalRemoteUrl, authentication, isolatedHome);
+            await ApplyAuthenticationAsync(startInfo, canonicalRemoteUrl, authentication, isolatedHome, cancellationToken).ConfigureAwait(false);
 
             using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start git process for LFS operation.");
             var stderr = process.StandardError.ReadToEndAsync(cancellationToken);
@@ -142,11 +142,12 @@ public static class GitLfsRunner
         }
     }
 
-    private static void ApplyAuthentication(
+    private static async Task ApplyAuthenticationAsync(
         ProcessStartInfo startInfo,
         string canonicalRemoteUrl,
         GitAuthentication authentication,
-        string isolatedHome)
+        string isolatedHome,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(canonicalRemoteUrl);
         switch (authentication.Mode)
@@ -182,7 +183,7 @@ public static class GitLfsRunner
                 // objects over HTTPS. Apply the same HTTPS CA policy before git-lfs starts.
                 ApplyHttpsTlsTrust(startInfo, authentication.TlsTrust, isolatedHome);
                 var remoteUrl = canonicalRemoteUrl;
-                startInfo.Environment["GIT_SSH_COMMAND"] = GitSshTransport.BuildSshCommandForLfs(authentication, trust, remoteUrl, isolatedHome);
+                startInfo.Environment["GIT_SSH_COMMAND"] = await GitSshTransport.BuildSshCommandForLfsAsync(authentication, trust, remoteUrl, isolatedHome, cancellationToken).ConfigureAwait(false);
                 break;
 
             case GitAuthenticationMode.Anonymous:

@@ -224,6 +224,33 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     }
 
     [Fact]
+    public async Task EnsureLabelAsyncAcceptsDuplicateCreateWhenLabelAppearsConcurrently()
+    {
+        const string labelsPath = "/api/v4/projects/123/labels";
+        fixture.Server
+            .Given(Request.Create().WithPath(labelsPath).UsingGet())
+            .InScenario("gitlab-label-create-race")
+            .WillSetStateTo("creating")
+            .RespondWith(JsonResponse("[]"));
+        fixture.Server
+            .Given(Request.Create().WithPath(labelsPath).UsingPost())
+            .InScenario("gitlab-label-create-race")
+            .WhenStateIs("creating")
+            .WillSetStateTo("created")
+            .RespondWith(Response.Create().WithStatusCode(409).WithHeader("Content-Type", "application/json").WithBody("""{"message":"Label already exists"}"""));
+        fixture.Server
+            .Given(Request.Create().WithPath(labelsPath).UsingGet())
+            .InScenario("gitlab-label-create-race")
+            .WhenStateIs("created")
+            .RespondWith(JsonResponse("""[{"name":"agent:phase:planning","color":"#custom","description":"created concurrently"}]"""));
+
+        await fixture.Provider.EnsureLabelAsync(Repository, new ProviderLabel("agent:phase:planning", "ededed", "Planning"), CancellationToken.None);
+
+        Assert.Equal(2, fixture.Server.LogEntries.Count(e => e.RequestMessage!.Path == labelsPath && e.RequestMessage.Method == "GET"));
+        Assert.Single(fixture.Server.LogEntries, e => e.RequestMessage!.Path == labelsPath && e.RequestMessage.Method == "POST");
+    }
+
+    [Fact]
     public async Task EnsureLabelAsyncDoesNotCreateWhenLabelAlreadyExists()
     {
         fixture.Server

@@ -1,3 +1,5 @@
+using System.Net;
+
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using IssueAgent.Providers;
@@ -151,10 +153,21 @@ public sealed class GitLabProvider(
 
     public async ValueTask EnsureLabelAsync(RepositoryRef repository, ProviderLabel label, CancellationToken cancellationToken)
     {
-        var existing = await client.FindLabelAsync(repository.Id, label.Name, cancellationToken).ConfigureAwait(false);
-        if (existing is null)
+        if (await client.FindLabelAsync(repository.Id, label.Name, cancellationToken).ConfigureAwait(false) is not null)
+        {
+            return;
+        }
+
+        try
         {
             await client.CreateLabelAsync(repository.Id, label.Name, label.Color, label.Description, cancellationToken).ConfigureAwait(false);
+        }
+        catch (HttpRequestException exception) when (exception.StatusCode == HttpStatusCode.Conflict)
+        {
+            if (await client.FindLabelAsync(repository.Id, label.Name, cancellationToken).ConfigureAwait(false) is null)
+            {
+                throw;
+            }
         }
     }
 

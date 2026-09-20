@@ -438,6 +438,60 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task TryRebaseOntoAsyncPreservesConflictStateForResolution()
+    {
+        var remotePath = Track(TempGitFixtures.CreateBareRemoteRepository(out var baseCommit));
+        await manager.EnsureBareRepositoryAsync("repo-rebase-conflict", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
+        await manager.CreateWorktreeAsync("repo-rebase-conflict", "wt-rebase-conflict", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
+
+        using (var worktreeRepo = new Repository(worktreePath))
+        {
+            File.WriteAllText(Path.Combine(worktreePath, "README.md"), "agent change\n");
+            Commands.Stage(worktreeRepo, "README.md");
+            var signature = new Signature("Test", "test@example.com", DateTimeOffset.UtcNow);
+            worktreeRepo.Commit("Agent change", signature, signature);
+        }
+
+        var targetWorktreePath = Track(TempGitFixtures.CreateTempDirectory());
+        Directory.Delete(targetWorktreePath);
+        Repository.Clone(remotePath, targetWorktreePath);
+        string targetCommit;
+        using (var targetRepository = new Repository(targetWorktreePath))
+        {
+            File.WriteAllText(Path.Combine(targetWorktreePath, "README.md"), "target change\n");
+            Commands.Stage(targetRepository, "README.md");
+            var signature = new Signature("Test", "test@example.com", DateTimeOffset.UtcNow);
+            targetCommit = targetRepository.Commit("Target change", signature, signature).Sha;
+            targetRepository.Network.Push(targetRepository.Network.Remotes["origin"], $"{targetRepository.Head.CanonicalName}:{targetRepository.Head.CanonicalName}");
+        }
+
+        await manager.FetchAsync("repo-rebase-conflict", TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+
+        Assert.False(await manager.TryRebaseOntoAsync("repo-rebase-conflict", worktreePath, targetCommit, TempGitFixtures.TestIdentity, CancellationToken.None));
+        using (var conflictedRepository = new Repository(worktreePath))
+        {
+            Assert.Contains(conflictedRepository.RetrieveStatus(), entry => entry.State.HasFlag(FileStatus.Conflicted));
+        }
+
+        File.WriteAllText(Path.Combine(worktreePath, "README.md"), "resolved change\n");
+        RunGitCli(worktreePath, "add", "README.md");
+        RunGitCli(worktreePath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Resolve target conflict");
+
+        var resolvedHead = await manager.GetHeadCommitAsync("repo-rebase-conflict", worktreePath, CancellationToken.None);
+        Assert.True(await manager.IsAncestorAsync("repo-rebase-conflict", targetCommit, resolvedHead, CancellationToken.None));
+
+        await manager.PushAsync("repo-rebase-conflict", worktreePath, "agent/issue-1", TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+
+        using var publishedRepository = new Repository(remotePath);
+        Assert.Equal(
+            targetCommit,
+            publishedRepository.ObjectDatabase.FindMergeBase(
+                publishedRepository.Lookup<Commit>(targetCommit),
+                publishedRepository.Branches["agent/issue-1"].Tip)?.Sha);
+    }
+
+    [Fact]
     public async Task PushAsyncNeverForcesAndUpdatesRemoteBranch()
     {
         var bareRemotePath = Track(TempGitFixtures.CreateBareRemoteRepository(out var baseCommit));

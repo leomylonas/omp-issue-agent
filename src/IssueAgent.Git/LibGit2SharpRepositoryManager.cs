@@ -23,20 +23,20 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
     private static readonly string[] mutableBareRepositoryDirectories = ["objects", "refs", "worktrees"];
 
 
-    public ValueTask EnsureBareRepositoryAsync(string repositoryId, string cloneUrl, GitAuthentication authentication, CancellationToken cancellationToken)
+    public async ValueTask EnsureBareRepositoryAsync(string repositoryId, string cloneUrl, GitAuthentication authentication, CancellationToken cancellationToken)
     {
         var path = BareRepositoryPath(repositoryId);
         if (Repository.IsValid(path))
         {
             HardenBareRepositoryAuthority(path);
-            return ValueTask.CompletedTask;
+            return;
         }
 
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
         if (authentication.Mode == GitAuthenticationMode.Ssh)
         {
-            GitSshTransport.CloneBare(cloneUrl, path, authentication);
+            await GitSshTransport.CloneBareAsync(cloneUrl, path, authentication, cancellationToken).ConfigureAwait(false);
         }
         else
         {
@@ -51,15 +51,14 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
 
         DisableHooks(path);
         HardenBareRepositoryAuthority(path);
-        return ValueTask.CompletedTask;
     }
 
-    public ValueTask FetchAsync(string repositoryId, GitAuthentication authentication, CancellationToken cancellationToken)
+    public async ValueTask FetchAsync(string repositoryId, GitAuthentication authentication, CancellationToken cancellationToken)
     {
         var path = BareRepositoryPath(repositoryId);
         if (authentication.Mode == GitAuthenticationMode.Ssh)
         {
-            GitSshTransport.Fetch(path, authentication);
+            await GitSshTransport.FetchAsync(path, authentication, cancellationToken).ConfigureAwait(false);
         }
         else
         {
@@ -76,7 +75,6 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         // Fetch creates objects and refs below the shared bare database. Reapply the boundary
         // after every fetch so newly created entries are usable by OMP without exposing authority.
         HardenBareRepositoryAuthority(path);
-        return ValueTask.CompletedTask;
     }
 
     public ValueTask<string> ResolveBranchCommitAsync(string repositoryId, string branchName, CancellationToken cancellationToken)
@@ -235,15 +233,14 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         return ValueTask.FromResult(repo.Head.Tip.Sha);
     }
 
-    public ValueTask UpdateSubmodulesAsync(string repositoryId, string worktreePath, Func<string, GitAuthentication?> authenticationResolver, CancellationToken cancellationToken)
+    public async ValueTask UpdateSubmodulesAsync(string repositoryId, string worktreePath, Func<string, GitAuthentication?> authenticationResolver, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(authenticationResolver);
         var rootPath = Path.GetFullPath(worktreePath);
-        UpdateSubmodulesRecursively(rootPath, rootPath, authenticationResolver, new HashSet<string>(StringComparer.Ordinal), cancellationToken);
-        return ValueTask.CompletedTask;
+        await UpdateSubmodulesRecursivelyAsync(rootPath, rootPath, authenticationResolver, new HashSet<string>(StringComparer.Ordinal), cancellationToken).ConfigureAwait(false);
     }
 
-    private static void UpdateSubmodulesRecursively(
+    private static async Task UpdateSubmodulesRecursivelyAsync(
         string repositoryPath,
         string rootPath,
         Func<string, GitAuthentication?> authenticationResolver,
@@ -268,11 +265,12 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
 
             if (effectiveAuthentication.Mode == GitAuthenticationMode.Ssh)
             {
-                GitSshTransport.UpdateSubmodule(
+                await GitSshTransport.UpdateSubmoduleAsync(
                     repositoryPath,
                     submodule.Path,
                     GetSshTransportRemoteUrl(submodule.Url, repo.Network.Remotes["origin"]?.Url),
-                    effectiveAuthentication);
+                    effectiveAuthentication,
+                    cancellationToken).ConfigureAwait(false);
             }
             else
             {
@@ -297,7 +295,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
 
             GetSafeSubmodulePath(rootPath, repositoryPath, submodule.Path);
             DisableHooks(submodulePath);
-            UpdateSubmodulesRecursively(submodulePath, rootPath, authenticationResolver, visitedRepositoryPaths, cancellationToken);
+            await UpdateSubmodulesRecursivelyAsync(submodulePath, rootPath, authenticationResolver, visitedRepositoryPaths, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -382,23 +380,22 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         var upstreamBranch = repo.Branches.Add(upstreamBranchName, mergeBase);
         var ontoBranch = repo.Branches.Add(ontoBranchName, ontoCommitObj);
 
-        try
+        var result = repo.Rebase.Start(currentBranch, upstreamBranch, ontoBranch, new Identity(identity.Name, identity.Email), new RebaseOptions());
+        if (result.Status == RebaseStatus.Conflicts)
         {
-            var committer = new Identity(identity.Name, identity.Email);
-            var result = repo.Rebase.Start(currentBranch, upstreamBranch, ontoBranch, committer, new RebaseOptions());
-            if (result.Status == RebaseStatus.Conflicts)
-            {
-                repo.Rebase.Abort();
-                return ValueTask.FromResult(false);
-            }
-
-            return ValueTask.FromResult(true);
-        }
-        finally
-        {
+            // LibGit2Sharp's rebase state cannot be continued by the Git CLI that OMP uses. Abort
+            // that in-memory rebase, then reproduce the same integration as a merge so the conflict
+            // index is durable and an ordinary `git commit` publishes a branch containing the target.
+            repo.Rebase.Abort();
             repo.Branches.Remove(upstreamBranch);
             repo.Branches.Remove(ontoBranch);
+            return ValueTask.FromResult(
+                repo.Merge(ontoCommitObj, new Signature(identity.Name, identity.Email, DateTimeOffset.UtcNow), new MergeOptions { CommitOnSuccess = true, FailOnConflict = false }).Status != MergeStatus.Conflicts);
         }
+
+        repo.Branches.Remove(upstreamBranch);
+        repo.Branches.Remove(ontoBranch);
+        return ValueTask.FromResult(true);
     }
 
     public ValueTask<bool> TryMergeAsync(string repositoryId, string worktreePath, string commit, GitIdentity identity, CancellationToken cancellationToken)
@@ -411,7 +408,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         return ValueTask.FromResult(result.Status != MergeStatus.Conflicts);
     }
 
-    public ValueTask PushAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken)
+    public async ValueTask PushAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken)
     {
         // OMP can edit a retained worktree, including its .git file. Resolve both the ref and
         // remote from the canonical bare repository, which is never made group-writable, so a
@@ -419,8 +416,8 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         var bareRepositoryPath = BareRepositoryPath(repositoryId);
         if (authentication.Mode == GitAuthenticationMode.Ssh)
         {
-            GitSshTransport.Push(bareRepositoryPath, branchName, authentication);
-            return ValueTask.CompletedTask;
+            await GitSshTransport.PushAsync(bareRepositoryPath, branchName, authentication, cancellationToken).ConfigureAwait(false);
+            return;
         }
 
         using var repo = new Repository(bareRepositoryPath);
@@ -435,7 +432,6 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
             CredentialsProvider = CredentialsHandlerFor(authentication, TryGetHost(remote.Url)),
             CertificateCheck = CertificateCheckHandlerFor(authentication.TlsTrust),
         });
-        return ValueTask.CompletedTask;
     }
 
     public ValueTask RemoveWorktreeAsync(string repositoryId, string worktreeId, string worktreePath, CancellationToken cancellationToken)

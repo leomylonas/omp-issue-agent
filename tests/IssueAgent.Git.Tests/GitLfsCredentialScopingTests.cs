@@ -170,7 +170,7 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
         var worktreePath = CreateWorktreeWithOrigin("ssh://git.trusted.example/octo/widgets.git");
         var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
 
-        var exception = Assert.Throws<TargetInvocationException>(() =>
+        var failure = Assert.Throws<InvalidOperationException>(() =>
             InvokeApplyAuthentication(startInfo, new GitAuthentication
             {
                 Mode = GitAuthenticationMode.Ssh,
@@ -179,7 +179,6 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
                 TlsTrust = new TlsTrust { Mode = TlsTrustMode.Pinned, Fingerprints = ["sha256/fingerprint"] },
             }, Track()));
 
-        var failure = Assert.IsType<InvalidOperationException>(exception.InnerException);
         Assert.Contains("system-plus-additional-ca", failure.Message, StringComparison.Ordinal);
         Assert.False(startInfo.Environment.ContainsKey("GIT_SSH_COMMAND"));
     }
@@ -225,8 +224,8 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
         GitAuthentication authentication,
         string isolatedHome)
     {
-        var method = typeof(GitLfsRunner).GetMethod("ApplyAuthentication", BindingFlags.NonPublic | BindingFlags.Static)!;
-        method.Invoke(null, [startInfo, canonicalRemoteUrl, authentication, isolatedHome]);
+        var method = typeof(GitLfsRunner).GetMethod("ApplyAuthenticationAsync", BindingFlags.NonPublic | BindingFlags.Static)!;
+        ((Task)method.Invoke(null, [startInfo, canonicalRemoteUrl, authentication, isolatedHome, CancellationToken.None])!).GetAwaiter().GetResult();
     }
 
     private static void InvokeAddTrustedLfsEndpointConfiguration(

@@ -23,6 +23,7 @@ public sealed class FakeGitProvider : IGitProvider
 
     public Dictionary<(string RepositoryId, long Number), List<ProviderReviewThread>> ReviewThreads { get; } = [];
     public Action? OnReviewThreadsEnumeration { get; set; }
+    public Action? OnIssueRelationshipsEnumeration { get; set; }
 
     public string Name => "fake";
 
@@ -183,6 +184,7 @@ public sealed class FakeGitProvider : IGitProvider
     public async IAsyncEnumerable<IssueRelationship> GetIssueRelationshipsAsync(RepositoryRef repository, long issueNumber, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         await Task.Yield();
+        OnIssueRelationshipsEnumeration?.Invoke();
         yield break;
     }
 

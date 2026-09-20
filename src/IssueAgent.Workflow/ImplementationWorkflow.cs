@@ -118,11 +118,8 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
 
         var currentPlan = new PlanContext(existingContent.State.PlanRevision, existingContent.PlanText, existingContent.DecisionsAndRationale);
         var attachmentsPath = AttachmentsPath(config, currentState.WorkflowId);
-        var context = await deps.ContextBuilder
-            .BuildAsync(config.Repository, issueNumber, workingState, currentPlan, mergeRequest: null, attachmentsPath, cancellationToken)
-            .ConfigureAwait(false);
-        var inputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
-
+        var (context, inputSnapshot) = await BuildContextForInputSnapshotAsync(
+            config, issueNumber, workingState, currentPlan, attachmentsPath, cancellationToken).ConfigureAwait(false);
         await omp.SelectRoleAsync(config.ImplementationRole, cancellationToken).ConfigureAwait(false);
         var implementOutcome = await OmpRunCollector
             .RunToCompletionAsync(omp, new OmpRunRequest(currentState.OmpSessionId, worktreePath, config.ApplyInstructions(ImplementationPromptBuilder.BuildImplementationPrompt(context)), config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
@@ -593,10 +590,33 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, pausedState, message);
     }
 
-    /// <summary>Human-input identity captured for the new-input gate (specification §22): title and
-    /// description content plus each non-bot comment's id/last-updated timestamp, so an edited
-    /// existing comment (which can add an attachment without changing the comment count) is
-    /// detected just as reliably as an entirely new comment.</summary>
+
+    /// <summary>Captures implementation input before prompt construction. When input changes while
+    /// context is assembled, rebuild the prompt context but retain the original baseline so the
+    /// pre-push gate still pauses before any work based on post-baseline input is published.</summary>
+    private async Task<(AgentContext Context, InputSnapshot InputSnapshot)> BuildContextForInputSnapshotAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState workingState,
+        PlanContext currentPlan,
+        string attachmentsPath,
+        CancellationToken cancellationToken)
+    {
+        var baseline = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
+        var context = await deps.ContextBuilder
+            .BuildAsync(config.Repository, issueNumber, workingState, currentPlan, mergeRequest: null, attachmentsPath, cancellationToken)
+            .ConfigureAwait(false);
+        var reconciled = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
+        if (reconciled != baseline)
+        {
+            context = await deps.ContextBuilder
+                .BuildAsync(config.Repository, issueNumber, workingState, currentPlan, mergeRequest: null, attachmentsPath, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        return (context, baseline);
+    }
+
     private sealed record InputSnapshot(string Title, string Description, string CommentsDigest);
 
     private async Task<InputSnapshot> CaptureInputSnapshotAsync(

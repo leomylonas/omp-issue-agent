@@ -320,6 +320,51 @@ public sealed class ImplementationWorkflowTests : IDisposable
 
 
     [Fact]
+    public async Task RunAsyncRebuildsPromptContextAndPausesWhenInputChangesDuringContextConstruction()
+    {
+        var state = await SeedApprovedPlanAsync();
+        var inputChanged = false;
+        provider.OnIssueRelationshipsEnumeration = () =>
+        {
+            if (!inputChanged)
+            {
+                inputChanged = true;
+                provider.Issues[(Repository.Id, 1)] = provider.Issues[(Repository.Id, 1)] with
+                {
+                    Description = "Revised requirements from the issue.",
+                    UpdatedAt = clock.UtcNow.AddMinutes(1),
+                };
+                provider.AddComment(
+                    Repository,
+                    1,
+                    "alice",
+                    "The implementation must retain the existing API.",
+                    clock.UtcNow.AddMinutes(1));
+            }
+        };
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"summary":"Implemented the plan.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await CreateWorkflow().RunAsync(
+            CreateConfig(),
+            WorkflowMode.Full,
+            1,
+            state,
+            omp,
+            CancellationToken.None);
+
+        Assert.Equal(WaitingReason.NewInputDuringImplementation, outcome.State.WaitingReason);
+        Assert.Contains(
+            "Revised requirements from the issue.",
+            Assert.Single(omp.RunRequests).Prompt,
+            StringComparison.Ordinal);
+        Assert.Equal(0, git.PushCallCount);
+        Assert.Empty(provider.MergeRequests);
+    }
+
+    [Fact]
     public async Task RunAsyncPausesBeforePushWhenHumanInputArrivesDuringImplementation()
     {
         var state = await SeedApprovedPlanAsync();
