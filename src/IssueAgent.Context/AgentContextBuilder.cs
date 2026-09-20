@@ -101,14 +101,17 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
         }
 
         var visited = new HashSet<(string RepositoryId, long IssueNumber)> { (repository.Id, rootIssueNumber) };
-        var frontier = new List<(RepositoryRef Repository, long IssueNumber)> { (repository, rootIssueNumber) };
+        var frontier = new List<(RepositoryRef Repository, long IssueNumber, IReadOnlyList<string> RelationshipPath)>
+        {
+            (repository, rootIssueNumber, []),
+        };
         var results = new List<RelatedIssueContext>();
 
         for (var depth = 0; depth < options.RelatedIssueTraversalDepth && frontier.Count > 0; depth++)
         {
-            var nextFrontier = new List<(RepositoryRef Repository, long IssueNumber)>();
+            var nextFrontier = new List<(RepositoryRef Repository, long IssueNumber, IReadOnlyList<string> RelationshipPath)>();
 
-            foreach (var (currentRepository, currentIssueNumber) in frontier)
+            foreach (var (currentRepository, currentIssueNumber, relationshipPath) in frontier)
             {
                 await foreach (var relationship in provider
                     .GetIssueRelationshipsAsync(currentRepository, currentIssueNumber, cancellationToken)
@@ -129,9 +132,10 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
                     var relatedIssueContext = await BuildIssueContextAsync(
                         allowedRepository, relationship.IssueNumber, attachmentsDestinationDirectory, remainingBudget, cancellationToken)
                         .ConfigureAwait(false);
+                    var relatedIssueRelationshipPath = relationshipPath.Append(relationship.Relationship).ToArray();
 
-                    results.Add(new RelatedIssueContext(relationship.Relationship, relatedIssueContext));
-                    nextFrontier.Add((allowedRepository, relationship.IssueNumber));
+                    results.Add(new RelatedIssueContext(relatedIssueRelationshipPath, relatedIssueContext));
+                    nextFrontier.Add((allowedRepository, relationship.IssueNumber, relatedIssueRelationshipPath));
                 }
             }
 

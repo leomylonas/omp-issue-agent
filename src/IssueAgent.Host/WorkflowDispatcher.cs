@@ -464,9 +464,6 @@ public sealed partial class WorkflowDispatcher(
                     cancellationToken).ConfigureAwait(false);
                 return;
             }
-            var routedCommand = rebuildRetainedRevisionFromRemoteHead
-                ? WorkflowCommand.Revise
-                : WorkflowCommandRouting.ContinueRoute(state, durableState);
             var preservesRetainedContinuation = !rebuildRetainedRevisionFromRemoteHead &&
                 (state.WaitingReason is
                     WaitingReason.NewInputDuringImplementation or WaitingReason.MaterialPlanDeviation or
@@ -474,26 +471,31 @@ public sealed partial class WorkflowDispatcher(
                  HasResultCheckpointedImplementation(state, reconciled.Content!) ||
                  HasRetainedRevisionCheckpoint(state, reconciled.Content!));
             var recoveredAuthoritativeRemote = true;
+            string? acceptedRemoteHead = null;
             if (!preservesRetainedContinuation)
             {
-                recoveredAuthoritativeRemote = await RecoverContinueWorkspaceAsync(
+                acceptedRemoteHead = await RecoverContinueWorkspaceFromRemoteHeadAsync(
                     runtime.Dependencies,
                     runtime.Config,
                     state,
                     reconciled.Content!,
                     cancellationToken).ConfigureAwait(false);
+                recoveredAuthoritativeRemote = acceptedRemoteHead is not null;
             }
             if (!recoveredAuthoritativeRemote &&
                 (state.Phase == WorkflowPhase.Review ||
-                 (state.Phase == WorkflowPhase.Revising &&
-                  state.WaitingReason is WaitingReason.RemoteHistoryRewrite or WaitingReason.MissingRemoteRevisionBranch)))
+                 state.WaitingReason is WaitingReason.RemoteHistoryRewrite or WaitingReason.MissingRemoteRevisionBranch))
             {
                 var waitingReason = state.Phase == WorkflowPhase.Review
                     ? WaitingReason.ReviewRequested
-                    : WaitingReason.MissingRemoteRevisionBranch;
+                    : state.Phase == WorkflowPhase.Revising
+                        ? WaitingReason.MissingRemoteRevisionBranch
+                        : WaitingReason.RemoteHistoryRewrite;
                 var message = state.Phase == WorkflowPhase.Review
                     ? "The review branch is not available on the authoritative remote. The continue command was retained and will be retried after the branch is restored."
-                    : "The revision branch disappeared from the authoritative remote while recovery was in progress. The retained revision was not rebuilt from the planned base; restore the branch and continue again.";
+                    : state.Phase == WorkflowPhase.Revising
+                        ? "The revision branch disappeared from the authoritative remote while recovery was in progress. The retained revision was not rebuilt from the planned base; restore the branch and continue again."
+                        : "The remote branch is not available to accept as authoritative. The continue command was retained; restore the branch and continue again.";
                 await reconciliation.PauseForHumanAsync(
                     runtime.Config,
                     issueNumber,
@@ -505,6 +507,22 @@ public sealed partial class WorkflowDispatcher(
                     cancellationToken).ConfigureAwait(false);
                 return;
             }
+            if (acceptedRemoteHead is not null &&
+                state.WaitingReason is WaitingReason.RemoteHistoryRewrite or WaitingReason.MissingRemoteRevisionBranch)
+            {
+                state = await reconciliation.AcceptRemoteHistoryAsync(
+                    runtime.Config,
+                    issueNumber,
+                    canonical,
+                    reconciled.Content!,
+                    state,
+                    acceptedRemoteHead,
+                    cancellationToken).ConfigureAwait(false);
+                durableState = state;
+            }
+            var routedCommand = rebuildRetainedRevisionFromRemoteHead
+                ? WorkflowCommand.Revise
+                : WorkflowCommandRouting.ContinueRoute(state, durableState);
             if (routedCommand is null)
             {
                 await ConsumeCommandAsync(
@@ -608,6 +626,15 @@ public sealed partial class WorkflowDispatcher(
         WorkflowRepositoryConfig config,
         WorkflowState state,
         CanonicalCommentContent content,
+        CancellationToken cancellationToken) =>
+        await RecoverContinueWorkspaceFromRemoteHeadAsync(dependencies, config, state, content, cancellationToken)
+            .ConfigureAwait(false) is not null;
+
+    private static async Task<string?> RecoverContinueWorkspaceFromRemoteHeadAsync(
+        WorkflowDependencies dependencies,
+        WorkflowRepositoryConfig config,
+        WorkflowState state,
+        CanonicalCommentContent content,
         CancellationToken cancellationToken)
     {
         var worktreePath = Path.Combine(config.WorkflowsStoragePath, state.WorkflowId.ToString(), "worktree");
@@ -621,13 +648,13 @@ public sealed partial class WorkflowDispatcher(
             state.WaitingReason is WaitingReason.RemoteHistoryRewrite or WaitingReason.MissingRemoteRevisionBranch &&
             remoteHead is null)
         {
-            return false;
+            return null;
         }
         if (!Directory.Exists(worktreePath))
         {
             if (state.Phase == WorkflowPhase.Review && remoteHead is null)
             {
-                return false;
+                return null;
             }
             await dependencies.Git.CreateWorktreeAsync(
                 config.Repository.Id,
@@ -650,7 +677,7 @@ public sealed partial class WorkflowDispatcher(
                 config.Repository.Id, worktreePath, remoteHead, cancellationToken).ConfigureAwait(false);
         }
 
-        return remoteHead is not null;
+        return remoteHead;
     }
 
     private static bool HasResultCheckpointedImplementation(WorkflowState state, CanonicalCommentContent content) =>

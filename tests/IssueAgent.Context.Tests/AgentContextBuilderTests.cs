@@ -77,8 +77,26 @@ public sealed class AgentContextBuilderTests
         var context = await BuildAsync(provider, 1);
 
         var related = Assert.Single(context.RelatedIssues);
-        Assert.Equal("blocks", related.Relationship);
+        Assert.Equal(["blocks"], related.RelationshipPath);
         Assert.Equal(2, related.Issue.Number);
+    }
+
+    [Fact]
+    public async Task BuildAsyncPreservesFullRelationshipPathThroughMultipleHops()
+    {
+        var provider = new FakeGitProvider();
+        provider.AddIssue(Repository, 1, "Primary issue", "Primary description");
+        provider.AddIssue(Repository, 2, "Blocking issue", "Blocking description");
+        provider.AddIssue(Repository, 3, "Dependent issue", "Dependent description");
+        provider.AddRelationship(Repository, 1, "blocks", Repository, 2);
+        provider.AddRelationship(Repository, 2, "blocked-by", Repository, 3);
+
+        var context = await BuildAsync(provider, 1, depth: 2);
+
+        Assert.Collection(
+            context.RelatedIssues,
+            first => Assert.Equal(["blocks"], first.RelationshipPath),
+            second => Assert.Equal(["blocks", "blocked-by"], second.RelationshipPath));
     }
 
     [Fact]

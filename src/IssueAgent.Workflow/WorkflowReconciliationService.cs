@@ -262,6 +262,44 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
         state.OmpSessionFile is null;
 
 
+    /// <summary>Records a human's decision to treat a rewritten remote branch as authoritative.
+    /// Any uncheckpointed local implementation is discarded; the approved plan remains available
+    /// for a subsequent explicit implementation command.</summary>
+    public async Task<WorkflowState> AcceptRemoteHistoryAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        ProviderComment canonicalComment,
+        CanonicalCommentContent content,
+        WorkflowState state,
+        string acceptedRemoteHead,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(acceptedRemoteHead);
+
+        var acceptedState = state with
+        {
+            Phase = WorkflowPhase.Planned,
+            OperationalState = WorkflowOperationalState.Waiting,
+            WaitingReason = WaitingReason.PlanApproval,
+            BaseCommit = acceptedRemoteHead,
+            InterruptedPhase = null,
+            ExpectedImplementationHead = null,
+            PublicationStage = null,
+            RebasedPublicationBase = null,
+            UpdatedAt = dependencies.Clock.UtcNow,
+        };
+        var acceptedContent = content with
+        {
+            ImplementationResult = null,
+            State = CanonicalStateSerializer.ToDocument(acceptedState, content.State.PullOrMergeRequest),
+        };
+        await PersistCanonicalStateAsync(
+            config, issueNumber, canonicalComment, acceptedContent, acceptedState, cancellationToken)
+            .ConfigureAwait(false);
+        await TransitionLabelsAsync(config, issueNumber, acceptedState.Phase, cancellationToken).ConfigureAwait(false);
+        return acceptedState;
+    }
+
     public async Task<WorkflowReconciliationResult> PauseForHumanAsync(
         WorkflowRepositoryConfig config,
         long issueNumber,

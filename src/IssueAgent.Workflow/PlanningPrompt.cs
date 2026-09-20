@@ -163,7 +163,10 @@ public static class PlanningPromptBuilder
     {
         foreach (var related in relatedIssues)
         {
-            AppendIssue(builder, related.Issue, $"Related issue ({related.Relationship}, read-only context)");
+            AppendIssue(
+                builder,
+                related.Issue,
+                $"Related issue ({string.Join(" -> ", related.RelationshipPath)}, read-only context)");
         }
     }
 }

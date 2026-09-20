@@ -111,12 +111,7 @@ public static class GitLfsRunner
                 startInfo.ArgumentList.Add(argument);
             }
 
-            startInfo.Environment["GIT_CONFIG_NOSYSTEM"] = "1";
-            startInfo.Environment["GIT_CONFIG_GLOBAL"] = OperatingSystem.IsWindows() ? "NUL" : "/dev/null";
-            startInfo.Environment["HOME"] = isolatedHome;
-            startInfo.Environment["XDG_CONFIG_HOME"] = isolatedHome;
-            startInfo.Environment["GIT_TERMINAL_PROMPT"] = "0";
-            startInfo.Environment["GIT_LFS_SKIP_SMUDGE"] = "0";
+            ConfigureIsolatedEnvironment(startInfo, isolatedHome);
 
             await ApplyAuthenticationAsync(startInfo, canonicalRemoteUrl, authentication, isolatedHome, cancellationToken).ConfigureAwait(false);
 
@@ -140,6 +135,31 @@ public static class GitLfsRunner
         {
             Directory.Delete(isolatedHome, recursive: true);
         }
+    }
+
+    private static void ConfigureIsolatedEnvironment(ProcessStartInfo startInfo, string isolatedHome)
+    {
+        foreach (var key in startInfo.Environment.Keys
+                     .Where(key => key.StartsWith("GIT_CONFIG_", StringComparison.OrdinalIgnoreCase) ||
+                                   key.Equals("GIT_ASKPASS", StringComparison.OrdinalIgnoreCase) ||
+                                   key.Equals("SSH_ASKPASS", StringComparison.OrdinalIgnoreCase) ||
+                                   key.Equals("GIT_SSH", StringComparison.OrdinalIgnoreCase) ||
+                                   key.Equals("GIT_SSH_COMMAND", StringComparison.OrdinalIgnoreCase) ||
+                                   key.Equals("GIT_DIR", StringComparison.OrdinalIgnoreCase) ||
+                                   key.Equals("GIT_WORK_TREE", StringComparison.OrdinalIgnoreCase) ||
+                                   key.Equals("GIT_COMMON_DIR", StringComparison.OrdinalIgnoreCase) ||
+                                   key.Equals("GIT_INDEX_FILE", StringComparison.OrdinalIgnoreCase))
+                     .ToArray())
+        {
+            startInfo.Environment.Remove(key);
+        }
+
+        startInfo.Environment["GIT_CONFIG_NOSYSTEM"] = "1";
+        startInfo.Environment["GIT_CONFIG_GLOBAL"] = OperatingSystem.IsWindows() ? "NUL" : "/dev/null";
+        startInfo.Environment["HOME"] = isolatedHome;
+        startInfo.Environment["XDG_CONFIG_HOME"] = isolatedHome;
+        startInfo.Environment["GIT_TERMINAL_PROMPT"] = "0";
+        startInfo.Environment["GIT_LFS_SKIP_SMUDGE"] = "0";
     }
 
     private static async Task ApplyAuthenticationAsync(
@@ -204,6 +224,9 @@ public static class GitLfsRunner
         ProcessStartInfo startInfo,
         string canonicalRemoteUrl)
     {
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("credential.helper=");
+
         if (!TryGetLfsRemoteUri(canonicalRemoteUrl, out var remote))
         {
             return;

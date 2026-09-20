@@ -100,6 +100,18 @@ public sealed class WorkflowCommandRoutingTests
     }
 
     [Fact]
+    public void ContinueAfterAcceptingRemoteHistoryLeavesRestoredPlanAtApproval()
+    {
+        var restoredPlan = CreateState(WorkflowPhase.Planned, WorkflowOperationalState.Waiting) with
+        {
+            WaitingReason = WaitingReason.PlanApproval,
+            BaseCommit = "accepted-remote-head",
+        };
+
+        Assert.Null(WorkflowCommandRouting.ContinueRoute(restoredPlan, restoredPlan));
+    }
+
+    [Fact]
     public void ContinueRoutePublishesRetainedMaterialRevision()
     {
         var pausedRevision = CreateState(WorkflowPhase.Revising, WorkflowOperationalState.Waiting) with

@@ -216,7 +216,7 @@ public sealed partial class PollingScheduler(
         return MeasureWorkspaceBytes(rootPath);
     }
 
-    private static long MeasureWorkspaceBytes(string rootPath)
+    internal static long MeasureWorkspaceBytes(string rootPath)
     {
         if (!Directory.Exists(rootPath))
         {
@@ -225,8 +225,11 @@ public sealed partial class PollingScheduler(
 
         try
         {
-            return Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories)
-                .Sum(path => new FileInfo(path).Length);
+            return Directory.EnumerateFiles(rootPath, "*", new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                AttributesToSkip = FileAttributes.ReparsePoint,
+            }).Sum(path => new FileInfo(path).Length);
         }
         catch (IOException)
         {

@@ -17,6 +17,26 @@ public sealed class OmpResultContractTests
     }
 
     [Fact]
+    public void PlanningPromptsRenderFullRelationshipPathForMultiHopRelatedIssues()
+    {
+        var context = CreateContext() with
+        {
+            RelatedIssues =
+            [
+                new RelatedIssueContext(
+                    ["blocks", "blocked-by"],
+                    new IssueContext("github/octo/widgets", 3, "Dependent issue", "Dependent description", [], [], [])),
+            ],
+        };
+
+        var initial = PlanningPromptBuilder.BuildInitialPlanPrompt(context);
+        var replan = PlanningPromptBuilder.BuildReplanPrompt(context, []);
+
+        Assert.Contains("Related issue (blocks -> blocked-by, read-only context): Dependent issue", initial, StringComparison.Ordinal);
+        Assert.Contains("Related issue (blocks -> blocked-by, read-only context): Dependent issue", replan, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ImplementationRevisionAndConflictPromptsRequireOutputOnlyExactJsonSchema()
     {
         var context = CreateContext();

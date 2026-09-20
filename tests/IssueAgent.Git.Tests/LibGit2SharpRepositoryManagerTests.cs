@@ -45,6 +45,28 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
     }
 
     [Fact]
+    public void CredentialsHandlerReturnsNoCredentialsForAnonymousAuthority()
+    {
+        var credentials = InvokeCredentialsHandler(
+            GitAuthentication.Anonymous(TlsTrust.System),
+            "https://git.trusted.example:443",
+            "https://git.trusted.example/repository.git");
+
+        Assert.Null(credentials);
+    }
+
+    [Fact]
+    public void CredentialsHandlerReturnsNoCredentialsForMismatchedAuthority()
+    {
+        var credentials = InvokeCredentialsHandler(
+            new GitAuthentication { Mode = GitAuthenticationMode.Token, HttpsToken = "super-secret-token" },
+            "https://git.trusted.example:443",
+            "https://attacker.example/repository.git");
+
+        Assert.Null(credentials);
+    }
+
+    [Fact]
     public async Task HttpsRemoteOperationsHonorCancellationBeforeStartingTransfer()
     {
         var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out var baseCommit));
@@ -696,6 +718,24 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task RemoveWorktreeAsyncDoesNotTraverseSymbolicLinks()
+    {
+        var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out var baseCommit));
+        await manager.EnsureBareRepositoryAsync("repo-cleanup-symlink", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
+        await manager.CreateWorktreeAsync("repo-cleanup-symlink", "wt-cleanup-symlink", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
+        var outsideDirectory = Track(TempGitFixtures.CreateTempDirectory());
+        var sentinelPath = Path.Combine(outsideDirectory, "sentinel.txt");
+        File.WriteAllText(sentinelPath, "must survive worktree cleanup");
+        Directory.CreateSymbolicLink(Path.Combine(worktreePath, "outside"), outsideDirectory);
+
+        await manager.RemoveWorktreeAsync("repo-cleanup-symlink", "wt-cleanup-symlink", worktreePath, CancellationToken.None);
+
+        Assert.True(File.Exists(sentinelPath));
+        Assert.False(Directory.Exists(worktreePath));
+    }
+
+    [Fact]
     public async Task RemoveLocalBranchAsyncDeletesOnlyLocalBranch()
     {
         var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out var baseCommit));
@@ -1037,6 +1077,19 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
                 CancellationToken.None).AsTask());
 
         Assert.Contains("not initialized", exception.Message, StringComparison.Ordinal);
+    }
+
+    private static object? InvokeCredentialsHandler(
+        GitAuthentication authentication,
+        string? expectedTransportAuthority,
+        string callbackUrl)
+    {
+        var method = typeof(LibGit2SharpRepositoryManager).GetMethod(
+            "CredentialsHandlerFor",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+        var handler = (Delegate)method.Invoke(null, [authentication, expectedTransportAuthority])!;
+        var supportedCredentialTypes = Enum.ToObject(handler.Method.GetParameters()[2].ParameterType, 0);
+        return handler.DynamicInvoke(callbackUrl, null, supportedCredentialTypes);
     }
 
     private static void WithFakeCommand(string command, string script, Action action)

@@ -1098,14 +1098,14 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
                     expectedTransportAuthority,
                     StringComparison.OrdinalIgnoreCase))
             {
-                return new DefaultCredentials();
+                return null;
             }
 
             return authentication.Mode switch
             {
                 GitAuthenticationMode.ProviderToken or GitAuthenticationMode.Token =>
                     new UsernamePasswordCredentials { Username = authentication.HttpsUsername ?? "x-access-token", Password = authentication.HttpsToken! },
-                GitAuthenticationMode.Anonymous => new DefaultCredentials(),
+                GitAuthenticationMode.Anonymous => null,
                 _ => throw new InvalidOperationException($"Unsupported credential mode '{authentication.Mode}' for HTTPS transport."),
             };
         };
@@ -1122,11 +1122,44 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
 
     private static void DeleteDirectoryRobust(string path)
     {
-        foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+        var attributes = File.GetAttributes(path);
+        if ((attributes & FileAttributes.ReparsePoint) != 0)
         {
-            File.SetAttributes(file, FileAttributes.Normal);
+            DeleteLink(path, attributes);
+            return;
         }
 
-        Directory.Delete(path, recursive: true);
+        foreach (var entryPath in Directory.EnumerateFileSystemEntries(path))
+        {
+            attributes = File.GetAttributes(entryPath);
+            if ((attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                DeleteLink(entryPath, attributes);
+            }
+            else if ((attributes & FileAttributes.Directory) != 0)
+            {
+                DeleteDirectoryRobust(entryPath);
+            }
+            else
+            {
+                File.SetAttributes(entryPath, FileAttributes.Normal);
+                File.Delete(entryPath);
+            }
+        }
+
+        File.SetAttributes(path, FileAttributes.Normal);
+        Directory.Delete(path);
+    }
+
+    private static void DeleteLink(string path, FileAttributes attributes)
+    {
+        if ((attributes & FileAttributes.Directory) != 0)
+        {
+            Directory.Delete(path);
+        }
+        else
+        {
+            File.Delete(path);
+        }
     }
 }

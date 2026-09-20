@@ -239,6 +239,39 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
 
 
     [Fact]
+    public async Task AcceptRemoteHistoryPersistsAcceptedHeadAndRestoresPlanApproval()
+    {
+        var (state, canonical) = SeedWorkflow(
+            WorkflowPhase.Planned,
+            WorkflowOperationalState.Waiting,
+            WaitingReason.RemoteHistoryRewrite);
+        var content = CanonicalCommentMarkdown.Parse(canonical.Body) with
+        {
+            ImplementationResult = "Uncheckpointed local result.",
+        };
+
+        var accepted = await CreateService().AcceptRemoteHistoryAsync(
+            CreateConfig(),
+            1,
+            canonical,
+            content,
+            state,
+            "accepted-remote-head",
+            CancellationToken.None);
+
+        var persisted = CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body);
+        Assert.Equal(WorkflowPhase.Planned, accepted.Phase);
+        Assert.Equal(WaitingReason.PlanApproval, accepted.WaitingReason);
+        Assert.Equal("accepted-remote-head", accepted.BaseCommit);
+        Assert.Equal("Implement the fix.", persisted.PlanText);
+        Assert.Null(persisted.ImplementationResult);
+        Assert.Equal("accepted-remote-head", persisted.State.BaseCommit);
+        Assert.Equal("plan-approval", persisted.State.WaitingReason);
+        Assert.Contains(WorkflowLabels.PlannedPhase, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
+        Assert.Contains(WorkflowLabels.WaitingState, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
+    }
+
+    [Fact]
     public async Task FastForwardReconciliationPreservesAcceptedRemoteHeadWhenImplementationStarts()
     {
         git.BranchCommitToReturn = "abc123";

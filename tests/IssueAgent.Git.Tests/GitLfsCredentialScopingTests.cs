@@ -47,9 +47,36 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
             "https://git.trusted.example/octo/widgets.git");
 
         Assert.Equal(
-            ["-c", "lfs.url=https://git.trusted.example/octo/widgets.git/info/lfs",
+            ["-c", "credential.helper=", "-c", "lfs.url=https://git.trusted.example/octo/widgets.git/info/lfs",
              "-c", "lfs.pushurl=https://git.trusted.example/octo/widgets.git/info/lfs"],
             startInfo.ArgumentList);
+    }
+
+
+    [Fact]
+    public void IsolatedLfsEnvironmentClearsInheritedGitConfigurationAndCredentialPrograms()
+    {
+        var startInfo = new ProcessStartInfo();
+        startInfo.Environment["GIT_CONFIG_COUNT"] = "1";
+        startInfo.Environment["GIT_CONFIG_KEY_0"] = "credential.helper";
+        startInfo.Environment["GIT_CONFIG_VALUE_0"] = "!attacker";
+        startInfo.Environment["GIT_ASKPASS"] = "/tmp/attacker-askpass";
+        startInfo.Environment["SSH_ASKPASS"] = "/tmp/attacker-ssh-askpass";
+        startInfo.Environment["GIT_SSH_COMMAND"] = "ssh attacker";
+        startInfo.Environment["GIT_DIR"] = "/tmp/attacker-git-dir";
+
+        InvokeConfigureIsolatedEnvironment(startInfo, Track());
+
+        Assert.DoesNotContain(startInfo.Environment.Keys, key =>
+            key.StartsWith("GIT_CONFIG_", StringComparison.OrdinalIgnoreCase) &&
+            !key.Equals("GIT_CONFIG_NOSYSTEM", StringComparison.OrdinalIgnoreCase) &&
+            !key.Equals("GIT_CONFIG_GLOBAL", StringComparison.OrdinalIgnoreCase));
+        Assert.False(startInfo.Environment.ContainsKey("GIT_ASKPASS"));
+        Assert.False(startInfo.Environment.ContainsKey("SSH_ASKPASS"));
+        Assert.False(startInfo.Environment.ContainsKey("GIT_SSH_COMMAND"));
+        Assert.False(startInfo.Environment.ContainsKey("GIT_DIR"));
+        Assert.Equal("1", startInfo.Environment["GIT_CONFIG_NOSYSTEM"]);
+        Assert.Equal(OperatingSystem.IsWindows() ? "NUL" : "/dev/null", startInfo.Environment["GIT_CONFIG_GLOBAL"]);
     }
 
     [Fact]
@@ -62,7 +89,7 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
             "ssh://remote-user@git.trusted.example/octo/widgets.git");
 
         Assert.Equal(
-            ["-c", "lfs.url=ssh://remote-user@git.trusted.example/octo/widgets.git",
+            ["-c", "credential.helper=", "-c", "lfs.url=ssh://remote-user@git.trusted.example/octo/widgets.git",
              "-c", "lfs.pushurl=ssh://remote-user@git.trusted.example/octo/widgets.git"],
             startInfo.ArgumentList);
     }
@@ -77,7 +104,7 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
             "remote-user@git.trusted.example:octo/widgets.git");
 
         Assert.Equal(
-            ["-c", "lfs.url=ssh://remote-user@git.trusted.example/octo/widgets.git",
+            ["-c", "credential.helper=", "-c", "lfs.url=ssh://remote-user@git.trusted.example/octo/widgets.git",
              "-c", "lfs.pushurl=ssh://remote-user@git.trusted.example/octo/widgets.git"],
             startInfo.ArgumentList);
     }
@@ -308,6 +335,14 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
             "AddTrustedLfsEndpointConfiguration",
             BindingFlags.NonPublic | BindingFlags.Static)!;
         method.Invoke(null, [startInfo, canonicalRemoteUrl]);
+    }
+
+    private static void InvokeConfigureIsolatedEnvironment(ProcessStartInfo startInfo, string isolatedHome)
+    {
+        var method = typeof(GitLfsRunner).GetMethod(
+            "ConfigureIsolatedEnvironment",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+        method.Invoke(null, [startInfo, isolatedHome]);
     }
 
     private static string RunAskPass(ProcessStartInfo authenticationStartInfo, string prompt)

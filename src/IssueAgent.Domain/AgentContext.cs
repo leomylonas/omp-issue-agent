@@ -18,9 +18,9 @@ public sealed record IssueContext(
     IReadOnlyList<HumanComment> HumanComments,
     IReadOnlyList<AttachmentReference> Attachments);
 
-/// <summary>Relationship and read-only context for an issue related to the primary issue.</summary>
+/// <summary>Relationship path and read-only context for an issue related to the primary issue.</summary>
 public sealed record RelatedIssueContext(
-    string Relationship,
+    IReadOnlyList<string> RelationshipPath,
     IssueContext Issue);
 
 /// <summary>A human-authored issue, merge-request, or review comment.</summary>
