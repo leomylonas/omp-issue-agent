@@ -51,12 +51,14 @@ public sealed record OmpOptions
     public IReadOnlyDictionary<string, SecretSource> ExecutionSecrets { get; init; } =
         new Dictionary<string, SecretSource>(StringComparer.Ordinal);
 
+    /// <summary>OMP model selectors in <c>provider/modelId</c> form. OMP's RPC protocol exposes
+    /// model selection, not semantic agent selection.</summary>
     public IReadOnlyDictionary<string, string> Roles { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal)
     {
-        ["planning"] = "plan",
-        ["implementation"] = "task",
-        ["revision"] = "task",
-        ["conflictResolution"] = "task",
+        ["planning"] = "openai/gpt-5.4",
+        ["implementation"] = "openai/gpt-5.4",
+        ["revision"] = "openai/gpt-5.4",
+        ["conflictResolution"] = "openai/gpt-5.4",
     };
 }
 public sealed record NotificationsOptions

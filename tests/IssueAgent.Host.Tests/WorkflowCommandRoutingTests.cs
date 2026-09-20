@@ -62,6 +62,25 @@ public sealed class WorkflowCommandRoutingTests
     }
 
     [Fact]
+    public void ContinueRoutePublishesRetainedMaterialRevision()
+    {
+        var pausedRevision = CreateState(WorkflowPhase.Revising, WorkflowOperationalState.Waiting) with
+        {
+            WaitingReason = WaitingReason.MaterialPlanDeviation,
+        };
+
+        Assert.Equal(WorkflowCommand.Revise, WorkflowCommandRouting.ContinueRoute(pausedRevision, pausedRevision));
+    }
+
+    [Fact]
+    public void ContinueRouteDoesNotGuessFailedOperationWithoutProvenance()
+    {
+        var failed = CreateState(WorkflowPhase.Failed, WorkflowOperationalState.Waiting);
+
+        Assert.Null(WorkflowCommandRouting.ContinueRoute(failed, failed));
+    }
+
+    [Fact]
     public void ContinueRouteResumesOnlyDurablyInterruptedRevision()
     {
         var pausedRevision = CreateState(WorkflowPhase.Revising, WorkflowOperationalState.Waiting);

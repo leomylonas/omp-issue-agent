@@ -36,14 +36,17 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 config, issueNumber, workingState, "Cannot revise: no canonical comment was found for this issue.", cancellationToken).ConfigureAwait(false);
         }
         var existingContent = CanonicalCommentMarkdown.Parse(canonicalComment.Body);
-        await UpsertCanonicalCommentAsync(
-            config,
-            issueNumber,
-            existingContent with
-            {
-                State = CanonicalStateSerializer.ToDocument(workingState, existingContent.State.PullOrMergeRequest),
-            },
-            cancellationToken).ConfigureAwait(false);
+        var retainedResult = currentState.Phase == WorkflowPhase.Revising
+            ? existingContent.ImplementationResult
+            : null;
+        var workingContent = existingContent with
+        {
+            // A fresh review pass must not let the prior implementation result masquerade as a
+            // completed revision after a restart. Only a revising checkpoint may retain a result.
+            ImplementationResult = retainedResult,
+            State = CanonicalStateSerializer.ToDocument(workingState, existingContent.State.PullOrMergeRequest),
+        };
+        await UpsertCanonicalCommentAsync(config, issueNumber, workingContent, cancellationToken).ConfigureAwait(false);
         await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Revising, WorkflowOperationalState.Working, [WorkflowCommand.Revise], cancellationToken)
             .ConfigureAwait(false);
         var mergeRequest = await deps.Provider.FindMergeRequestAsync(config.Repository, currentState.Branch, currentState.TargetBranch, cancellationToken).ConfigureAwait(false);
@@ -53,6 +56,14 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 config, issueNumber, workingState, existingContent, "Cannot revise: no merge request was found for this workflow's branch.", cancellationToken).ConfigureAwait(false);
         }
         await ConsumeMergeRequestCommandAsync(config, mergeRequest.Number, WorkflowCommand.Revise, cancellationToken).ConfigureAwait(false);
+
+        if (retainedResult is { Length: > 0 })
+        {
+            var feedbackBeforePublication = await CaptureFeedbackSnapshotAsync(config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
+            return await PublishRevisionAsync(
+                config, issueNumber, workingState, workingContent, retainedResult, mergeRequest, feedbackBeforePublication, omp, cancellationToken)
+                .ConfigureAwait(false);
+        }
         var feedbackBeforeRevision = await CaptureFeedbackSnapshotAsync(config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
         var currentPlan = new PlanContext(existingContent.State.PlanRevision, existingContent.PlanText, existingContent.DecisionsAndRationale);
 
@@ -87,19 +98,37 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         if (result.IsMaterialDeviation)
         {
             return await PauseForMaterialDeviationAsync(
-                config, issueNumber, workingState, existingContent, result, cancellationToken).ConfigureAwait(false);
+                config, issueNumber, workingState, workingContent, result, cancellationToken).ConfigureAwait(false);
         }
 
         var resultMarkdown = result.RenderMarkdown();
-        var publicationCheckpoint = existingContent with { ImplementationResult = resultMarkdown };
+        return await PublishRevisionAsync(
+            config, issueNumber, workingState, workingContent, resultMarkdown, mergeRequest, feedbackBeforeRevision, omp, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<WorkflowOutcome> PublishRevisionAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState workingState,
+        CanonicalCommentContent workingContent,
+        string resultMarkdown,
+        ProviderMergeRequest mergeRequest,
+        HashSet<string> feedbackBeforeRevision,
+        IOmpClient omp,
+        CancellationToken cancellationToken)
+    {
+        // The checkpoint includes both the result and the revising/working state. A restart between
+        // recording the result and pushing can therefore only resume this retained revision.
+        var publicationCheckpoint = workingContent with { ImplementationResult = resultMarkdown };
         await UpsertCanonicalCommentAsync(config, issueNumber, publicationCheckpoint, cancellationToken).ConfigureAwait(false);
 
         await deps.Git.FetchAsync(config.Repository.Id, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
         var latestTargetCommit = await deps.Git
-            .ResolveBranchCommitAsync(config.Repository.Id, currentState.TargetBranch, cancellationToken)
+            .ResolveBranchCommitAsync(config.Repository.Id, workingState.TargetBranch, cancellationToken)
             .ConfigureAwait(false);
         var merged = await deps.Git
-            .TryMergeAsync(config.Repository.Id, worktreePath, latestTargetCommit, config.GitIdentity, cancellationToken)
+            .TryMergeAsync(config.Repository.Id, WorktreePath(config, workingState.WorkflowId), latestTargetCommit, config.GitIdentity, cancellationToken)
             .ConfigureAwait(false);
         if (!merged)
         {
@@ -108,8 +137,8 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 .RunToCompletionAsync(
                     omp,
                     new OmpRunRequest(
-                        currentState.OmpSessionId,
-                        worktreePath,
+                        workingState.OmpSessionId,
+                        WorktreePath(config, workingState.WorkflowId),
                         config.ApplyInstructions(ImplementationPromptBuilder.BuildConflictResolutionPrompt()),
                         config.OmpAllowedEnvironment,
                         config.OmpTimeout),
@@ -148,11 +177,12 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 cancellationToken).ConfigureAwait(false);
         }
 
+        var worktreePath = WorktreePath(config, workingState.WorkflowId);
         if (deps.Git.WorktreeRequiresLfs(worktreePath))
         {
-            await deps.Git.UploadLfsObjectsAsync(config.Repository.Id, worktreePath, currentState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+            await deps.Git.UploadLfsObjectsAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
         }
-        await deps.Git.PushAsync(config.Repository.Id, worktreePath, currentState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+        await deps.Git.PushAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
 
         var publishedAt = deps.Clock.UtcNow;
         var publishedState = workingState with
@@ -166,8 +196,8 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         };
 
         var content = new CanonicalCommentContent(
-            existingContent.PlanText,
-            existingContent.DecisionsAndRationale,
+            workingContent.PlanText,
+            workingContent.DecisionsAndRationale,
             resultMarkdown,
             CanonicalStateSerializer.ToDocument(publishedState, $"{config.Repository.Id}#{mergeRequest.Number}"));
 

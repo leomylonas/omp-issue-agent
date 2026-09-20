@@ -53,6 +53,27 @@ public sealed class FairWorkAdmissionTests
     }
 
     [Fact]
+    public void RegistersAttemptCancellationBeforeExposingCandidateAsInFlight()
+    {
+        var admission = new FairWorkAdmission();
+        var item = Item("repo-a", WorkflowWorkPriority.HumanCommand, WorkflowCommand.Implement, 1);
+        Assert.True(admission.TryEnqueue(item));
+        var registered = false;
+
+        Assert.True(admission.TryStart(
+            out var started,
+            key =>
+            {
+                registered = true;
+                Assert.Equal(item.Key, key);
+                Assert.False(admission.IsInFlight(key));
+            }));
+
+        Assert.True(registered);
+        Assert.True(admission.IsInFlight(started!.Key));
+    }
+
+    [Fact]
     public void DiscardQueuedPreservesOnlyInFlightAttempt()
     {
         var admission = new FairWorkAdmission();

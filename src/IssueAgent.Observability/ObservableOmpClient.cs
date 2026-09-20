@@ -117,7 +117,8 @@ public sealed class ObservableOmpClient(IOmpClient inner, IssueAgentMetrics metr
                 if (logger.IsEnabled(LogLevel.Debug))
                 {
                     var payload = System.Text.Json.JsonSerializer.Serialize(domainEvent, domainEvent.GetType());
-                    OmpLogMessages.EventPayload(logger, request.SessionId, payload);
+                    var redactedPayload = RedactExecutionSecrets(payload, request.ExecutionEnvironment.Values);
+                    OmpLogMessages.EventPayload(logger, request.SessionId, redactedPayload);
                 }
                 if (domainEvent is OmpErrorEvent errorEvent && !errorEvent.WasCancelled)
                 {
@@ -160,4 +161,18 @@ public sealed class ObservableOmpClient(IOmpClient inner, IssueAgentMetrics metr
     }
 
     public ValueTask DisposeAsync() => inner.DisposeAsync();
+
+    private static string RedactExecutionSecrets(
+        string value,
+        IEnumerable<string> executionSecretValues)
+    {
+        foreach (var secret in executionSecretValues
+            .Where(secret => !string.IsNullOrEmpty(secret))
+            .Distinct(StringComparer.Ordinal))
+        {
+            value = value.Replace(secret, "[REDACTED]", StringComparison.Ordinal);
+        }
+
+        return value;
+    }
 }

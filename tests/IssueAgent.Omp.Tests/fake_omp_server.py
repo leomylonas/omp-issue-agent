@@ -43,8 +43,6 @@ def main():
             response(request_id, command, {"cancelled": False})
         elif command == "set_model":
             response(request_id, command, {"provider": request.get("provider"), "id": request.get("modelId")})
-        elif command == "set_agent":
-            response(request_id, command, {"agent": request.get("agent")})
         elif command == "switch_session":
             session_file = request.get("sessionPath", session_file)
             session_id = "mismatched-session" if "mismatch" in session_file else "existing-session"

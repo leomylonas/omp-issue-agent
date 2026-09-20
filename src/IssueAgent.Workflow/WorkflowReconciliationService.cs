@@ -195,7 +195,14 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
         {
             await PersistCanonicalStateAsync(config, issueNumber, canonicalComment, content, waitingState, cancellationToken)
                 .ConfigureAwait(false);
-            await TransitionLabelsAsync(config, issueNumber, waitingState.Phase, cancellationToken).ConfigureAwait(false);
+            if (reason == WaitingReason.AmbiguousCommand)
+            {
+                await AddWaitingLabelWithoutRepairingAmbiguousManagedLabelsAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await TransitionLabelsAsync(config, issueNumber, waitingState.Phase, cancellationToken).ConfigureAwait(false);
+            }
             await dependencies.Notifier.NotifyAsync(
                 new WorkflowNotification(
                     WorkflowNotificationKind.HumanActionRequired,
@@ -212,6 +219,25 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
             content,
             canonicalComment,
             explanation);
+    }
+
+    private async Task AddWaitingLabelWithoutRepairingAmbiguousManagedLabelsAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        CancellationToken cancellationToken)
+    {
+        var workItem = new ProviderWorkItemReference(config.Repository, ProviderWorkItemKind.Issue, issueNumber);
+        var labels = await dependencies.Provider.GetLabelsAsync(workItem, cancellationToken).ConfigureAwait(false);
+        if (labels.Contains(WorkflowLabels.WaitingState))
+        {
+            return;
+        }
+
+        await dependencies.Provider.EnsureLabelAsync(
+            config.Repository,
+            LabelCatalog.All.First(label => label.Name == WorkflowLabels.WaitingState),
+            cancellationToken).ConfigureAwait(false);
+        await dependencies.Provider.AddLabelsAsync(workItem, [WorkflowLabels.WaitingState], cancellationToken).ConfigureAwait(false);
     }
 
     private async Task EscalateCorruptionAsync(

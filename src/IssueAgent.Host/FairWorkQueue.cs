@@ -93,8 +93,10 @@ public sealed class FairWorkAdmission
         }
     }
 
-    /// <summary>Dequeues the highest-priority candidate fairly and marks it in flight.</summary>
-    public bool TryStart(out WorkflowCandidate? candidate)
+    /// <summary>Dequeues the highest-priority candidate fairly and marks it in flight. The
+    /// registration callback runs while admission remains locked, so cancellation state becomes
+    /// visible atomically with the in-flight transition.</summary>
+    public bool TryStart(out WorkflowCandidate? candidate, Action<WorkflowWorkKey>? registerInFlight = null)
     {
         lock (gate)
         {
@@ -108,6 +110,7 @@ public sealed class FairWorkAdmission
                         continue;
                     }
                     queuedCandidates.Remove(candidate.Key);
+                    registerInFlight?.Invoke(candidate.Key);
                     admitted[candidate.Key] = AdmissionState.InFlight;
                     return true;
                 }

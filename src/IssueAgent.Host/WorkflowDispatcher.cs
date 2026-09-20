@@ -378,14 +378,23 @@ public sealed partial class WorkflowDispatcher(
                 return;
             }
 
-            await PersistContinueAcceptanceAsync(
-                runtime,
-                issueNumber,
-                canonical,
-                reconciled.Content!,
-                state,
-                routedCommand.Value,
-                cancellationToken).ConfigureAwait(false);
+            // Material-deviation and new-input pauses carry the retained worktree/result as the
+            // continuation provenance. Leave that durable pause intact until the owning workflow
+            // has resumed it; otherwise a crash between this acknowledgement and RunAsync loses
+            // the gate and can restart or discard retained work.
+            var preservesRetainedContinuation = state.WaitingReason is
+                WaitingReason.NewInputDuringImplementation or WaitingReason.MaterialPlanDeviation;
+            if (!preservesRetainedContinuation)
+            {
+                await PersistContinueAcceptanceAsync(
+                    runtime,
+                    issueNumber,
+                    canonical,
+                    reconciled.Content!,
+                    state,
+                    routedCommand.Value,
+                    cancellationToken).ConfigureAwait(false);
+            }
             await ConsumeCommandAsync(
                 runtime.Provider, runtime.Repository, issueNumber, mergeRequest?.Number,
                 commandResolution.Sources, WorkflowCommand.Continue, cancellationToken).ConfigureAwait(false);

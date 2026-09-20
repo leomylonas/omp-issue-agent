@@ -75,7 +75,13 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
         return ValueTask.FromResult(MergeSucceeds);
     }
 
-    public ValueTask PushAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    public int PushCallCount { get; private set; }
+
+    public ValueTask PushAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken)
+    {
+        PushCallCount++;
+        return ValueTask.CompletedTask;
+    }
 
     public ValueTask RemoveWorktreeAsync(string repositoryId, string worktreeId, string worktreePath, CancellationToken cancellationToken)
     {

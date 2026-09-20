@@ -101,17 +101,25 @@ public sealed partial class WorkflowWorkerPool(
         while (true)
         {
             await available.WaitAsync(cancellationToken).ConfigureAwait(false);
-            if (!admission.TryStart(out var candidate)) continue;
+            using var attemptCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            if (!admission.TryStart(
+                out var candidate,
+                key =>
+                {
+                    if (!activeAttemptCancellations.TryAdd(key, attemptCancellation))
+                    {
+                        throw new InvalidOperationException(
+                            $"A workflow attempt is already active for {key.Provider}/{key.RepositoryId} issue {key.IssueNumber}.");
+                    }
+                }))
+            {
+                continue;
+            }
             metrics.ActiveOperations.Add(1);
             using var activeOperation = metrics.BeginActiveOperation();
-            using var attemptCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            if (!activeAttemptCancellations.TryAdd(candidate!.Key, attemptCancellation))
-            {
-                throw new InvalidOperationException($"A workflow attempt is already active for {candidate.Key.Provider}/{candidate.Key.RepositoryId} issue {candidate.Key.IssueNumber}.");
-            }
             try
             {
-                await candidate.ExecuteAsync(attemptCancellation.Token).ConfigureAwait(false);
+                await candidate!.ExecuteAsync(attemptCancellation.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

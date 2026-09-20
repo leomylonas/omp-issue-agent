@@ -55,6 +55,9 @@ public sealed class RevisionWorkflowTests : IDisposable
         Assert.Contains("state: working", checkpoints[0].Body, StringComparison.Ordinal);
         Assert.Contains("Renamed the variable.", checkpoints[1].Body, StringComparison.Ordinal);
         Assert.Contains("Renamed the variable.", checkpoints[2].Body, StringComparison.Ordinal);
+        var checkpoint = CanonicalCommentMarkdown.Parse(checkpoints[1].Body);
+        Assert.Equal("revising", checkpoint.State.Phase);
+        Assert.Equal("working", checkpoint.State.State);
         Assert.Contains(provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)], l => l == "agent:phase:review");
         Assert.Equal(clock.UtcNow, CanonicalCommentMarkdown.Parse(checkpoints[2].Body).State.ReviewFeedbackCutoff);
         Assert.DoesNotContain("agent:cmd:revise", provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
@@ -70,6 +73,7 @@ public sealed class RevisionWorkflowTests : IDisposable
         var outcome = await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
             .RunAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
 
+        Assert.Null(CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body).ImplementationResult);
         Assert.Equal(WorkflowOutcomeStatus.Failed, outcome.Status);
         Assert.Equal("failed", CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body).State.Phase);
         Assert.Equal(WorkflowNotificationKind.RevisionFailed, Assert.Single(notifier.Notifications).Kind);
@@ -119,6 +123,25 @@ public sealed class RevisionWorkflowTests : IDisposable
         Assert.Equal(WaitingReason.MaterialPlanDeviation, outcome.State.WaitingReason);
         Assert.Equal(0, git.MergeAttempts);
         Assert.Contains("service boundary", Assert.Single(notifier.Notifications).Message, StringComparison.Ordinal);
+        Assert.Contains("Needs architecture change.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunAsyncContinueAfterMaterialDeviationPublishesRetainedRevisionWithoutRerunningOmp()
+    {
+        var state = await SeedReviewStateAsync();
+        var materialDeviation = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"summary":"Needs architecture change.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":["Requires a new service boundary."],"risks":[],"isMaterialDeviation":true,"materialDeviationExplanation":"The approved plan cannot safely support the required service boundary."}"""));
+        var workflow = new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock));
+
+        var paused = await workflow.RunAsync(CreateConfig(), 1, state, materialDeviation, CancellationToken.None);
+        var continued = await workflow.RunAsync(CreateConfig(), 1, paused.State, new FakeOmpClient(), CancellationToken.None);
+
+        Assert.Equal(WorkflowPhase.Review, continued.State.Phase);
+        Assert.Equal(WaitingReason.ReviewRequested, continued.State.WaitingReason);
+        Assert.Equal(1, git.PushCallCount);
         Assert.Contains("Needs architecture change.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
     }
 

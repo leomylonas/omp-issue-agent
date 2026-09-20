@@ -18,13 +18,14 @@ public sealed class OmpProcessClientTests
     }
 
     [Fact]
-    public async Task CreateSessionAsyncSelectsConfiguredSemanticRole()
+    public async Task CreateSessionAsyncRejectsUnsupportedSemanticRole()
     {
         await using var client = StartClient();
 
-        var session = await client.CreateSessionAsync("repository-planner", CancellationToken.None);
+        var exception = await Assert.ThrowsAsync<OmpRpcException>(
+            () => client.CreateSessionAsync("repository-planner", CancellationToken.None).AsTask());
 
-        Assert.Equal("repository-planner", session.Role);
+        Assert.Contains("provider/modelId", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -143,7 +144,7 @@ public sealed class OmpProcessClientTests
     public async Task CancelAsyncInterruptsPromptAwaitingAcknowledgement()
     {
         await using var client = StartClient();
-        var session = await client.CreateSessionAsync("plan", CancellationToken.None);
+        var session = await client.CreateSessionAsync("anthropic/claude-sonnet-5", CancellationToken.None);
         using var runCts = new CancellationTokenSource();
         var run = CollectAsync(client.RunAsync(
             new OmpRunRequest(session.SessionId, "/tmp", "prompt dispatch hang", new Dictionary<string, string>()),
@@ -173,7 +174,7 @@ public sealed class OmpProcessClientTests
     public async Task CancelAsyncThrowsWhenAbortIsNotAcknowledgedBeforeItsDeadline()
     {
         await using var client = StartClient(TimeSpan.FromMilliseconds(50));
-        var session = await client.CreateSessionAsync("plan", CancellationToken.None);
+        var session = await client.CreateSessionAsync("anthropic/claude-sonnet-5", CancellationToken.None);
         var run = CollectAsync(client.RunAsync(
             new OmpRunRequest(session.SessionId, "/tmp", "abort timeout hang", new Dictionary<string, string>()),
             CancellationToken.None));

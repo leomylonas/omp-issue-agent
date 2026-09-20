@@ -136,6 +136,8 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
         Assert.Equal(WaitingReason.AmbiguousCommand, result.State!.WaitingReason);
         Assert.True(Directory.Exists(WorktreePath(state)));
         Assert.Single(provider.UpdatedComments);
+        Assert.Contains(WorkflowLabels.PlannedPhase, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
+        Assert.Contains(WorkflowLabels.ReviewPhase, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
         Assert.Single(notifier.Notifications);
     }
 

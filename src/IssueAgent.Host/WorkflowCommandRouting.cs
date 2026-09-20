@@ -54,18 +54,28 @@ public static class WorkflowCommandRouting
         return state.Phase switch
         {
             WorkflowPhase.Review => null,
-            WorkflowPhase.Failed when state.InterruptedPhase == WorkflowPhase.Planning => WorkflowCommand.Replan,
-            WorkflowPhase.Failed when state.InterruptedPhase == WorkflowPhase.Revising => WorkflowCommand.Revise,
-            WorkflowPhase.Failed when state.InterruptedPhase == WorkflowPhase.Implementing => WorkflowCommand.Implement,
+            WorkflowPhase.Failed => state.InterruptedPhase switch
+            {
+                WorkflowPhase.Planning => WorkflowCommand.Replan,
+                WorkflowPhase.Revising => WorkflowCommand.Revise,
+                WorkflowPhase.Implementing => WorkflowCommand.Implement,
+                _ => null,
+            },
             WorkflowPhase.Planning when state.InterruptedPhase == WorkflowPhase.Planning => WorkflowCommand.Replan,
             WorkflowPhase.Planning when durableState.Phase == WorkflowPhase.Planning &&
                 durableState.OperationalState == WorkflowOperationalState.Working => WorkflowCommand.Replan,
             WorkflowPhase.Planning => null,
+            WorkflowPhase.Revising when state.WaitingReason == WaitingReason.MaterialPlanDeviation => WorkflowCommand.Revise,
             WorkflowPhase.Revising when state.InterruptedPhase == WorkflowPhase.Revising => WorkflowCommand.Revise,
             WorkflowPhase.Revising when durableState.Phase == WorkflowPhase.Revising &&
                 durableState.OperationalState == WorkflowOperationalState.Working => WorkflowCommand.Revise,
             WorkflowPhase.Revising => null,
-            _ => WorkflowCommand.Implement,
+            WorkflowPhase.Implementing when state.WaitingReason is WaitingReason.NewInputDuringImplementation or WaitingReason.MaterialPlanDeviation => WorkflowCommand.Implement,
+            WorkflowPhase.Implementing when state.InterruptedPhase == WorkflowPhase.Implementing => WorkflowCommand.Implement,
+            WorkflowPhase.Implementing when durableState.Phase == WorkflowPhase.Implementing &&
+                durableState.OperationalState == WorkflowOperationalState.Working => WorkflowCommand.Implement,
+            WorkflowPhase.Implementing => null,
+            _ => null,
         };
     }
 }

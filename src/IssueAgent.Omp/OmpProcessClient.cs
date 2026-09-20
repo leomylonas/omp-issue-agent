@@ -33,21 +33,16 @@ public sealed class OmpProcessClient(
     public async ValueTask SelectRoleAsync(string role, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(role);
-        if (OmpModel.TryParse(role, out var model))
+        if (!OmpModel.TryParse(role, out var model))
         {
-            await RequireSuccessAsync(
-                await transport.SendCommandAsync(
-                    "set_model",
-                    new JsonObject { ["provider"] = model.Provider, ["modelId"] = model.ModelId },
-                    cancellationToken).ConfigureAwait(false))
-                .ConfigureAwait(false);
-            return;
+            throw new OmpRpcException(
+                $"OMP role '{role}' must be configured as a supported 'provider/modelId' selector.");
         }
 
         await RequireSuccessAsync(
             await transport.SendCommandAsync(
-                "set_agent",
-                new JsonObject { ["agent"] = role },
+                "set_model",
+                new JsonObject { ["provider"] = model.Provider, ["modelId"] = model.ModelId },
                 cancellationToken).ConfigureAwait(false))
             .ConfigureAwait(false);
     }
