@@ -634,11 +634,17 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
             var previousCommit = baseTree[change.Path]?.TargetType == TreeEntryTargetType.GitLink
                 ? baseTree[change.Path]!.Target.Id.Sha
                 : null;
+            var authoritativeRemoteUrl = GetCommittedSubmoduleRemoteUrl(
+                repository,
+                head,
+                change.Path,
+                GetCanonicalOriginUrl(repositoryId));
             await PublishSubmoduleRecursivelyAsync(
                 submodulePath,
                 expectedCommit,
                 previousCommit,
                 branchName,
+                authoritativeRemoteUrl,
                 submoduleAuthenticationResolver,
                 new HashSet<string>(StringComparer.Ordinal),
                 cancellationToken).ConfigureAwait(false);
@@ -650,6 +656,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         string expectedCommit,
         string? previousCommit,
         string branchName,
+        string authoritativeRemoteUrl,
         Func<string, GitAuthentication?> authenticationResolver,
         ISet<string> visitedRepositoryPaths,
         CancellationToken cancellationToken)
@@ -671,7 +678,15 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
 
         var remote = repository.Network.Remotes["origin"]
             ?? throw new InvalidOperationException($"Changed submodule '{repositoryPath}' has no origin remote.");
-        var host = TryGetHost(remote.Url);
+        if (!string.Equals(remote.Url, authoritativeRemoteUrl, StringComparison.Ordinal) ||
+            !string.IsNullOrEmpty(remote.PushUrl) &&
+            !string.Equals(remote.PushUrl, authoritativeRemoteUrl, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Changed submodule '{repositoryPath}' origin does not match its committed .gitmodules URL.");
+        }
+
+        var host = TryGetHost(authoritativeRemoteUrl);
         var authentication = host is null
             ? GitAuthentication.Anonymous(TlsTrust.System)
             : authenticationResolver(host) ?? GitAuthentication.Anonymous(TlsTrust.System);
@@ -705,6 +720,11 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
                     $"Nested submodule '{submodule.Path}' of changed submodule '{repositoryPath}' is not initialized and cannot be published safely.");
             }
 
+            var nestedAuthoritativeRemoteUrl = GetCommittedSubmoduleRemoteUrl(
+                repository,
+                head,
+                submodule.Path,
+                authoritativeRemoteUrl);
             await PublishSubmoduleRecursivelyAsync(
                 submodulePath,
                 gitlink.Target.Id.Sha,
@@ -712,6 +732,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
                     ? previousGitlink.Target.Id.Sha
                     : null,
                 branchName,
+                nestedAuthoritativeRemoteUrl,
                 authenticationResolver,
                 visitedRepositoryPaths,
                 cancellationToken).ConfigureAwait(false);
@@ -719,13 +740,13 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
 
         if (GitLfsRunner.RepositoryRequiresLfs(repositoryPath))
         {
-            await GitLfsRunner.UploadObjectsAsync(repositoryPath, remote.Url, head.Sha, authentication, cancellationToken)
+            await GitLfsRunner.UploadObjectsAsync(repositoryPath, authoritativeRemoteUrl, head.Sha, authentication, cancellationToken)
                 .ConfigureAwait(false);
         }
 
         if (authentication.Mode == GitAuthenticationMode.Ssh)
         {
-            await GitSshTransport.PushCommitAsync(repositoryPath, head.Sha, branchName, authentication, cancellationToken)
+            await GitSshTransport.PushCommitAsync(repositoryPath, authoritativeRemoteUrl, head.Sha, branchName, authentication, cancellationToken)
                 .ConfigureAwait(false);
             return;
         }
@@ -746,6 +767,79 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
             branchName,
             authentication,
             cancellationToken).ConfigureAwait(false);
+    }
+
+    private static string GetCommittedSubmoduleRemoteUrl(
+        Repository repository,
+        Commit commit,
+        string submodulePath,
+        string parentAuthoritativeRemoteUrl)
+    {
+        var gitmodules = commit.Tree[".gitmodules"]?.Target as Blob
+            ?? throw new InvalidOperationException(
+                $"Changed submodule '{submodulePath}' has no committed .gitmodules entry.");
+        using var reader = new StreamReader(gitmodules.GetContentStream());
+        string? sectionPath = null;
+        string? sectionUrl = null;
+
+        while (reader.ReadLine() is { } line)
+        {
+            var trimmed = line.Trim();
+            if (trimmed.StartsWith("[submodule ", StringComparison.OrdinalIgnoreCase) && trimmed.EndsWith(']'))
+            {
+                if (string.Equals(sectionPath, submodulePath, StringComparison.Ordinal) &&
+                    !string.IsNullOrWhiteSpace(sectionUrl))
+                {
+                    return ResolveSubmoduleUrl(sectionUrl, parentAuthoritativeRemoteUrl);
+                }
+
+                sectionPath = null;
+                sectionUrl = null;
+                continue;
+            }
+
+            var separator = trimmed.IndexOf('=');
+            if (separator < 0)
+            {
+                continue;
+            }
+
+            var key = trimmed[..separator].Trim();
+            var value = trimmed[(separator + 1)..].Trim();
+            if (key.Equals("path", StringComparison.OrdinalIgnoreCase))
+            {
+                sectionPath = value;
+            }
+            else if (key.Equals("url", StringComparison.OrdinalIgnoreCase))
+            {
+                sectionUrl = value;
+            }
+        }
+
+        if (string.Equals(sectionPath, submodulePath, StringComparison.Ordinal) &&
+            !string.IsNullOrWhiteSpace(sectionUrl))
+        {
+            return ResolveSubmoduleUrl(sectionUrl, parentAuthoritativeRemoteUrl);
+        }
+
+        throw new InvalidOperationException(
+            $"Changed submodule '{submodulePath}' has no URL in committed .gitmodules.");
+    }
+
+    private static string ResolveSubmoduleUrl(string submoduleUrl, string parentRemoteUrl)
+    {
+        if (Uri.TryCreate(submoduleUrl, UriKind.Absolute, out _) || TryGetHost(submoduleUrl) is not null ||
+            Path.IsPathRooted(submoduleUrl))
+        {
+            return submoduleUrl;
+        }
+
+        if (Uri.TryCreate(parentRemoteUrl, UriKind.Absolute, out var parentUri))
+        {
+            return new Uri(new Uri(parentUri.GetLeftPart(UriPartial.Path).TrimEnd('/') + "/"), submoduleUrl).ToString();
+        }
+
+        return Path.GetFullPath(Path.Combine(Path.GetDirectoryName(parentRemoteUrl) ?? ".", submoduleUrl));
     }
 
     private static bool HasTrustedUncommittedChanges(string bareRepositoryPath, string worktreePath)

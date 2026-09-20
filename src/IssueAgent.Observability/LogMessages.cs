@@ -34,6 +34,9 @@ internal static partial class OmpLogMessages
     [LoggerMessage(EventId = 15, Level = LogLevel.Error, Message = "OMP cancellation failed for session {OmpSessionId} with {ExceptionType}")]
     public static partial void CancellationFailed(ILogger logger, string exceptionType, string ompSessionId);
 
+    [LoggerMessage(EventId = 18, Level = LogLevel.Error, Message = "OMP role selection failed for role {Role} with {ExceptionType}")]
+    public static partial void RoleSelectionFailed(ILogger logger, string exceptionType, string role);
+
     [LoggerMessage(EventId = 16, Level = LogLevel.Debug, Message = "OMP prompt for session {OmpSessionId}: {Prompt}")]
     public static partial void PromptDispatched(ILogger logger, string ompSessionId, string prompt);
 

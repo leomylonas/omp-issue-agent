@@ -410,6 +410,26 @@ public sealed class ObservableOmpClientTests
     }
 
     [Fact]
+    public async Task SelectRoleAsyncRecordsRequestDurationAndRestartFailures()
+    {
+        using var capture = new MetricCapture();
+        using var metrics = new IssueAgentMetrics();
+        var inner = new FakeOmpClient();
+        var decorated = new ObservableOmpClient(inner, metrics, NullLogger<ObservableOmpClient>.Instance);
+
+        await decorated.SelectRoleAsync("plan", CancellationToken.None);
+        inner.ThrowOnRoleSelection = true;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            decorated.SelectRoleAsync("task", CancellationToken.None).AsTask());
+
+        Assert.Equal(2, capture.CountFor("issueagent.omp.requests"));
+        Assert.Equal(1, capture.CountFor("issueagent.omp.errors"));
+        Assert.Equal(2, capture.Measurements.Count(measurement =>
+            measurement.Instrument == "issueagent.omp.duration"));
+    }
+
+    [Fact]
     public async Task CreateSessionAsyncPassesThroughSession()
     {
         using var metrics = new IssueAgentMetrics();

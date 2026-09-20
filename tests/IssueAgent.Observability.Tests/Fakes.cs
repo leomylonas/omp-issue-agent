@@ -64,9 +64,14 @@ internal sealed class FakeOmpClient : IOmpClient
     public string? ToolResult { get; set; }
     public string? ErrorMessage { get; set; }
     public string RunFailureMessage { get; set; } = "Simulated run failure.";
+    public bool ThrowOnRoleSelection { get; set; }
+    public string RoleSelectionFailureMessage { get; set; } = "Simulated role selection failure.";
     public ValueTask<OmpSession> CreateSessionAsync(string role, CancellationToken cancellationToken) => ValueTask.FromResult(new OmpSession("session-1", role));
 
     public ValueTask<OmpSession> ResumeSessionAsync(string sessionId, string sessionFile, CancellationToken cancellationToken) => ValueTask.FromResult(new OmpSession(sessionId, "task", sessionFile));
+
+    public ValueTask SelectRoleAsync(string role, CancellationToken cancellationToken) =>
+        ThrowOnRoleSelection ? throw new InvalidOperationException(RoleSelectionFailureMessage) : ValueTask.CompletedTask;
 
     public async IAsyncEnumerable<OmpEvent> RunAsync(OmpRunRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {

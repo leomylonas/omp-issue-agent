@@ -442,24 +442,49 @@ public sealed partial class WorkflowDispatcher(
         if (command == WorkflowCommand.Continue)
         {
             var durableState = CanonicalStateSerializer.ToWorkflowState(reconciled.Content!.State);
-            var routedCommand = WorkflowCommandRouting.ContinueRoute(state, durableState);
             var rebuildRetainedRevisionFromRemoteHead =
                 state.WaitingReason == WaitingReason.RemoteHistoryRewrite &&
                 HasRetainedRevisionCheckpoint(state, reconciled.Content!);
+            if (rebuildRetainedRevisionFromRemoteHead &&
+                await runtime.Dependencies.Git
+                    .TryResolveRemoteBranchCommitAsync(runtime.Repository.Id, state.Branch, cancellationToken)
+                    .ConfigureAwait(false) is null)
+            {
+                // There is no accepted branch tip from which a fresh revision can be rebuilt.
+                // Keep the retained local result untouched for an explicit human recovery decision.
+                return;
+            }
+            var routedCommand = rebuildRetainedRevisionFromRemoteHead
+                ? WorkflowCommand.Revise
+                : WorkflowCommandRouting.ContinueRoute(state, durableState);
             var preservesRetainedContinuation = !rebuildRetainedRevisionFromRemoteHead &&
                 (state.WaitingReason is
                     WaitingReason.NewInputDuringImplementation or WaitingReason.MaterialPlanDeviation or
                     WaitingReason.NewFeedbackDuringRevision ||
                  HasResultCheckpointedImplementation(state, reconciled.Content!) ||
                  HasRetainedRevisionCheckpoint(state, reconciled.Content!));
+            var recoveredAuthoritativeRemote = true;
             if (!preservesRetainedContinuation)
             {
-                await RecoverContinueWorkspaceAsync(
+                recoveredAuthoritativeRemote = await RecoverContinueWorkspaceAsync(
                     runtime.Dependencies,
                     runtime.Config,
                     state,
                     reconciled.Content!,
                     cancellationToken).ConfigureAwait(false);
+            }
+            if (state.Phase == WorkflowPhase.Review && !recoveredAuthoritativeRemote)
+            {
+                await reconciliation.PauseForHumanAsync(
+                    runtime.Config,
+                    issueNumber,
+                    canonical,
+                    reconciled.Content!,
+                    state,
+                    WaitingReason.ReviewRequested,
+                    "The review branch is not available on the authoritative remote. The continue command was retained and will be retried after the branch is restored.",
+                    cancellationToken).ConfigureAwait(false);
+                return;
             }
             if (routedCommand is null)
             {
@@ -556,7 +581,10 @@ public sealed partial class WorkflowDispatcher(
             else if (command == WorkflowCommand.Replan) metrics.PlanDuration.Record(stopwatch.Elapsed.TotalSeconds, runtime.Tags);
         }
     }
-    internal static async Task RecoverContinueWorkspaceAsync(
+    /// <summary>Restores a continuation worktree from the remote branch when it exists. The
+    /// result tells Review acknowledgement handling whether an authoritative branch tip was
+    /// available; callers MUST NOT consume a Review continue command without that evidence.</summary>
+    internal static async Task<bool> RecoverContinueWorkspaceAsync(
         WorkflowDependencies dependencies,
         WorkflowRepositoryConfig config,
         WorkflowState state,
@@ -572,6 +600,10 @@ public sealed partial class WorkflowDispatcher(
             HasRetainedRevisionCheckpoint(state, content);
         if (!Directory.Exists(worktreePath))
         {
+            if (state.Phase == WorkflowPhase.Review && remoteHead is null)
+            {
+                return false;
+            }
             await dependencies.Git.CreateWorktreeAsync(
                 config.Repository.Id,
                 state.WorkflowId.ToString(),
@@ -580,18 +612,20 @@ public sealed partial class WorkflowDispatcher(
                 remoteHead ?? state.BaseCommit,
                 cancellationToken).ConfigureAwait(false);
         }
-        else if (mustResetRetainedRevisionToRemoteHead ||
-                 (remoteHead is not null &&
-                  !HasResultCheckpointedImplementation(state, content) &&
-                  !HasRetainedRevisionCheckpoint(state, content) &&
-                  state.WaitingReason is not (WaitingReason.NewInputDuringImplementation or
-                      WaitingReason.MaterialPlanDeviation or WaitingReason.NewFeedbackDuringRevision) &&
-                  !await dependencies.Git.HasUncommittedChangesAsync(
-                      config.Repository.Id, worktreePath, cancellationToken).ConfigureAwait(false)))
+        else if (remoteHead is not null &&
+                 (mustResetRetainedRevisionToRemoteHead ||
+                  (!HasResultCheckpointedImplementation(state, content) &&
+                   !HasRetainedRevisionCheckpoint(state, content) &&
+                   state.WaitingReason is not (WaitingReason.NewInputDuringImplementation or
+                       WaitingReason.MaterialPlanDeviation or WaitingReason.NewFeedbackDuringRevision) &&
+                   !await dependencies.Git.HasUncommittedChangesAsync(
+                       config.Repository.Id, worktreePath, cancellationToken).ConfigureAwait(false))))
         {
             await dependencies.Git.ResetWorktreeAsync(
-                config.Repository.Id, worktreePath, remoteHead ?? state.BaseCommit, cancellationToken).ConfigureAwait(false);
+                config.Repository.Id, worktreePath, remoteHead, cancellationToken).ConfigureAwait(false);
         }
+
+        return remoteHead is not null;
     }
 
     private static bool HasResultCheckpointedImplementation(WorkflowState state, CanonicalCommentContent content) =>

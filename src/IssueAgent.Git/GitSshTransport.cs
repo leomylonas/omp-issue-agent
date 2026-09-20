@@ -31,10 +31,10 @@ public sealed partial class GitSshTransport
     public static async ValueTask PushAsync(string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken) =>
         await RunGitAsync(["push", "origin", "--", $"{branchName}:{branchName}"], worktreePath, await GetOriginUrlAsync(worktreePath, cancellationToken).ConfigureAwait(false), authentication, cancellationToken).ConfigureAwait(false);
 
-    /// <summary>Publishes a detached submodule commit to the agent branch without first mutating
-    /// the submodule's local refs.</summary>
-    public static async ValueTask PushCommitAsync(string worktreePath, string commitSha, string branchName, GitAuthentication authentication, CancellationToken cancellationToken) =>
-        await RunGitAsync(["push", "origin", "--", $"{commitSha}:refs/heads/{branchName}"], worktreePath, await GetOriginUrlAsync(worktreePath, cancellationToken).ConfigureAwait(false), authentication, cancellationToken).ConfigureAwait(false);
+    /// <summary>Publishes a detached submodule commit to the agent branch without consulting
+    /// mutable submodule remote configuration.</summary>
+    public static ValueTask PushCommitAsync(string worktreePath, string authoritativeRemoteUrl, string commitSha, string branchName, GitAuthentication authentication, CancellationToken cancellationToken) =>
+        RunGitAsync(["push", authoritativeRemoteUrl, "--", $"{commitSha}:refs/heads/{branchName}"], worktreePath, authoritativeRemoteUrl, authentication, cancellationToken);
 
     /// <summary>Initializes and fetches one submodule through the Git/SSH transport.</summary>
     public static ValueTask UpdateSubmoduleAsync(string repositoryPath, string submodulePath, string remoteUrl, GitAuthentication authentication, CancellationToken cancellationToken) =>

@@ -92,8 +92,33 @@ public sealed class ObservableOmpClient : IOmpClient
         }
     }
 
-    public ValueTask SelectRoleAsync(string role, CancellationToken cancellationToken) =>
-        inner.SelectRoleAsync(role, cancellationToken);
+    public async ValueTask SelectRoleAsync(string role, CancellationToken cancellationToken)
+    {
+        using var activity = IssueAgentActivitySource.StartOmpOperation("role.select", sessionId: null);
+        var tags = new KeyValuePair<string, object?>[] { new(LogContextFields.Operation, "role.select") };
+        metrics.OmpRequests.Add(1, tags);
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            await inner.SelectRoleAsync(role, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Agent cancellation is an expected control path, not an OMP failure.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            metrics.OmpErrors.Add(1, tags);
+            activity?.SetStatus(ActivityStatusCode.Error);
+            OmpLogMessages.RoleSelectionFailed(logger, ex.GetType().Name, role);
+            throw;
+        }
+        finally
+        {
+            metrics.OmpDuration.Record(stopwatch.Elapsed.TotalSeconds, tags);
+        }
+    }
 
     public async IAsyncEnumerable<OmpEvent> RunAsync(OmpRunRequest request, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
