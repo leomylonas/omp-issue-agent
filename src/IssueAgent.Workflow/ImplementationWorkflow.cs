@@ -177,6 +177,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
 
         var worktreePath = WorktreePath(config, currentState.WorkflowId);
         var inputSnapshot = await CaptureInputSnapshotAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        await omp.SelectRoleAsync(config.ImplementationRole, cancellationToken).ConfigureAwait(false);
         var continuationOutcome = await OmpRunCollector
             .RunToCompletionAsync(
                 omp,

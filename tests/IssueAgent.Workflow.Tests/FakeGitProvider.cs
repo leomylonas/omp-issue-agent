@@ -22,6 +22,7 @@ public sealed class FakeGitProvider : IGitProvider
     public Dictionary<(string RepositoryId, long Number), List<ProviderComment>> MergeRequestComments { get; } = [];
 
     public Dictionary<(string RepositoryId, long Number), List<ProviderReviewThread>> ReviewThreads { get; } = [];
+    public Action? OnReviewThreadsEnumeration { get; set; }
 
     public string Name => "fake";
 
@@ -169,6 +170,7 @@ public sealed class FakeGitProvider : IGitProvider
     public async IAsyncEnumerable<ProviderReviewThread> GetReviewThreadsAsync(RepositoryRef repository, long number, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         await Task.Yield();
+        OnReviewThreadsEnumeration?.Invoke();
         if (ReviewThreads.TryGetValue((repository.Id, number), out var threads))
         {
             foreach (var thread in threads)

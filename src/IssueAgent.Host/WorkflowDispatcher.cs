@@ -402,21 +402,17 @@ public sealed partial class WorkflowDispatcher(
                 return;
             }
 
-            // Material-deviation and new-input pauses carry the retained worktree/result as the
-            // continuation provenance. Leave that durable pause intact until the owning workflow
-            // has resumed it; otherwise a crash between this acknowledgement and RunAsync loses
-            // the gate and can restart or discard retained work.
-            if (!preservesRetainedContinuation)
-            {
-                await PersistContinueAcceptanceAsync(
-                    runtime,
-                    issueNumber,
-                    canonical,
-                    reconciled.Content!,
-                    state,
-                    routedCommand.Value,
-                    cancellationToken).ConfigureAwait(false);
-            }
+            // Persist the acceptance before consuming its label, including retained-worktree
+            // pauses. Otherwise a crash between acknowledgement and workflow resumption loses
+            // the command that authorizes the retained result to proceed.
+            await PersistContinueAcceptanceAsync(
+                runtime,
+                issueNumber,
+                canonical,
+                reconciled.Content!,
+                state,
+                routedCommand.Value,
+                cancellationToken).ConfigureAwait(false);
             await ConsumeCommandAsync(
                 runtime.Provider, runtime.Repository, issueNumber, mergeRequest?.Number,
                 commandResolution.Sources, WorkflowCommand.Continue, cancellationToken).ConfigureAwait(false);
@@ -677,7 +673,8 @@ public sealed partial class WorkflowDispatcher(
             providers.TryGetGitAuthenticationForHost,
             resolved.CloseIssueOnMerge,
             resolved.OmpRoles.GetValueOrDefault("revision", "task"),
-            resolved.OmpRoles.GetValueOrDefault("conflictResolution", "task"));
+            resolved.OmpRoles.GetValueOrDefault("conflictResolution", "task"),
+            resolved.IgnoreBotComments);
         var workflowMode = resolved.WorkflowMode == ConfiguredWorkflowMode.PlanOnly ? WorkflowMode.PlanOnly : WorkflowMode.Full;
         return new Runtime(provider, repository, dependencies, config, workflowMode, resolved.OmpTimeout, new TagList { { LogContextFields.Provider, providerName }, { LogContextFields.Repository, repository.Id } });
     }
@@ -690,7 +687,11 @@ public sealed partial class WorkflowDispatcher(
             workingDirectory,
             runtime.Config.OmpAllowedEnvironment,
             options.Value.ShutdownGracePeriod);
-        var observableClient = new ObservableOmpClient(client, metrics, ompLogger);
+        var observableClient = new ObservableOmpClient(
+            client,
+            metrics,
+            ompLogger,
+            effectiveConfiguration.Omp.ExecutionSecrets.Values);
         return activeOmpSessions.Track(
             new WorkflowWorkKey(runtime.Provider.Name, runtime.Repository.Id, issueNumber),
             observableClient);

@@ -212,7 +212,8 @@ public sealed class ObservableOmpClientTests
         var decorated = new ObservableOmpClient(
             new FakeOmpClient { ToolResult = "{\"token\":\"\\u0065xecution-secret-value\"}" },
             metrics,
-            logger);
+            logger,
+            [secret]);
         var request = new OmpRunRequest(
             "session-1",
             "/tmp",
@@ -238,7 +239,8 @@ public sealed class ObservableOmpClientTests
         var decorated = new ObservableOmpClient(
             new FakeOmpClient { ToolResult = $"\"{secret}\"" },
             metrics,
-            logger);
+            logger,
+            [secret]);
         var request = new OmpRunRequest(
             "session-1",
             "/tmp",
@@ -263,7 +265,8 @@ public sealed class ObservableOmpClientTests
         var decorated = new ObservableOmpClient(
             new FakeOmpClient { ToolResult = $"[\"{secret}\",{{\"{secret}\":\"value\"}}]" },
             metrics,
-            logger);
+            logger,
+            [secret]);
         var request = new OmpRunRequest(
             "session-1",
             "/tmp",
@@ -280,6 +283,54 @@ public sealed class ObservableOmpClientTests
     }
 
     [Fact]
+    public async Task RunAsyncRedactsOnlyConfiguredExecutionSecrets()
+    {
+        const string secret = "execution-secret-value";
+        const string home = "/home/issue-agent";
+        const string path = "/usr/local/bin:/usr/bin";
+        const string brokerUrl = "http://omp-auth-broker:8081";
+        using var metrics = new IssueAgentMetrics();
+        var logger = new RecordingLogger<ObservableOmpClient>();
+        var decorated = new ObservableOmpClient(
+            new FakeOmpClient
+            {
+                ToolResult = $"{{\"home\":\"{home}\",\"path\":\"{path}\",\"brokerUrl\":\"{brokerUrl}\",\"token\":\"{secret}\"}}",
+            },
+            metrics,
+            logger,
+            [secret]);
+        var request = new OmpRunRequest(
+            "session-1",
+            "/tmp",
+            "prompt",
+            new Dictionary<string, string>
+            {
+                ["HOME"] = home,
+                ["PATH"] = path,
+                ["OMP_AUTH_BROKER_URL"] = brokerUrl,
+                ["EXECUTION_TOKEN"] = secret,
+            });
+        var toolResult = default(OmpToolResultEvent);
+
+        await foreach (var domainEvent in decorated.RunAsync(request, CancellationToken.None))
+        {
+            toolResult = domainEvent as OmpToolResultEvent ?? toolResult;
+        }
+
+        Assert.NotNull(toolResult);
+        var logs = string.Join(Environment.NewLine, logger.Messages);
+        foreach (var value in new[] { home, path, brokerUrl })
+        {
+            Assert.Contains(value, toolResult.ResultJson, StringComparison.Ordinal);
+            Assert.Contains(value, logs, StringComparison.Ordinal);
+        }
+        Assert.DoesNotContain(secret, toolResult.ResultJson, StringComparison.Ordinal);
+        Assert.DoesNotContain(secret, logs, StringComparison.Ordinal);
+        Assert.Contains("[REDACTED]", toolResult.ResultJson, StringComparison.Ordinal);
+        Assert.Contains("[REDACTED]", logs, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RunAsyncRedactsExecutionSecretsBeforeYieldingErrorEvents()
     {
         const string secret = "error-event-secret";
@@ -287,7 +338,8 @@ public sealed class ObservableOmpClientTests
         var decorated = new ObservableOmpClient(
             new FakeOmpClient { ErrorMessage = $"OMP error: {secret}" },
             metrics,
-            NullLogger<ObservableOmpClient>.Instance);
+            NullLogger<ObservableOmpClient>.Instance,
+            [secret]);
         var request = new OmpRunRequest(
             "session-1",
             "/tmp",
@@ -316,7 +368,8 @@ public sealed class ObservableOmpClientTests
         var decorated = new ObservableOmpClient(
             new FakeOmpClient { ThrowDuringRun = true, RunFailureMessage = $"failure: {secret}" },
             metrics,
-            NullLogger<ObservableOmpClient>.Instance);
+            NullLogger<ObservableOmpClient>.Instance,
+            [secret]);
         var request = new OmpRunRequest(
             "session-1",
             "/tmp",

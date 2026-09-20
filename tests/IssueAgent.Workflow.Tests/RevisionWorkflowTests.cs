@@ -83,6 +83,42 @@ public sealed class RevisionWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsyncIncludesBotFeedbackWhenConfigured()
+    {
+        var state = await SeedReviewStateAsync();
+        provider.MergeRequestComments[(Repository.Id, 1)] =
+        [
+            new ProviderComment(1, "review-bot", "Automated review finding.", clock.UtcNow, clock.UtcNow,
+                new AttachmentSource("merge-request-comment", "1"), true),
+        ];
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1", clock.UtcNow,
+            """{"summary":"Addressed automated feedback.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(ignoreBotComments: false), notifier, clock))
+            .RunAsync(CreateConfig() with { IgnoreBotComments = false }, 1, state, omp, CancellationToken.None);
+
+        Assert.Contains("Automated review finding.", Assert.Single(omp.RunRequests).Prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunAsyncUsesFeedbackObservationStartAsPublishedCutoff()
+    {
+        var state = await SeedReviewStateAsync();
+        provider.OnReviewThreadsEnumeration = () => clock.UtcNow = clock.UtcNow.AddMinutes(1);
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1", clock.UtcNow,
+            """{"summary":"Revision.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(
+            DateTimeOffset.Parse("2024-06-01T00:02:00Z", System.Globalization.CultureInfo.InvariantCulture),
+            CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body).State.ReviewFeedbackCutoff);
+    }
+
+    [Fact]
     public async Task RunAsyncPersistsFailureWhenOmpResultViolatesContract()
     {
         var state = await SeedReviewStateAsync();
@@ -259,11 +295,13 @@ public sealed class RevisionWorkflowTests : IDisposable
         Directory.CreateDirectory(Path.Combine(workspaceRoot, workflowId.ToString(), "worktree"));
         return state;
     }
-
-    private AgentContextBuilder CreateContextBuilder()
+    private AgentContextBuilder CreateContextBuilder(bool ignoreBotComments = true)
     {
         var attachmentPipeline = new AttachmentPipeline(provider, new AttachmentLimits());
-        return new AgentContextBuilder(provider, attachmentPipeline, new AgentContextBuilderOptions());
+        return new AgentContextBuilder(
+            provider,
+            attachmentPipeline,
+            new AgentContextBuilderOptions { IgnoreBotComments = ignoreBotComments });
     }
 
     private WorkflowRepositoryConfig CreateConfig() => new(

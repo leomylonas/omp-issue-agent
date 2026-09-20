@@ -70,12 +70,12 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
 
         if (retainedResult is { Length: > 0 })
         {
-            var feedbackBeforePublication = await CaptureFeedbackSnapshotAsync(config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
+            var feedbackBeforePublication = await CaptureFeedbackSnapshotAsync(config, config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
             return await PublishRevisionAsync(
                 config, issueNumber, workingState, workingContent, retainedResult, mergeRequest, feedbackBeforePublication, omp, cancellationToken)
                 .ConfigureAwait(false);
         }
-        var feedbackBeforeRevision = await CaptureFeedbackSnapshotAsync(config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
+        var feedbackBeforeRevision = await CaptureFeedbackSnapshotAsync(config, config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
         var currentPlan = new PlanContext(existingContent.State.PlanRevision, existingContent.PlanText, existingContent.DecisionsAndRationale);
 
         var worktreePath = WorktreePath(config, currentState.WorkflowId);
@@ -175,7 +175,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             }
         }
 
-        var feedbackAfterRevision = await CaptureFeedbackSnapshotAsync(config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
+        var feedbackAfterRevision = await CaptureFeedbackSnapshotAsync(config, config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
         if (!feedbackAfterRevision.Entries.SetEquals(feedbackBeforeRevision.Entries))
         {
             return await PauseForNewFeedbackAsync(
@@ -245,14 +245,18 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
     private sealed record FeedbackSnapshot(HashSet<string> Entries, DateTimeOffset Cutoff);
 
     private async Task<FeedbackSnapshot> CaptureFeedbackSnapshotAsync(
+        WorkflowRepositoryConfig config,
         RepositoryRef repository,
         long mergeRequestNumber,
         CancellationToken cancellationToken)
     {
+        // Record the observation boundary before enumerating provider pages. Feedback that arrives
+        // after it cannot be advanced past by a concurrent publication checkpoint.
+        var cutoff = deps.Clock.UtcNow;
         var snapshot = new HashSet<string>(StringComparer.Ordinal);
         await foreach (var comment in deps.Provider.GetMergeRequestCommentsAsync(repository, mergeRequestNumber, cancellationToken).ConfigureAwait(false))
         {
-            if (!comment.IsBot && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
+            if ((!config.IgnoreBotComments || !comment.IsBot) && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
             {
                 snapshot.Add($"comment:{comment.Id}:{comment.UpdatedAt:O}:{comment.Body}");
             }
@@ -263,14 +267,14 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             snapshot.Add($"thread:{thread.Id}:resolved={thread.IsResolved}");
             foreach (var comment in thread.Comments)
             {
-                if (!comment.IsBot && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
+                if ((!config.IgnoreBotComments || !comment.IsBot) && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
                 {
                     snapshot.Add($"thread:{thread.Id}:{comment.Id}:{comment.UpdatedAt:O}:{comment.Body}");
                 }
             }
         }
 
-        return new FeedbackSnapshot(snapshot, deps.Clock.UtcNow);
+        return new FeedbackSnapshot(snapshot, cutoff);
     }
 
     private Task<WorkflowOutcome> PauseForMaterialDeviationAsync(

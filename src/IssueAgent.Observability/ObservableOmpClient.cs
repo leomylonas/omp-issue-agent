@@ -10,8 +10,27 @@ namespace IssueAgent.Observability;
 /// <summary>Wraps an <see cref="IOmpClient"/> with tracing, metrics, and structured logging
 /// (specification §29-30: OMP plan/implement/revise spans, request/error/duration metrics, and
 /// per-event structured logs tagged with <c>OmpEventType</c>).</summary>
-public sealed class ObservableOmpClient(IOmpClient inner, IssueAgentMetrics metrics, ILogger<ObservableOmpClient> logger) : IOmpClient
+public sealed class ObservableOmpClient : IOmpClient
 {
+    private readonly IOmpClient inner;
+    private readonly IssueAgentMetrics metrics;
+    private readonly ILogger<ObservableOmpClient> logger;
+    private readonly string[] executionSecretValues;
+
+    public ObservableOmpClient(
+        IOmpClient inner,
+        IssueAgentMetrics metrics,
+        ILogger<ObservableOmpClient> logger,
+        IEnumerable<string>? executionSecretValues = null)
+    {
+        this.inner = inner;
+        this.metrics = metrics;
+        this.logger = logger;
+        this.executionSecretValues = executionSecretValues?
+            .Where(secret => !string.IsNullOrEmpty(secret))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray() ?? [];
+    }
     public async ValueTask<OmpSession> CreateSessionAsync(string role, CancellationToken cancellationToken)
     {
         using var activity = IssueAgentActivitySource.StartOmpOperation("session.create", sessionId: null);
@@ -88,7 +107,7 @@ public sealed class ObservableOmpClient(IOmpClient inner, IssueAgentMetrics metr
 
         if (logger.IsEnabled(LogLevel.Debug))
         {
-            var redactedPrompt = RedactExecutionSecrets(request.Prompt, request.ExecutionEnvironment.Values);
+            var redactedPrompt = RedactExecutionSecrets(request.Prompt, executionSecretValues);
             OmpLogMessages.PromptDispatched(logger, request.SessionId, redactedPrompt);
         }
         var enumerator = inner.RunAsync(request, cancellationToken).GetAsyncEnumerator(cancellationToken);
@@ -116,7 +135,7 @@ public sealed class ObservableOmpClient(IOmpClient inner, IssueAgentMetrics metr
                     metrics.OmpErrors.Add(1, tags);
                     activity?.SetStatus(ActivityStatusCode.Error);
                     OmpLogMessages.RunFailed(logger, ex.GetType().Name, request.SessionId);
-                    var redactedMessage = RedactExecutionSecrets(ex.Message, request.ExecutionEnvironment.Values);
+                    var redactedMessage = RedactExecutionSecrets(ex.Message, executionSecretValues);
                     if (!string.Equals(redactedMessage, ex.Message, StringComparison.Ordinal))
                     {
                         throw new OmpRpcException(redactedMessage);
@@ -124,11 +143,11 @@ public sealed class ObservableOmpClient(IOmpClient inner, IssueAgentMetrics metr
                     throw;
                 }
 
-                domainEvent = RedactEvent(domainEvent, request.ExecutionEnvironment.Values);
+                domainEvent = RedactEvent(domainEvent, executionSecretValues);
                 OmpLogMessages.EventObserved(logger, domainEvent.GetType().Name, request.SessionId);
                 if (logger.IsEnabled(LogLevel.Debug))
                 {
-                    var payload = SerializeRedactedEvent(domainEvent, request.ExecutionEnvironment.Values);
+                    var payload = SerializeRedactedEvent(domainEvent, executionSecretValues);
                     OmpLogMessages.EventPayload(logger, request.SessionId, payload);
                 }
                 if (domainEvent is OmpErrorEvent errorEvent && !errorEvent.WasCancelled)
@@ -278,9 +297,7 @@ public sealed class ObservableOmpClient(IOmpClient inner, IssueAgentMetrics metr
         string value,
         IEnumerable<string> executionSecretValues)
     {
-        foreach (var secret in executionSecretValues
-            .Where(secret => !string.IsNullOrEmpty(secret))
-            .Distinct(StringComparer.Ordinal))
+        foreach (var secret in executionSecretValues)
         {
             value = value.Replace(secret, "[REDACTED]", StringComparison.Ordinal);
         }

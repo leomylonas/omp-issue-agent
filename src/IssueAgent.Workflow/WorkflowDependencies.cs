@@ -78,7 +78,8 @@ public sealed record WorkflowRepositoryConfig(
     Func<string, GitAuthentication?>? SubmoduleAuthenticationResolver = null,
     bool CloseIssueOnMerge = true,
     string RevisionRole = "task",
-    string ConflictResolutionRole = "task")
+    string ConflictResolutionRole = "task",
+    bool IgnoreBotComments = true)
 {
     public string ApplyInstructions(string prompt)
     {

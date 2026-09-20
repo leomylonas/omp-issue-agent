@@ -296,11 +296,18 @@ public sealed class ImplementationWorkflowTests : IDisposable
             clock.UtcNow,
             """{"summary":"Continued after acknowledgement.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
 
-        var resumedOutcome = await CreateWorkflow().RunAsync(CreateConfig(), WorkflowMode.Full, 1, pausedOutcome.State, resumingOmp, CancellationToken.None);
+        var resumedOutcome = await CreateWorkflow().RunAsync(
+            CreateConfig() with { ImplementationRole = "implementer" },
+            WorkflowMode.Full,
+            1,
+            pausedOutcome.State,
+            resumingOmp,
+            CancellationToken.None);
 
         Assert.Equal(WorkflowPhase.Review, resumedOutcome.State.Phase);
         Assert.Single(resumingOmp.RunRequests);
         Assert.Equal(1, git.ResetWorktreeCallCount);
+        Assert.Equal(["implementer"], resumingOmp.SelectedRoles);
         Assert.Contains("Continued after acknowledgement.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
     }
 
