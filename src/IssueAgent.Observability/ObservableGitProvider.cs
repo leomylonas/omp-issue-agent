@@ -18,6 +18,8 @@ public sealed class ObservableGitProvider(IGitProvider inner, IssueAgentMetrics 
 
     public bool IsTrustedAttachmentHost(Uri url) => inner.IsTrustedAttachmentHost(url);
 
+    public Uri? ResolveAttachmentUrl(Uri url) => inner.ResolveAttachmentUrl(url);
+
     public ValueTask<ProviderIdentity> GetCurrentIdentityAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();

@@ -44,9 +44,14 @@ public sealed class AttachmentPipeline(
 
         var results = new List<AttachmentReference>();
 
-        foreach (var url in MarkdownAttachmentScanner.ScanLinks(body))
+        foreach (var candidateUrl in MarkdownAttachmentScanner.ScanLinks(body))
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var url = provider.ResolveAttachmentUrl(candidateUrl);
+            if (url is null)
+            {
+                continue;
+            }
 
             var isTrusted = provider.IsTrustedAttachmentHost(url);
             if (!isTrusted && !MarkdownAttachmentScanner.IsDirectFileLink(url))

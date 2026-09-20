@@ -28,13 +28,23 @@ public static class GitLabProviderFactory
             configuration.TrustedAttachmentAuthorities,
             GetAttachmentPathPrefix(configuration.ApiBaseUri),
             configuration.Name,
-            configuration.RetryPolicy);
+            configuration.RetryPolicy,
+            GetWebBaseUri(configuration.ApiBaseUri));
     }
 
     private static string GetAttachmentPathPrefix(Uri apiBaseUri)
     {
         var path = apiBaseUri.AbsolutePath.TrimEnd('/');
         return path.EndsWith("/api/v4", StringComparison.OrdinalIgnoreCase) ? path[..^7] : path;
+    }
+
+    private static Uri GetWebBaseUri(Uri apiBaseUri)
+    {
+        var path = GetAttachmentPathPrefix(apiBaseUri);
+        return new UriBuilder(apiBaseUri.Scheme, apiBaseUri.Host, apiBaseUri.Port)
+        {
+            Path = path.Length == 0 ? "/" : $"{path}/",
+        }.Uri;
     }
 
     private static void RequireHttpsForCredentials(Uri apiBaseUri, string? token)

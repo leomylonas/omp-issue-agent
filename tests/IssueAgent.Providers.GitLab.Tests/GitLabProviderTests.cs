@@ -470,6 +470,30 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     }
 
     [Fact]
+    public void ResolveAttachmentUrlResolvesOnlyDocumentedRelativeGitLabUploads()
+    {
+        var provider = GitLabProviderFactory.Create(new GitLabProviderConfiguration(
+            "gitlab",
+            new Uri("https://gitlab.example:8443/gitlab/api/v4/"),
+            "test-token",
+            ["gitlab.example:8443"]));
+
+        var rootMarkdownUpload = Assert.Single(MarkdownAttachmentScanner.ScanLinks(
+            "[file](/uploads/66dbcd21ec5d24ed6ea225176098d52b/file.png)"));
+        var projectMarkdownUpload = Assert.Single(MarkdownAttachmentScanner.ScanLinks(
+            "[file](/-/project/123/uploads/66dbcd21ec5d24ed6ea225176098d52b/file.png)"));
+        var rootUpload = provider.ResolveAttachmentUrl(rootMarkdownUpload);
+        var projectUpload = provider.ResolveAttachmentUrl(projectMarkdownUpload);
+
+        Assert.Equal("https://gitlab.example:8443/gitlab/uploads/66dbcd21ec5d24ed6ea225176098d52b/file.png", rootUpload?.ToString());
+        Assert.Equal("https://gitlab.example:8443/gitlab/-/project/123/uploads/66dbcd21ec5d24ed6ea225176098d52b/file.png", projectUpload?.ToString());
+        Assert.True(provider.IsTrustedAttachmentHost(rootUpload!));
+        Assert.True(provider.IsTrustedAttachmentHost(projectUpload!));
+        Assert.Null(provider.ResolveAttachmentUrl(new Uri("/docs/guide.pdf", UriKind.Relative)));
+        Assert.Null(provider.ResolveAttachmentUrl(new Uri("//evil.example/uploads/66dbcd21ec5d24ed6ea225176098d52b/file.png", UriKind.Relative)));
+    }
+
+    [Fact]
     public async Task DownloadAttachmentAsyncUsesAnonymousClientForSameAuthorityApiUrl()
     {
         var authenticated = new RecordingHttpMessageHandler();

@@ -45,6 +45,21 @@ public sealed class AttachmentPipelineTests
     }
 
     [Fact]
+    public async Task ProcessAsyncSkipsRelativeLinksWhenProviderDoesNotResolveThem()
+    {
+        var pipeline = new AttachmentPipeline(provider, new AttachmentLimits());
+
+        var results = await pipeline.ProcessAsync(
+            "[guide](/docs/guide.pdf)",
+            new AttachmentSource("issue-description", "1"),
+            destination,
+            new RemainingBudget(100 * 1024 * 1024),
+            CancellationToken.None);
+
+        Assert.Empty(results);
+    }
+
+    [Fact]
     public async Task ProcessAsyncOmitsAttachmentExceedingPerAttachmentLimit()
     {
         provider.DownloadableContent["https://example.com/huge.pdf"] = new byte[10];

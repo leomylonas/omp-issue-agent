@@ -22,7 +22,7 @@ public static partial class MarkdownAttachmentScanner
 
         foreach (Match match in MarkdownLinkPattern().Matches(body))
         {
-            if (TryCreateHttpUri(match.Groups["url"].Value, out var uri))
+            if (TryCreateAttachmentUri(match.Groups["url"].Value, out var uri))
             {
                 yield return uri;
             }
@@ -44,6 +44,25 @@ public static partial class MarkdownAttachmentScanner
         return DirectFileExtensions.Any(extension => path.EndsWith(extension, StringComparison.OrdinalIgnoreCase));
     }
 
+    private static bool TryCreateAttachmentUri(string candidate, out Uri uri)
+    {
+        if (Uri.TryCreate(candidate, UriKind.Absolute, out var absolute) &&
+            absolute.Scheme is "http" or "https")
+        {
+            uri = absolute;
+            return true;
+        }
+
+        if (Uri.TryCreate(candidate, UriKind.Relative, out var relative))
+        {
+            uri = relative;
+            return true;
+        }
+
+        uri = null!;
+        return false;
+    }
+
     private static bool TryCreateHttpUri(string candidate, out Uri uri)
     {
         if (Uri.TryCreate(candidate, UriKind.Absolute, out var parsed) &&
@@ -57,7 +76,7 @@ public static partial class MarkdownAttachmentScanner
         return false;
     }
 
-    [GeneratedRegex(@"!?\[[^\]]*\]\((?<url>https?://[^\s)]+)\)", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"!?\[[^\]]*\]\((?<url>[^\s)]+)\)", RegexOptions.CultureInvariant)]
     private static partial Regex MarkdownLinkPattern();
 
     [GeneratedRegex(@"(?<!\()https?://[^\s)>\]]+", RegexOptions.CultureInvariant)]

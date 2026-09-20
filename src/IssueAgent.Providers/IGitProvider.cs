@@ -97,6 +97,12 @@ public interface IGitProvider
         long issueNumber,
         CancellationToken cancellationToken);
 
+    /// <summary>Resolves a provider-recognized relative attachment link to its configured web URL.
+    /// Returns <see langword="null"/> for relative URLs so they cannot fall through to anonymous
+    /// downloads. Absolute HTTP(S) URLs are preserved for normal trust classification.</summary>
+    Uri? ResolveAttachmentUrl(Uri url) =>
+        url.IsAbsoluteUri && url.Scheme is "http" or "https" ? url : null;
+
     /// <summary>True when <paramref name="url"/> is a documented provider-owned attachment endpoint
     /// that may receive this provider's credentials. External hosts and non-attachment provider URLs
     /// never receive provider credentials.</summary>

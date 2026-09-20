@@ -25,7 +25,8 @@ public sealed partial class GitLabProvider(
     IReadOnlyList<string> trustedAttachmentAuthorities,
     string attachmentPathPrefix,
     string name,
-    RetryPolicy? configuredRetryPolicy = null) : IGitProvider
+    RetryPolicy? configuredRetryPolicy = null,
+    Uri? webBaseUri = null) : IGitProvider
 {
     private const string DraftTitlePrefix = "Draft: ";
 
@@ -261,6 +262,27 @@ public sealed partial class GitLabProvider(
 
             yield return new IssueRelationship(relationship, linkedRepository, link.Iid);
         }
+    }
+
+    public Uri? ResolveAttachmentUrl(Uri url)
+    {
+        ArgumentNullException.ThrowIfNull(url);
+        if (url.IsAbsoluteUri)
+        {
+            return url.Scheme is "http" or "https" ? url : null;
+        }
+
+        var relativePath = url.OriginalString;
+        if (webBaseUri is null ||
+            relativePath.Length == 0 ||
+            relativePath[0] != '/' ||
+            relativePath.StartsWith("//", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var resolved = new Uri(webBaseUri, relativePath[1..]);
+        return IsDocumentedAttachmentPath(resolved.AbsolutePath) ? resolved : null;
     }
 
     public bool IsTrustedAttachmentHost(Uri url)
