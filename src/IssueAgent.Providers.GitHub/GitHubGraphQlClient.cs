@@ -2,12 +2,15 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
+using IssueAgent.Domain;
+
 namespace IssueAgent.Providers.GitHub;
 
 /// <summary>Minimal GraphQL client for the stable GitHub review-thread resolution field, which has
 /// no REST equivalent. All other GitHub access in this provider uses the REST API via Octokit.</summary>
-public sealed partial class GitHubGraphQlClient(HttpClient httpClient)
+public sealed partial class GitHubGraphQlClient(HttpClient httpClient, RetryPolicy? configuredRetryPolicy = null)
 {
+    private readonly RetryPolicy retryPolicy = configuredRetryPolicy ?? RetryPolicy.Default;
     /// <summary>Hard ceiling on review-thread pages walked per pull request (specification §27's
     /// bounded-resource intent); exceeding it throws rather than silently truncating.</summary>
     private const int MaxPages = 200;
@@ -76,7 +79,8 @@ public sealed partial class GitHubGraphQlClient(HttpClient httpClient)
             var payload = new GraphQlRequest(ReviewThreadsQuery, new GraphQlVariables(owner, name, number, cursor));
             using var response = await ProviderRetryPolicy.SendAsync(
                 token => httpClient.PostAsJsonAsync("graphql", payload, GraphQlJsonContext.Default.GraphQlRequest, token),
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                retryPolicy: retryPolicy).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
 
             var result = await response.Content
@@ -142,7 +146,8 @@ public sealed partial class GitHubGraphQlClient(HttpClient httpClient)
                 new GraphQlThreadCommentsVariables(thread.Id, cursor));
             using var response = await ProviderRetryPolicy.SendAsync(
                 token => httpClient.PostAsJsonAsync("graphql", payload, GraphQlJsonContext.Default.GraphQlThreadCommentsRequest, token),
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                retryPolicy: retryPolicy).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
 
             var result = await response.Content

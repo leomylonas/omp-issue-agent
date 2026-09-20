@@ -1,4 +1,6 @@
 using IssueAgent.Workflow;
+using IssueAgent.Domain;
+
 
 namespace IssueAgent.Notifications;
 
@@ -25,7 +27,6 @@ public sealed class FanOutNotifier(
     IReadOnlyDictionary<WorkflowNotificationKind, IReadOnlySet<string>>? routing = null,
     NotificationSinkFailureHandler? onSinkFailure = null) : IWorkflowNotifier
 {
-    private readonly Random random = new();
 
     public async Task NotifyAsync(WorkflowNotification notification, CancellationToken cancellationToken)
     {
@@ -49,7 +50,7 @@ public sealed class FanOutNotifier(
     private async Task SendToSinkAsync(INotificationSink sink, WorkflowNotification notification, CancellationToken cancellationToken)
     {
         var failure = await retryPolicy
-            .ExecuteAsync(ct => sink.SendAsync(notification, ct), random, cancellationToken)
+            .ExecuteAsync(ct => sink.SendAsync(notification, ct), cancellationToken)
             .ConfigureAwait(false);
 
         if (failure is not null)

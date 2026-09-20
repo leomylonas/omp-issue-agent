@@ -1,4 +1,6 @@
 using System.Runtime.CompilerServices;
+using IssueAgent.Domain;
+
 
 namespace IssueAgent.Omp;
 
@@ -14,7 +16,8 @@ internal sealed class OmpRoleProcessClient(
     string workingDirectory,
     IReadOnlyDictionary<string, string> allowedEnvironment,
     TimeSpan shutdownGracePeriod,
-    string sessionDirectory) : IOmpClient
+    string sessionDirectory,
+    RetryPolicy retryPolicy) : IOmpClient
 {
     private OmpProcessClient? inner;
     private OmpSession? session;
@@ -99,7 +102,7 @@ internal sealed class OmpRoleProcessClient(
             ? arguments
             : arguments.Concat(["--model", role]).ToArray();
         var transport = NdjsonRpcTransport.Start(executablePath, startupArguments, workingDirectory, allowedEnvironment);
-        inner = new OmpProcessClient(transport, shutdownGracePeriod, sessionDirectory);
+        inner = new OmpProcessClient(transport, shutdownGracePeriod, sessionDirectory, configuredRetryPolicy: retryPolicy);
         activeRole = null;
     }
 }

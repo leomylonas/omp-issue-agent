@@ -125,7 +125,10 @@
         }
       },
       "issueagent.configuration": {
-        "type": "Project"
+        "type": "Project",
+        "dependencies": {
+          "IssueAgent.Domain": "[1.0.0, )"
+        }
       },
       "issueagent.context": {
         "type": "Project",

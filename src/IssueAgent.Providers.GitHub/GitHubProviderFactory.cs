@@ -1,4 +1,6 @@
 using System.Net.Http.Headers;
+using IssueAgent.Domain;
+
 using IssueAgent.Git;
 using Octokit;
 
@@ -48,14 +50,15 @@ public static class GitHubProviderFactory
 
         return new GitHubProvider(
             restClient,
-            new GitHubGraphQlClient(graphQlHttpClient),
-            new GitHubTimelineClient(timelineHttpClient),
+            new GitHubGraphQlClient(graphQlHttpClient, configuration.RetryPolicy),
+            new GitHubTimelineClient(timelineHttpClient, configuration.RetryPolicy),
             mutationHttpClient,
             authenticatedAttachmentClient,
             anonymousAttachmentClient,
             configuration.TrustedAttachmentAuthorities,
             isGitHubDotCom,
-            configuration.Name);
+            configuration.Name,
+            configuration.RetryPolicy);
     }
 
     private static void RequireHttpsForCredentials(Uri apiBaseUri, string? token)
@@ -85,7 +88,10 @@ public sealed record GitHubProviderConfiguration(
     Uri ApiBaseUri,
     string? Token,
     IReadOnlyList<string> TrustedAttachmentAuthorities,
-    TlsTrust? Trust = null)
+    TlsTrust? Trust = null,
+    RetryPolicy? Retry = null)
 {
     public TlsTrust TlsTrust { get; init; } = Trust ?? IssueAgent.Git.TlsTrust.System;
+
+    public RetryPolicy RetryPolicy { get; init; } = Retry ?? RetryPolicy.Default;
 }

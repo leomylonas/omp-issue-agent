@@ -119,7 +119,7 @@ public static class PlanningPromptBuilder
     private static void AppendOutputContract(StringBuilder builder)
     {
         builder.AppendLine("Return only one JSON object: no Markdown fence, prose, or text before or after it.");
-        builder.AppendLine("""Its exact result schema is {"planText":"string","decisions":["string"],"suggestedSlug":"string or null (optional)"}; include planText and decisions, use no other properties.""");
+        builder.AppendLine("""Its exact result schema is {"planText":"string","decisions":["string"],"suggestedSlug":"string or null (optional)"}; include planText and decisions, use no other properties. For a long or unsuitable issue title, provide suggestedSlug as a concise meaningful branch slug.""");
     }
 
     private static void AppendIssue(StringBuilder builder, IssueContext issue, string heading)

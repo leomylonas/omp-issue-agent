@@ -164,4 +164,22 @@ public sealed class ProviderRetryPolicyTests
         Assert.Equal(2, materializations);
         Assert.Equal(2, sends);
     }
+    [Fact]
+    public async Task SendAsyncUsesTheInjectedAttemptLimit()
+    {
+        var attempts = 0;
+
+        using var response = await ProviderRetryPolicy.SendAsync(
+            _ =>
+            {
+                attempts++;
+                return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable));
+            },
+            CancellationToken.None,
+            retryPolicy: new IssueAgent.Domain.RetryPolicy { MaxAttempts = 1, MaxJitter = TimeSpan.Zero });
+
+        Assert.Equal(1, attempts);
+        Assert.Equal(System.Net.HttpStatusCode.ServiceUnavailable, response.StatusCode);
+    }
+
 }

@@ -41,6 +41,23 @@ public sealed class ObservableGitRepositoryManager(IGitRepositoryManager inner, 
 
     public async ValueTask CreateWorktreeAsync(string repositoryId, string worktreeId, string worktreePath, string branchName, string baseCommit, CancellationToken cancellationToken) =>
         await RunAsync("create-worktree", repositoryId, () => inner.CreateWorktreeAsync(repositoryId, worktreeId, worktreePath, branchName, baseCommit, cancellationToken).AsTask(), cancellationToken).ConfigureAwait(false);
+    public async ValueTask RenameWorktreeBranchAsync(
+        string repositoryId,
+        string worktreePath,
+        string expectedCurrentBranch,
+        string newBranchName,
+        CancellationToken cancellationToken) =>
+        await RunAsync(
+            "rename-worktree-branch",
+            repositoryId,
+            () => inner.RenameWorktreeBranchAsync(
+                repositoryId,
+                worktreePath,
+                expectedCurrentBranch,
+                newBranchName,
+                cancellationToken).AsTask(),
+            cancellationToken).ConfigureAwait(false);
+
 
     public async ValueTask ResetWorktreeAsync(string repositoryId, string worktreePath, string commit, CancellationToken cancellationToken) =>
         await RunAsync("reset-worktree", repositoryId, () => inner.ResetWorktreeAsync(repositoryId, worktreePath, commit, cancellationToken).AsTask(), cancellationToken).ConfigureAwait(false);

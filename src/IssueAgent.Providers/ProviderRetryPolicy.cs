@@ -1,11 +1,12 @@
 using System.Globalization;
 using System.Net;
+using IssueAgent.Domain;
+
 
 namespace IssueAgent.Providers;
 
 public static class ProviderRetryPolicy
 {
-    private const int MaxAttempts = 3;
     private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(5);
 
     /// <param name="send">Issues one HTTP attempt.</param>
@@ -16,12 +17,15 @@ public static class ProviderRetryPolicy
     /// §17, §25, §27). A definitive rate-limit rejection (<c>429</c>, or <c>403</c> with exhausted
     /// quota or <c>Retry-After</c>) is always safe to retry regardless of verb: the provider rejected
     /// the request before processing it.</param>
+    /// <param name="retryPolicy">Resolved global retry configuration. Unit callers may omit it to use defaults.</param>
     public static async Task<HttpResponseMessage> SendAsync(
         Func<CancellationToken, Task<HttpResponseMessage>> send,
         CancellationToken cancellationToken,
-        bool isIdempotent = true)
+        bool isIdempotent = true,
+        RetryPolicy? retryPolicy = null)
     {
         ArgumentNullException.ThrowIfNull(send);
+        retryPolicy ??= RetryPolicy.Default;
 
         for (var attempt = 1; ; attempt++)
         {
@@ -29,22 +33,22 @@ public static class ProviderRetryPolicy
             try
             {
                 var response = await send(cancellationToken).ConfigureAwait(false);
-                if (!IsRetryable(response, isIdempotent) || attempt == MaxAttempts)
+                if (!IsRetryable(response, isIdempotent) || attempt == retryPolicy.MaxAttempts)
                 {
                     return response;
                 }
 
-                var delay = GetRetryDelay(response, attempt);
+                var delay = GetRetryDelay(response, attempt, retryPolicy);
                 response.Dispose();
                 await DelayAsync(delay, cancellationToken).ConfigureAwait(false);
             }
-            catch (HttpRequestException) when (isIdempotent && attempt < MaxAttempts)
+            catch (HttpRequestException) when (isIdempotent && attempt < retryPolicy.MaxAttempts)
             {
-                await DelayAsync(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                await DelayAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (isIdempotent && !cancellationToken.IsCancellationRequested && attempt < MaxAttempts)
+            catch (OperationCanceledException) when (isIdempotent && !cancellationToken.IsCancellationRequested && attempt < retryPolicy.MaxAttempts)
             {
-                await DelayAsync(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                await DelayAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -56,11 +60,13 @@ public static class ProviderRetryPolicy
     public static async Task<T> SendAndMaterializeAsync<T>(
         Func<CancellationToken, Task<HttpResponseMessage>> send,
         Func<HttpResponseMessage, CancellationToken, Task<T>> materialize,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        RetryPolicy? retryPolicy = null)
     {
         ArgumentNullException.ThrowIfNull(send);
         ArgumentNullException.ThrowIfNull(materialize);
 
+        retryPolicy ??= RetryPolicy.Default;
         for (var attempt = 1; ; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -69,22 +75,22 @@ public static class ProviderRetryPolicy
             {
                 response = await send(cancellationToken).ConfigureAwait(false);
             }
-            catch (HttpRequestException) when (attempt < MaxAttempts)
+            catch (HttpRequestException) when (attempt < retryPolicy.MaxAttempts)
             {
-                await DelayAsync(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                await DelayAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
                 continue;
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && attempt < MaxAttempts)
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && attempt < retryPolicy.MaxAttempts)
             {
-                await DelayAsync(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                await DelayAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
                 continue;
             }
 
             using (response)
             {
-                if (IsRetryable(response, isIdempotent: true) && attempt < MaxAttempts)
+                if (IsRetryable(response, isIdempotent: true) && attempt < retryPolicy.MaxAttempts)
                 {
-                    await DelayAsync(GetRetryDelay(response, attempt), cancellationToken).ConfigureAwait(false);
+                    await DelayAsync(GetRetryDelay(response, attempt, retryPolicy), cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
@@ -93,17 +99,17 @@ public static class ProviderRetryPolicy
                 {
                     return await materialize(response, cancellationToken).ConfigureAwait(false);
                 }
-                catch (HttpRequestException) when (attempt < MaxAttempts)
+                catch (HttpRequestException) when (attempt < retryPolicy.MaxAttempts)
                 {
-                    await DelayAsync(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                    await DelayAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
                 }
-                catch (IOException) when (attempt < MaxAttempts)
+                catch (IOException) when (attempt < retryPolicy.MaxAttempts)
                 {
-                    await DelayAsync(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                    await DelayAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && attempt < MaxAttempts)
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && attempt < retryPolicy.MaxAttempts)
                 {
-                    await DelayAsync(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                    await DelayAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
                 }
             }
         }
@@ -125,7 +131,7 @@ public static class ProviderRetryPolicy
          ((response.Headers.TryGetValues("X-RateLimit-Remaining", out var remaining) && remaining.Any(value => value == "0")) ||
           response.Headers.RetryAfter is not null));
 
-    private static TimeSpan GetRetryDelay(HttpResponseMessage response, int attempt)
+    private static TimeSpan GetRetryDelay(HttpResponseMessage response, int attempt, RetryPolicy retryPolicy)
     {
         var now = DateTimeOffset.UtcNow;
         TimeSpan? instructedDelay = response.Headers.RetryAfter?.Delta ??
@@ -133,18 +139,9 @@ public static class ProviderRetryPolicy
             GetResetDelay(response, "X-RateLimit-Reset", now) ??
             GetResetDelay(response, "RateLimit-Reset", now);
 
-        if (instructedDelay is { } delay)
-        {
-            return delay <= TimeSpan.Zero ? TimeSpan.Zero : delay;
-        }
-        var exponential = IsDefinitiveRateLimitRejection(response)
-            ? TimeSpan.FromMinutes(Math.Min(5, Math.Pow(2, attempt - 1)))
-            : TimeSpan.FromMilliseconds(100 * Math.Pow(2, attempt - 1));
-        var jitter = IsDefinitiveRateLimitRejection(response)
-            ? TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000))
-            : TimeSpan.FromMilliseconds(Random.Shared.Next(0, 100));
-        var fallback = exponential + jitter;
-        return fallback > MaxRetryDelay ? MaxRetryDelay : fallback;
+        return instructedDelay is { } instructed
+            ? (instructed <= TimeSpan.Zero ? TimeSpan.Zero : instructed)
+            : retryPolicy.GetDelay(attempt);
     }
 
     private static async Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
@@ -159,8 +156,6 @@ public static class ProviderRetryPolicy
 
         await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
     }
-    private static TimeSpan GetTransientRetryDelay(int attempt) =>
-        TimeSpan.FromMilliseconds(100 * Math.Pow(2, attempt - 1) + Random.Shared.Next(0, 100));
 
     private static TimeSpan? GetResetDelay(HttpResponseMessage response, string header, DateTimeOffset now)
     {

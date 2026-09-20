@@ -43,6 +43,16 @@ public interface IGitRepositoryManager
         string branchName,
         string baseCommit,
         CancellationToken cancellationToken);
+    /// <summary>Renames the branch checked out by a retained worktree. The implementation verifies
+    /// the worktree still has <paramref name="expectedCurrentBranch"/> checked out before renaming
+    /// it, so durable workflow state cannot diverge from the retained checkout.</summary>
+    ValueTask RenameWorktreeBranchAsync(
+        string repositoryId,
+        string worktreePath,
+        string expectedCurrentBranch,
+        string newBranchName,
+        CancellationToken cancellationToken);
+
 
     /// <summary>Hard-resets the worktree's working directory and index to <paramref name="commit"/>,
     /// discarding uncommitted changes. Used to restore a clean planned base before implementation.</summary>

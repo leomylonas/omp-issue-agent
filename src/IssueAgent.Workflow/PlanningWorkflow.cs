@@ -76,7 +76,8 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         IOmpClient omp,
         CancellationToken cancellationToken,
         WorkflowId? suppliedWorkflowId = null,
-        WorkflowState? initialCheckpoint = null)
+        WorkflowState? initialCheckpoint = null,
+        string? initialWorktreePath = null)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(omp);
@@ -84,7 +85,8 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             ?? await CreateInitialCheckpointAsync(config, issueNumber, cancellationToken, suppliedWorkflowId).ConfigureAwait(false);
         Activity.Current?.SetTag("WorkflowId", initialState.WorkflowId.ToString());
 
-        var worktreePath = await EnsureInitialPlanningWorktreeAsync(config, initialState, cancellationToken).ConfigureAwait(false);
+        var worktreePath = initialWorktreePath
+            ?? await EnsureInitialPlanningWorktreeAsync(config, initialState, cancellationToken).ConfigureAwait(false);
         if (initialState.OmpSessionFile is null)
         {
             var session = await omp.CreateSessionAsync(config.PlanningRole, cancellationToken).ConfigureAwait(false);
@@ -325,6 +327,18 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         string issueDescription,
         CancellationToken cancellationToken)
     {
+        if (BranchNaming.TryDeriveSuggestedBranchName(issueNumber, issueTitle, planningResult.SuggestedSlug) is { } suggestedBranch &&
+            !string.Equals(workingState.Branch, suggestedBranch, StringComparison.Ordinal))
+        {
+            await deps.Git.RenameWorktreeBranchAsync(
+                config.Repository.Id,
+                WorktreePath(config, workingState.WorkflowId),
+                workingState.Branch,
+                suggestedBranch,
+                cancellationToken).ConfigureAwait(false);
+            workingState = workingState with { Branch = suggestedBranch };
+        }
+
         // OMP's planning contract is read-only. Discard any accidental planning-time edits or
         // commits before the plan becomes approvable, so implementation always starts at its
         // recorded base commit.
@@ -358,6 +372,25 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             cancellationToken).ConfigureAwait(false);
 
         return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, publishedState, "Plan published; awaiting human approval.");
+    }
+
+    /// <summary>Durably stops bootstrap recovery after the idempotent retained-worktree setup
+    /// exhausted its configured retry budget.</summary>
+    public Task<WorkflowOutcome> FailInitialPlanningBootstrapAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState initialCheckpoint,
+        Exception exception,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        return FailAsync(
+            config,
+            issueNumber,
+            initialCheckpoint,
+            WaitingReason.ManualIntervention,
+            $"Initial planning could not create its retained worktree after bounded retries ({exception.GetType().Name}). The durable checkpoint was preserved; resolve the local Git/worktree problem before continuing.",
+            cancellationToken);
     }
 
     private async Task<WorkflowOutcome> FailAsync(

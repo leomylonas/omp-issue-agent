@@ -55,6 +55,46 @@ public sealed class IssueAgentOptionsValidatorTests
         Assert.Contains(result.Failures!, failure => failure.Contains("IssueAgent:Omp:Timeout must be greater than zero.", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData(0, 1, 0)]
+    [InlineData(3, 0.5, 0)]
+    [InlineData(3, 2, -1)]
+    public void ValidateRejectsInvalidRootRetryPolicy(int attempts, double multiplier, int jitterMilliseconds)
+    {
+        var options = CreateOptions() with
+        {
+            Retry = new RetryOptions
+            {
+                MaxAttempts = attempts,
+                BackoffMultiplier = multiplier,
+                MaxJitter = TimeSpan.FromMilliseconds(jitterMilliseconds),
+            },
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.StartsWith("IssueAgent:Retry:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RootRetryOptionsResolveTheConfiguredPolicy()
+    {
+        var options = new RetryOptions
+        {
+            MaxAttempts = 4,
+            InitialDelay = TimeSpan.FromMilliseconds(20),
+            BackoffMultiplier = 3,
+            MaxJitter = TimeSpan.Zero,
+        };
+
+        var policy = options.ToPolicy();
+
+        Assert.Equal(4, policy.MaxAttempts);
+        Assert.Equal(TimeSpan.FromMilliseconds(20), policy.GetDelay(1));
+        Assert.Equal(TimeSpan.FromMilliseconds(60), policy.GetDelay(2));
+    }
+
     [Fact]
     public void SecretSourceResolvesExactlyOneConfiguredSource()
     {

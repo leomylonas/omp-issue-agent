@@ -26,6 +26,8 @@ builder.Services.AddSingleton(services => EffectiveConfigurationResolver.Resolve
     services.GetRequiredService<Microsoft.Extensions.Options.IOptions<IssueAgentOptions>>().Value,
     Environment.GetEnvironmentVariable,
     File.ReadAllText));
+builder.Services.AddSingleton(services =>
+    services.GetRequiredService<Microsoft.Extensions.Options.IOptions<IssueAgentOptions>>().Value.Retry.ToPolicy());
 builder.Services.AddSingleton<ProviderRegistry>();
 builder.Services.AddSingleton<IReadOnlyCollection<IssueAgent.Providers.IGitProvider>>(services =>
     services.GetRequiredService<ProviderRegistry>().All);
@@ -85,7 +87,7 @@ builder.Services.AddSingleton<IssueAgent.Workflow.IWorkflowNotifier>(services =>
     }
     var inner = new IssueAgent.Notifications.FanOutNotifier(
         sinks,
-        IssueAgent.Notifications.RetryPolicy.Default,
+        services.GetRequiredService<IssueAgent.Domain.RetryPolicy>(),
         routing,
         (sinkName, notification, exception) =>
         {

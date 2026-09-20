@@ -26,6 +26,8 @@ internal sealed class FakeGitRepositoryManager : IGitRepositoryManager
         ValueTask.FromResult(true);
 
     public ValueTask CreateWorktreeAsync(string repositoryId, string worktreeId, string worktreePath, string branchName, string baseCommit, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    public ValueTask RenameWorktreeBranchAsync(string repositoryId, string worktreePath, string expectedCurrentBranch, string newBranchName, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
 
     public ValueTask ResetWorktreeAsync(string repositoryId, string worktreePath, string commit, CancellationToken cancellationToken) => ValueTask.CompletedTask;
 

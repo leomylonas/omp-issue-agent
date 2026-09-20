@@ -104,7 +104,11 @@ public sealed class ProviderRegistryTests
             new EffectiveOmpConfiguration("omp", null, null, new Dictionary<string, string>(), new Dictionary<string, string>(), new Dictionary<string, string>()),
             new EffectiveNotificationsConfiguration(ConfiguredTlsTrustMode.System, [], []));
 
-        return new ProviderRegistry(configuration, new IssueAgentMetrics(), LoggerFactory.Create(_ => { }));
+        return new ProviderRegistry(
+            configuration,
+            new IssueAgent.Domain.RetryPolicy { InitialDelay = TimeSpan.Zero, MaxJitter = TimeSpan.Zero },
+            new IssueAgentMetrics(),
+            LoggerFactory.Create(_ => { }));
     }
 
     private static EffectiveRepositoryConfiguration Repository(

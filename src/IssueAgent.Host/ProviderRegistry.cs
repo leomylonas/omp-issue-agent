@@ -1,4 +1,6 @@
 using IssueAgent.Configuration;
+using IssueAgent.Domain;
+
 using IssueAgent.Git;
 using IssueAgent.Observability;
 using IssueAgent.Providers;
@@ -16,12 +18,17 @@ public sealed class ProviderRegistry
     private readonly Dictionary<string, GitAuthentication> gitAuthentication;
     private readonly Dictionary<string, string?> gitHostByRepository;
     private readonly Dictionary<string, GitAuthentication> gitAuthenticationByHost;
-    public ProviderRegistry(EffectiveIssueAgentConfiguration configuration, IssueAgentMetrics metrics, ILoggerFactory loggerFactory)
+    public ProviderRegistry(
+        EffectiveIssueAgentConfiguration configuration,
+        RetryPolicy retryPolicy,
+        IssueAgentMetrics metrics,
+        ILoggerFactory loggerFactory)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(metrics);
         ArgumentNullException.ThrowIfNull(loggerFactory);
         var providerLogger = loggerFactory.CreateLogger<ObservableGitProvider>();
+        ArgumentNullException.ThrowIfNull(retryPolicy);
         var built = new Dictionary<string, IGitProvider>(StringComparer.OrdinalIgnoreCase);
         var authentication = new Dictionary<string, GitAuthentication>(StringComparer.OrdinalIgnoreCase);
         var gitHosts = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
@@ -29,7 +36,7 @@ public sealed class ProviderRegistry
         var ambiguousGitAuthenticationHosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var provider in configuration.Providers)
         {
-            var created = Create(provider.Source, provider.ApiToken, ResolveProviderTlsTrust(provider.Repositories));
+            var created = Create(provider.Source, provider.ApiToken, ResolveProviderTlsTrust(provider.Repositories), retryPolicy);
             if (!built.TryAdd(provider.Name, new ObservableGitProvider(created, metrics, providerLogger)))
             {
                 throw new InvalidOperationException($"Provider name '{provider.Name}' is configured more than once.");
@@ -94,15 +101,15 @@ public sealed class ProviderRegistry
     }
 
 
-    private static IGitProvider Create(ProviderOptions configuration, string? token, TlsTrust tlsTrust)
+    private static IGitProvider Create(ProviderOptions configuration, string? token, TlsTrust tlsTrust, RetryPolicy retryPolicy)
     {
         var trustedAuthorities = GetTrustedAttachmentAuthorities(configuration);
         return configuration.Kind switch
         {
             ProviderKind.GitHub => GitHubProviderFactory.Create(new GitHubProviderConfiguration(
-                configuration.Name, configuration.BaseUri, token, trustedAuthorities, tlsTrust)),
+                configuration.Name, configuration.BaseUri, token, trustedAuthorities, tlsTrust, retryPolicy)),
             ProviderKind.GitLab => GitLabProviderFactory.Create(new GitLabProviderConfiguration(
-                configuration.Name, configuration.BaseUri, token, trustedAuthorities, tlsTrust)),
+                configuration.Name, configuration.BaseUri, token, trustedAuthorities, tlsTrust, retryPolicy)),
             _ => throw new InvalidOperationException($"Unsupported provider kind '{configuration.Kind}'."),
         };
     }

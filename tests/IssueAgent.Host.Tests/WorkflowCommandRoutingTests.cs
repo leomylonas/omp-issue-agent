@@ -258,6 +258,30 @@ public sealed class WorkflowCommandRoutingTests
     }
 
     [Fact]
+    public async Task BootstrapWorktreeSetupExhaustsConfiguredRetriesInsteadOfReturningToNewPlanning()
+    {
+        var attempts = 0;
+        var expected = new IOException("worktree setup failed");
+
+        var failure = await WorkflowDispatcher.ExecuteBootstrapWorktreeSetupAsync(
+            _ =>
+            {
+                attempts++;
+                throw expected;
+            },
+            new RetryPolicy
+            {
+                MaxAttempts = 3,
+                InitialDelay = TimeSpan.Zero,
+                MaxJitter = TimeSpan.Zero,
+            },
+            TestContext.Current.CancellationToken);
+
+        Assert.Same(expected, failure);
+        Assert.Equal(3, attempts);
+    }
+
+    [Fact]
     public void SessionlessInitialPlanningCheckpointIsClassifiedForBoundedAgentExecution()
     {
         var checkpoint = CreateState(WorkflowPhase.Planning, WorkflowOperationalState.Working) with
@@ -346,6 +370,8 @@ public sealed class WorkflowCommandRoutingTests
             Directory.CreateDirectory(worktreePath);
             return ValueTask.CompletedTask;
         }
+        public ValueTask RenameWorktreeBranchAsync(string repositoryId, string worktreePath, string expectedCurrentBranch, string newBranchName, CancellationToken cancellationToken) => throw new NotSupportedException();
+
 
         public ValueTask ResetWorktreeAsync(string repositoryId, string worktreePath, string commit, CancellationToken cancellationToken)
         {

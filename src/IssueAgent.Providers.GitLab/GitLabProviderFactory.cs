@@ -1,4 +1,6 @@
 using System.Net.Http.Headers;
+using IssueAgent.Domain;
+
 using IssueAgent.Git;
 
 namespace IssueAgent.Providers.GitLab;
@@ -20,11 +22,12 @@ public static class GitLabProviderFactory
         var anonymousAttachmentClient = new HttpClient(TlsHttpHandlerFactory.CreateForAnonymousAttachmentDownloads(configuration.TlsTrust));
 
         return new GitLabProvider(
-            new GitLabApiClient(restHttpClient),
+            new GitLabApiClient(restHttpClient, configuration.RetryPolicy),
             authenticatedAttachmentClient,
             anonymousAttachmentClient,
             configuration.TrustedAttachmentAuthorities,
-            configuration.Name);
+            configuration.Name,
+            configuration.RetryPolicy);
     }
 
     private static void RequireHttpsForCredentials(Uri apiBaseUri, string? token)
@@ -54,7 +57,10 @@ public sealed record GitLabProviderConfiguration(
     Uri ApiBaseUri,
     string? Token,
     IReadOnlyList<string> TrustedAttachmentAuthorities,
-    TlsTrust? Trust = null)
+    TlsTrust? Trust = null,
+    RetryPolicy? Retry = null)
 {
     public TlsTrust TlsTrust { get; init; } = Trust ?? IssueAgent.Git.TlsTrust.System;
+
+    public RetryPolicy RetryPolicy { get; init; } = Retry ?? RetryPolicy.Default;
 }

@@ -1,6 +1,8 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using IssueAgent.Domain;
+
 
 namespace IssueAgent.Configuration;
 
@@ -14,6 +16,8 @@ public sealed record IssueAgentOptions
     public DateTimeOffset StartDate { get; init; } = DateTimeOffset.MinValue;
 
     public TimeSpan ShutdownGracePeriod { get; init; } = TimeSpan.FromSeconds(15);
+
+    public RetryOptions Retry { get; init; } = new();
 
     public ConcurrencyOptions Concurrency { get; init; } = new();
 
@@ -32,6 +36,26 @@ public sealed record ConcurrencyOptions
 
     public int Polling { get; init; } = 10;
 }
+
+public sealed record RetryOptions
+{
+    public int MaxAttempts { get; init; } = 3;
+
+    public TimeSpan InitialDelay { get; init; } = TimeSpan.FromSeconds(1);
+
+    public double BackoffMultiplier { get; init; } = 2.0;
+
+    public TimeSpan MaxJitter { get; init; } = TimeSpan.FromMilliseconds(250);
+
+    public RetryPolicy ToPolicy() => new()
+    {
+        MaxAttempts = MaxAttempts,
+        InitialDelay = InitialDelay,
+        BackoffMultiplier = BackoffMultiplier,
+        MaxJitter = MaxJitter,
+    };
+}
+
 
 public sealed record WorkspaceOptions
 {
@@ -179,6 +203,32 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
         if (options.ShutdownGracePeriod <= TimeSpan.Zero)
         {
             failures.Add("IssueAgent:ShutdownGracePeriod must be greater than zero.");
+        }
+
+        if (options.Retry is null)
+        {
+            failures.Add("IssueAgent:Retry is required.");
+        }
+        else
+        {
+            if (options.Retry.MaxAttempts is < 1 or > 10)
+            {
+                failures.Add("IssueAgent:Retry:MaxAttempts must be between 1 and 10.");
+            }
+            if (options.Retry.InitialDelay < TimeSpan.Zero || options.Retry.InitialDelay > TimeSpan.FromMinutes(1))
+            {
+                failures.Add("IssueAgent:Retry:InitialDelay must be between zero and one minute.");
+            }
+            if (!double.IsFinite(options.Retry.BackoffMultiplier) ||
+                options.Retry.BackoffMultiplier < 1 ||
+                options.Retry.BackoffMultiplier > 10)
+            {
+                failures.Add("IssueAgent:Retry:BackoffMultiplier must be a finite value between 1 and 10.");
+            }
+            if (options.Retry.MaxJitter < TimeSpan.Zero || options.Retry.MaxJitter > TimeSpan.FromMinutes(1))
+            {
+                failures.Add("IssueAgent:Retry:MaxJitter must be between zero and one minute.");
+            }
         }
 
         if (options.Concurrency.Agent <= 0 || options.Concurrency.Polling <= 0)

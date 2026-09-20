@@ -658,6 +658,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
         public ValueTask<string?> TryResolveRemoteBranchCommitAsync(string repositoryId, string branchName, CancellationToken cancellationToken) => inner.TryResolveRemoteBranchCommitAsync(repositoryId, branchName, cancellationToken);
         public ValueTask<bool> IsAncestorAsync(string repositoryId, string ancestorCommit, string descendantCommit, CancellationToken cancellationToken) => inner.IsAncestorAsync(repositoryId, ancestorCommit, descendantCommit, cancellationToken);
         public ValueTask CreateWorktreeAsync(string repositoryId, string worktreeId, string worktreePath, string branchName, string baseCommit, CancellationToken cancellationToken) => inner.CreateWorktreeAsync(repositoryId, worktreeId, worktreePath, branchName, baseCommit, cancellationToken);
+        public ValueTask RenameWorktreeBranchAsync(string repositoryId, string worktreePath, string expectedCurrentBranch, string newBranchName, CancellationToken cancellationToken) => inner.RenameWorktreeBranchAsync(repositoryId, worktreePath, expectedCurrentBranch, newBranchName, cancellationToken);
         public ValueTask ResetWorktreeAsync(string repositoryId, string worktreePath, string commit, CancellationToken cancellationToken) => inner.ResetWorktreeAsync(repositoryId, worktreePath, commit, cancellationToken);
 
         public ValueTask<bool> HasUncommittedChangesAsync(string repositoryId, string worktreePath, CancellationToken cancellationToken)

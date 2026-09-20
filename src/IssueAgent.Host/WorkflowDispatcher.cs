@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Diagnostics.Metrics;
 using System.Diagnostics;
 using IssueAgent.Configuration;
 using IssueAgent.Context;
@@ -169,22 +170,43 @@ public sealed partial class WorkflowDispatcher(
         var initialCheckpoint = await planning
             .CreateInitialCheckpointAsync(runtime.Config, issueNumber, cancellationToken)
             .ConfigureAwait(false);
-        var worktreePath = await planning
-            .EnsureInitialPlanningWorktreeAsync(runtime.Config, initialCheckpoint, cancellationToken)
+        string? worktreePath = null;
+        var bootstrapFailure = await ExecuteBootstrapWorktreeSetupAsync(
+                async retryToken => worktreePath = await planning
+                    .EnsureInitialPlanningWorktreeAsync(runtime.Config, initialCheckpoint, retryToken)
+                    .ConfigureAwait(false),
+                options.Value.Retry.ToPolicy(),
+                cancellationToken)
             .ConfigureAwait(false);
-        await using var omp = StartOmp(runtime, issueNumber, worktreePath);
+        if (bootstrapFailure is not null)
+        {
+            var outcome = await planning
+                .FailInitialPlanningBootstrapAsync(
+                    runtime.Config,
+                    issueNumber,
+                    initialCheckpoint,
+                    bootstrapFailure,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            RecordDurableWorkflowFailure(outcome, metrics.PlanErrors, runtime.Tags);
+            return;
+        }
+        var retainedWorktreePath = worktreePath!;
+        await using var omp = StartOmp(runtime, issueNumber, retainedWorktreePath);
         var stopwatch = Stopwatch.StartNew();
         metrics.PlanCount.Add(1, runtime.Tags);
         try
         {
-            await planning
+            var outcome = await planning
                 .RunInitialPlanningAsync(
                     runtime.Config,
                     issueNumber,
                     omp,
                     cancellationToken,
-                    initialCheckpoint: initialCheckpoint)
+                    initialCheckpoint: initialCheckpoint,
+                    initialWorktreePath: retainedWorktreePath)
                 .ConfigureAwait(false);
+            RecordDurableWorkflowFailure(outcome, metrics.PlanErrors, runtime.Tags);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -319,18 +341,39 @@ public sealed partial class WorkflowDispatcher(
 
             Directory.CreateDirectory(runtime.Config.WorkflowsStoragePath);
             var planning = new PlanningWorkflow(runtime.Dependencies);
-            var worktreePath = await planning
-                .EnsureInitialPlanningWorktreeAsync(runtime.Config, state, cancellationToken)
+            string? worktreePath = null;
+            var bootstrapFailure = await ExecuteBootstrapWorktreeSetupAsync(
+                    async retryToken => worktreePath = await planning
+                        .EnsureInitialPlanningWorktreeAsync(runtime.Config, state, retryToken)
+                        .ConfigureAwait(false),
+                    options.Value.Retry.ToPolicy(),
+                    cancellationToken)
                 .ConfigureAwait(false);
-            await using var initialPlanningOmp = StartOmp(runtime, issueNumber, worktreePath);
-            await planning
+            if (bootstrapFailure is not null)
+            {
+                var failedBootstrapOutcome = await planning
+                    .FailInitialPlanningBootstrapAsync(
+                        runtime.Config,
+                        issueNumber,
+                        state,
+                        bootstrapFailure,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                RecordDurableWorkflowFailure(failedBootstrapOutcome, metrics.PlanErrors, runtime.Tags);
+                return;
+            }
+            var retainedWorktreePath = worktreePath!;
+            await using var initialPlanningOmp = StartOmp(runtime, issueNumber, retainedWorktreePath);
+            var outcome = await planning
                 .RunInitialPlanningAsync(
                     runtime.Config,
                     issueNumber,
                     initialPlanningOmp,
                     cancellationToken,
-                    initialCheckpoint: state)
+                    initialCheckpoint: state,
+                    initialWorktreePath: retainedWorktreePath)
                 .ConfigureAwait(false);
+            RecordDurableWorkflowFailure(outcome, metrics.PlanErrors, runtime.Tags);
             return;
         }
 
@@ -440,25 +483,38 @@ public sealed partial class WorkflowDispatcher(
         if (implementation) metrics.ImplementationCount.Add(1, runtime.Tags);
         try
         {
+            WorkflowOutcome outcome;
             switch (command)
             {
                 case WorkflowCommand.Replan:
                     metrics.PlanCount.Add(1, runtime.Tags);
-                    await new PlanningWorkflow(runtime.Dependencies).RunReplanAsync(runtime.Config, issueNumber, state, omp, cancellationToken).ConfigureAwait(false);
+                    outcome = await new PlanningWorkflow(runtime.Dependencies)
+                        .RunReplanAsync(runtime.Config, issueNumber, state, omp, cancellationToken)
+                        .ConfigureAwait(false);
                     break;
                 case WorkflowCommand.Implement:
-                    await new ImplementationWorkflow(runtime.Dependencies).RunAsync(runtime.Config, runtime.WorkflowMode, issueNumber, state, omp, cancellationToken).ConfigureAwait(false);
+                    outcome = await new ImplementationWorkflow(runtime.Dependencies)
+                        .RunAsync(runtime.Config, runtime.WorkflowMode, issueNumber, state, omp, cancellationToken)
+                        .ConfigureAwait(false);
                     break;
                 case WorkflowCommand.Revise:
-                    await new RevisionWorkflow(runtime.Dependencies).RunAsync(
-                        runtime.Config,
-                        issueNumber,
-                        state,
-                        omp,
-                        cancellationToken,
-                        publishRetainedRevision).ConfigureAwait(false);
+                    outcome = await new RevisionWorkflow(runtime.Dependencies)
+                        .RunAsync(
+                            runtime.Config,
+                            issueNumber,
+                            state,
+                            omp,
+                            cancellationToken,
+                            publishRetainedRevision)
+                        .ConfigureAwait(false);
                     break;
+                default:
+                    throw new InvalidOperationException($"Unsupported workflow command '{command}'.");
             }
+            RecordDurableWorkflowFailure(
+                outcome,
+                implementation ? metrics.ImplementationErrors : metrics.PlanErrors,
+                runtime.Tags);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -528,6 +584,19 @@ public sealed partial class WorkflowDispatcher(
         initialCheckpoint = null!;
         return false;
     }
+
+    /// <summary>Runs the idempotent worktree creation step after its durable bootstrap checkpoint
+    /// with the global bounded retry policy. Callers persist the exhausted failure before returning
+    /// so polling cannot repeatedly treat the checkpoint as new planning work.</summary>
+    internal static Task<Exception?> ExecuteBootstrapWorktreeSetupAsync(
+        Func<CancellationToken, Task> createWorktree,
+        RetryPolicy retryPolicy,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(createWorktree);
+        ArgumentNullException.ThrowIfNull(retryPolicy);
+        return retryPolicy.ExecuteAsync(createWorktree, cancellationToken);
+    }
     // PollingScheduler executes reconciliation inline, but this recovery creates a new OMP
     // session and therefore must be admitted through the bounded agent worker pool.
     internal static WorkflowWorkPriority GetUncommandedExistingWorkflowPriority(ProviderComment canonicalComment) =>
@@ -546,6 +615,20 @@ public sealed partial class WorkflowDispatcher(
     private static bool HasRetainedRevisionCheckpoint(WorkflowState state, CanonicalCommentContent content) =>
         state.Phase == WorkflowPhase.Revising &&
         content.ImplementationResult is { Length: > 0 };
+
+    internal static void RecordDurableWorkflowFailure(
+        WorkflowOutcome outcome,
+        Counter<long> errorMetric,
+        TagList tags)
+    {
+        ArgumentNullException.ThrowIfNull(outcome);
+        ArgumentNullException.ThrowIfNull(errorMetric);
+
+        if (outcome.Status == WorkflowOutcomeStatus.Failed)
+        {
+            errorMetric.Add(1, tags);
+        }
+    }
 
     internal static bool ShouldPublishRetainedRevision(
         WorkflowState state,
@@ -689,7 +772,8 @@ public sealed partial class WorkflowDispatcher(
             runtime.Config.OmpArguments,
             workingDirectory,
             runtime.Config.OmpAllowedEnvironment,
-            options.Value.ShutdownGracePeriod);
+            options.Value.ShutdownGracePeriod,
+            options.Value.Retry.ToPolicy());
         var observableClient = new ObservableOmpClient(
             client,
             metrics,

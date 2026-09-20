@@ -1,3 +1,5 @@
+using IssueAgent.Domain;
+
 using IssueAgent.Workflow;
 
 namespace IssueAgent.Notifications.Tests;
@@ -76,7 +78,7 @@ public sealed class FanOutNotifierTests
         Assert.Single(flakySink.Received);
     }
 
-    private static RetryPolicy NoDelayRetryPolicy() => RetryPolicy.Default with { InitialDelay = TimeSpan.Zero };
+    private static RetryPolicy NoDelayRetryPolicy() => RetryPolicy.Default with { InitialDelay = TimeSpan.Zero, MaxJitter = TimeSpan.Zero };
 
     private sealed class RecordingSink(string name) : INotificationSink
     {

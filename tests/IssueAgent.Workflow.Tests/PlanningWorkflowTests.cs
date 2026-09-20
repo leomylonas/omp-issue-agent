@@ -61,6 +61,28 @@ public sealed class PlanningWorkflowTests : IDisposable
         Assert.Contains("Keep public APIs source-compatible.", Assert.Single(omp.RunRequests).Prompt, StringComparison.Ordinal);
         Assert.Equal(["repository-planner"], omp.SelectedRoles);
     }
+
+    [Fact]
+    public async Task RunInitialPlanningAsyncPublishesSanitizedSuggestedSlugForLongTitle()
+    {
+        var title = "Replace the legacy authentication transport with a resilient OAuth device authorization flow";
+        provider.AddIssue(Repository, 1, title, "Description");
+        var omp = new FakeOmpClient()
+            .EnqueueSessionId("session-1")
+            .EnqueueRun(new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"planText":"Replace the transport.","decisions":[],"suggestedSlug":"OAuth device / flow!!!"}"""));
+
+        var outcome = await CreateWorkflow().RunInitialPlanningAsync(CreateConfig(), 1, omp, CancellationToken.None);
+
+        const string expectedBranch = "agent/issue-1-oauth-device-flow";
+        Assert.Equal(expectedBranch, outcome.State.Branch);
+        var rename = Assert.Single(git.RenamedWorktreeBranches);
+        Assert.Equal(BranchNaming.DeriveBranchName(1, title), rename.ExpectedCurrentBranch);
+        Assert.Equal(expectedBranch, rename.NewBranchName);
+        Assert.Equal(expectedBranch, CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body).State.Branch);
+    }
     [Fact]
     public async Task RunInitialPlanningAsyncCreatesRetainedWorktreeBeforeStartingOmpSession()
     {

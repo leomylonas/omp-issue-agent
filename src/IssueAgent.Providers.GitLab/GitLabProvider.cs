@@ -3,6 +3,8 @@ using System.Net;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using IssueAgent.Providers;
+using IssueAgent.Domain;
+
 
 namespace IssueAgent.Providers.GitLab;
 
@@ -20,11 +22,13 @@ public sealed class GitLabProvider(
     HttpClient authenticatedAttachmentClient,
     HttpClient anonymousAttachmentClient,
     IReadOnlyList<string> trustedAttachmentAuthorities,
-    string name) : IGitProvider
+    string name,
+    RetryPolicy? configuredRetryPolicy = null) : IGitProvider
 {
     private const string DraftTitlePrefix = "Draft: ";
 
     public string Name { get; } = name;
+    private readonly RetryPolicy retryPolicy = configuredRetryPolicy ?? RetryPolicy.Default;
 
     public async ValueTask<ProviderIdentity> GetCurrentIdentityAsync(CancellationToken cancellationToken)
     {
@@ -299,7 +303,8 @@ public sealed class GitLabProvider(
                     attachment.SuggestedFileName,
                     token).ConfigureAwait(false);
             },
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            retryPolicy).ConfigureAwait(false);
         return new DownloadedAttachment(destinationPath, Path.GetFileName(destinationPath), totalRead);
     }
 

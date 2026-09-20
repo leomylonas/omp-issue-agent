@@ -1,6 +1,8 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json.Nodes;
 
+using IssueAgent.Domain;
+
 namespace IssueAgent.Omp;
 
 /// <summary>OMP client over the pinned executable's typed NDJSON RPC protocol.</summary>
@@ -8,11 +10,13 @@ public sealed class OmpProcessClient(
     NdjsonRpcTransport transport,
     TimeSpan shutdownGracePeriod,
     string sessionDirectory,
-    TimeSpan? abortGracePeriod = null) : IOmpClient
+    TimeSpan? abortGracePeriod = null,
+    RetryPolicy? configuredRetryPolicy = null) : IOmpClient
 {
     private readonly string sessionDirectory = NormalizeSessionDirectory(sessionDirectory);
     private readonly TimeSpan abortGracePeriod = abortGracePeriod ?? TimeSpan.FromSeconds(5);
     private readonly SemaphoreSlim dispatchGate = new(1, 1);
+    private readonly RetryPolicy retryPolicy = configuredRetryPolicy ?? RetryPolicy.Default;
     private int cancellationRequested;
 
     public async ValueTask<OmpSession> CreateSessionAsync(string role, CancellationToken cancellationToken)
@@ -23,8 +27,7 @@ public sealed class OmpProcessClient(
                 null,
                 cancellationToken).ConfigureAwait(false))
             .ConfigureAwait(false);
-        var state = RequireData(
-            await transport.SendCommandAsync("get_state", null, cancellationToken).ConfigureAwait(false));
+        var state = RequireData(await GetStateAsync(cancellationToken).ConfigureAwait(false));
         var sessionId = RequireString(state, "sessionId");
         return new OmpSession(sessionId, role, RequireSessionFile(ExtractSessionFile(state, sessionId)));
     }
@@ -41,8 +44,7 @@ public sealed class OmpProcessClient(
             new JsonObject { ["sessionPath"] = persistedSessionFile },
             cancellationToken).ConfigureAwait(false);
         await RequireSuccessAsync(response).ConfigureAwait(false);
-        var state = RequireData(
-            await transport.SendCommandAsync("get_state", null, cancellationToken).ConfigureAwait(false));
+        var state = RequireData(await GetStateAsync(cancellationToken).ConfigureAwait(false));
         var activeSessionId = RequireString(state, "sessionId");
         if (!string.Equals(activeSessionId, sessionId, StringComparison.Ordinal))
         {
@@ -56,8 +58,7 @@ public sealed class OmpProcessClient(
 
     internal async ValueTask<OmpModel> GetSelectedModelAsync(CancellationToken cancellationToken)
     {
-        var state = RequireData(
-            await transport.SendCommandAsync("get_state", null, cancellationToken).ConfigureAwait(false));
+        var state = RequireData(await GetStateAsync(cancellationToken).ConfigureAwait(false));
         var model = state["model"] as JsonObject
             ?? throw new OmpRpcException("OMP state was missing the selected model.");
         return new OmpModel(
@@ -213,6 +214,11 @@ public sealed class OmpProcessClient(
         await transport.DisposeAsync().ConfigureAwait(false);
         dispatchGate.Dispose();
     }
+
+    private Task<System.Text.Json.Nodes.JsonObject> GetStateAsync(CancellationToken cancellationToken) =>
+        retryPolicy.ExecuteAsync(
+            token => transport.SendCommandAsync("get_state", null, token),
+            cancellationToken);
 
     private static string NormalizeSessionDirectory(string value)
     {

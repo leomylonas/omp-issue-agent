@@ -1,6 +1,8 @@
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 
+using IssueAgent.Domain;
+
 namespace IssueAgent.Providers.GitHub;
 
 /// <summary>
@@ -9,8 +11,9 @@ namespace IssueAgent.Providers.GitHub;
 /// preview fields. Parent/child, blocks/blocked-by, and duplicate relationships require those
 /// additional preview APIs and are out of scope for this slice.
 /// </summary>
-public sealed partial class GitHubTimelineClient(HttpClient httpClient)
+public sealed partial class GitHubTimelineClient(HttpClient httpClient, RetryPolicy? configuredRetryPolicy = null)
 {
+    private readonly RetryPolicy retryPolicy = configuredRetryPolicy ?? RetryPolicy.Default;
     /// <summary>Hard ceiling on timeline pages walked per issue (specification §27's bounded-
     /// resource intent). An issue with more history than this is vanishingly unlikely; exceeding it
     /// throws rather than silently truncating the relationship set.</summary>
@@ -33,7 +36,8 @@ public sealed partial class GitHubTimelineClient(HttpClient httpClient)
 
             using var response = await ProviderRetryPolicy.SendAsync(
                 token => httpClient.GetAsync($"repos/{owner}/{name}/issues/{issueNumber}/timeline?per_page=100&page={page}", token),
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                retryPolicy: retryPolicy).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
 
             var events = await response.Content

@@ -1,4 +1,7 @@
+using IssueAgent.Domain;
+
 namespace IssueAgent.Omp;
+
 
 /// <summary>Starts the pinned OMP executable and returns a fully wired <see cref="IOmpClient"/>.</summary>
 public static class OmpProcessClientFactory
@@ -8,7 +11,8 @@ public static class OmpProcessClientFactory
         IReadOnlyList<string> arguments,
         string workingDirectory,
         IReadOnlyDictionary<string, string> allowedEnvironment,
-        TimeSpan? shutdownGracePeriod = null)
+        TimeSpan? shutdownGracePeriod = null,
+        RetryPolicy? retryPolicy = null)
     {
         var sessionDirectory = FindSessionDirectory(arguments);
         return new OmpRoleProcessClient(
@@ -17,7 +21,8 @@ public static class OmpProcessClientFactory
             workingDirectory,
             allowedEnvironment,
             shutdownGracePeriod ?? TimeSpan.FromSeconds(15),
-            sessionDirectory);
+            sessionDirectory,
+            retryPolicy ?? RetryPolicy.Default);
     }
 
     private static string FindSessionDirectory(IReadOnlyList<string> arguments)

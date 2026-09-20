@@ -4,6 +4,10 @@ IssueAgent__Concurrency__Agent: {{ .Values.config.concurrencyAgent | quote }}
 IssueAgent__Concurrency__Polling: {{ .Values.config.concurrencyPolling | quote }}
 IssueAgent__Workspace__RootPath: /data
 IssueAgent__Omp__ExecutablePath: {{ .Values.config.ompExecutablePath | quote }}
+IssueAgent__Retry__MaxAttempts: {{ .Values.config.retryMaxAttempts | quote }}
+IssueAgent__Retry__InitialDelay: {{ .Values.config.retryInitialDelay | quote }}
+IssueAgent__Retry__BackoffMultiplier: {{ .Values.config.retryBackoffMultiplier | quote }}
+IssueAgent__Retry__MaxJitter: {{ .Values.config.retryMaxJitter | quote }}
 {{- range $key, $value := .Values.config.extra }}
 {{ $key }}: {{ $value | quote }}
 {{- end }}

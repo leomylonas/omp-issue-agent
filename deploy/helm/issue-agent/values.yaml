@@ -73,6 +73,10 @@ config:
   concurrencyAgent: 3
   concurrencyPolling: 10
   ompExecutablePath: /usr/local/bin/omp-unprivileged
+  retryMaxAttempts: 3
+  retryInitialDelay: "00:00:01"
+  retryBackoffMultiplier: "2.0"
+  retryMaxJitter: "00:00:00.250"
   traceSamplingRatio: "1.0"
   otlpEndpoint: ""
   extra: {}

@@ -4,6 +4,8 @@ using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
 using IssueAgent.Providers;
+using IssueAgent.Domain;
+
 using Octokit;
 
 namespace IssueAgent.Providers.GitHub;
@@ -24,8 +26,10 @@ public sealed class GitHubProvider(
     HttpClient anonymousAttachmentClient,
     IReadOnlyList<string> trustedAttachmentAuthorities,
     bool trustsGitHubDotComAttachmentHosts,
-    string name) : IGitProvider
+    string name,
+    RetryPolicy? configuredRetryPolicy = null) : IGitProvider
 {
+    private readonly RetryPolicy retryPolicy = configuredRetryPolicy ?? RetryPolicy.Default;
     public string Name { get; } = name;
 
     public async ValueTask<ProviderIdentity> GetCurrentIdentityAsync(CancellationToken cancellationToken)
@@ -175,7 +179,8 @@ public sealed class GitHubProvider(
                 };
                 return await mutationClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
             },
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            retryPolicy: retryPolicy).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         var comment = await response.Content.ReadFromJsonAsync<GitHubCommentResponse>(cancellationToken: cancellationToken)
             .ConfigureAwait(false) ?? throw new InvalidOperationException("GitHub did not return the updated comment.");
@@ -216,7 +221,8 @@ public sealed class GitHubProvider(
                     new Uri($"repos/{workItem.Repository.OwnerOrNamespace}/{workItem.Repository.Name}/issues/{checked((int)workItem.Number)}/labels/{Uri.EscapeDataString(label)}", UriKind.Relative));
                 return await mutationClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
             },
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            retryPolicy: retryPolicy).ConfigureAwait(false);
         if (response.StatusCode != HttpStatusCode.NotFound)
         {
             response.EnsureSuccessStatusCode();
@@ -384,10 +390,11 @@ public sealed class GitHubProvider(
                     attachment.SuggestedFileName,
                     token).ConfigureAwait(false);
             },
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            retryPolicy).ConfigureAwait(false);
         return new DownloadedAttachment(destinationPath, Path.GetFileName(destinationPath), totalRead);
     }
-    private static async Task<T> ExecuteReadWithCancellationAsync<T>(
+    private async Task<T> ExecuteReadWithCancellationAsync<T>(
         Func<CancellationToken, Task<IApiResponse<T>>> execute,
         CancellationToken cancellationToken)
     {
@@ -482,7 +489,7 @@ public sealed class GitHubProvider(
         }
     }
 
-    private static Task<T> ExecuteWithRetryAsync<T>(
+    private Task<T> ExecuteWithRetryAsync<T>(
         Func<CancellationToken, Task<T>> execute,
         CancellationToken cancellationToken,
         bool isIdempotent = true) =>
@@ -503,7 +510,7 @@ public sealed class GitHubProvider(
         return response.Body;
     }
 
-    private static async Task<T> ExecuteWithRetryAsync<T>(
+    private async Task<T> ExecuteWithRetryAsync<T>(
         Func<Task<T>> execute,
         CancellationToken cancellationToken,
         bool isIdempotent = true)
@@ -515,28 +522,28 @@ public sealed class GitHubProvider(
             {
                 return await execute().WaitAsync(cancellationToken).ConfigureAwait(false);
             }
-            catch (RateLimitExceededException exception) when (attempt < 3)
+            catch (RateLimitExceededException exception) when (attempt < retryPolicy.MaxAttempts)
             {
                 var delay = exception.GetRetryAfterTimeSpan();
                 await DelayForProviderInstructionAsync(delay, cancellationToken).ConfigureAwait(false);
             }
-            catch (SecondaryRateLimitExceededException exception) when (attempt < 3)
+            catch (SecondaryRateLimitExceededException exception) when (attempt < retryPolicy.MaxAttempts)
             {
                 await DelayForProviderInstructionAsync(
                     GetSecondaryRetryAfter(exception) ?? GetSecondaryFallbackDelay(attempt),
                     cancellationToken).ConfigureAwait(false);
             }
-            catch (ApiException exception) when (isIdempotent && ((int)exception.StatusCode == (int)HttpStatusCode.RequestTimeout || (int)exception.StatusCode >= 500) && attempt < 3)
+            catch (ApiException exception) when (isIdempotent && ((int)exception.StatusCode == (int)HttpStatusCode.RequestTimeout || (int)exception.StatusCode >= 500) && attempt < retryPolicy.MaxAttempts)
             {
-                await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                await Task.Delay(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
             }
-            catch (HttpRequestException) when (isIdempotent && attempt < 3)
+            catch (HttpRequestException) when (isIdempotent && attempt < retryPolicy.MaxAttempts)
             {
-                await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                await Task.Delay(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (isIdempotent && !cancellationToken.IsCancellationRequested && attempt < 3)
+            catch (OperationCanceledException) when (isIdempotent && !cancellationToken.IsCancellationRequested && attempt < retryPolicy.MaxAttempts)
             {
-                await Task.Delay(GetTransientRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+                await Task.Delay(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -560,8 +567,6 @@ public sealed class GitHubProvider(
         yield return delay <= TimeSpan.Zero ? TimeSpan.Zero : delay;
     }
 
-    private static TimeSpan GetTransientRetryDelay(int attempt) =>
-        TimeSpan.FromMilliseconds(100 * Math.Pow(2, attempt - 1) + Random.Shared.Next(0, 100));
 
     private static TimeSpan? GetSecondaryRetryAfter(SecondaryRateLimitExceededException exception)
     {
@@ -585,10 +590,10 @@ public sealed class GitHubProvider(
         return null;
     }
 
-    private static TimeSpan GetSecondaryFallbackDelay(int attempt) =>
-        TimeSpan.FromMinutes(Math.Min(5, Math.Pow(2, attempt - 1)));
+    private TimeSpan GetSecondaryFallbackDelay(int attempt) => retryPolicy.GetDelay(attempt);
 
     private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(5);
+
     private static ProviderComment ToProviderComment(GitHubCommentResponse comment, long issueNumber) => new(
         comment.Id,
         comment.User.Login,

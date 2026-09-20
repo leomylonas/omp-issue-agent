@@ -11,5 +11,6 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/IssueAgent.Configuration/IssueAgent.Configuration.csproj" />
+    <ProjectReference Include="../../src/IssueAgent.Domain/IssueAgent.Domain.csproj" />
   </ItemGroup>
 </Project>

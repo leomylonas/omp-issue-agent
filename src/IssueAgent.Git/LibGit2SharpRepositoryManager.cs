@@ -220,6 +220,34 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         return ValueTask.CompletedTask;
     }
 
+    public ValueTask RenameWorktreeBranchAsync(
+        string repositoryId,
+        string worktreePath,
+        string expectedCurrentBranch,
+        string newBranchName,
+        CancellationToken cancellationToken)
+    {
+        using var repo = new Repository(worktreePath);
+        if (!string.Equals(repo.Head.FriendlyName, expectedCurrentBranch, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Retained worktree '{worktreePath}' is checked out on '{repo.Head.FriendlyName}', not expected branch '{expectedCurrentBranch}'.");
+        }
+
+        if (string.Equals(expectedCurrentBranch, newBranchName, StringComparison.Ordinal))
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        if (repo.Branches[newBranchName] is not null)
+        {
+            throw new InvalidOperationException($"Cannot rename branch '{expectedCurrentBranch}' to existing branch '{newBranchName}'.");
+        }
+
+        repo.Branches.Rename(repo.Head, newBranchName);
+        return ValueTask.CompletedTask;
+    }
+
     public ValueTask ResetWorktreeAsync(string repositoryId, string worktreePath, string commit, CancellationToken cancellationToken)
     {
         using var repo = new Repository(worktreePath);

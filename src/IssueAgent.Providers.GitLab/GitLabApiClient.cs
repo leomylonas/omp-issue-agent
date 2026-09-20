@@ -2,12 +2,14 @@ using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 
+using IssueAgent.Domain;
+
 namespace IssueAgent.Providers.GitLab;
 
 /// <summary>Thin typed REST client for the GitLab API v4 surface IssueAgent needs. GitLab access
 /// never uses NGitLab in production; this hand-rolled client keeps the dependency footprint small
 /// and the JSON contract explicit.</summary>
-public sealed partial class GitLabApiClient(HttpClient httpClient)
+public sealed partial class GitLabApiClient(HttpClient httpClient, RetryPolicy retryPolicy)
 {
 
     public async Task<GitLabProject> GetProjectAsync(string projectId, CancellationToken cancellationToken) =>
@@ -113,7 +115,8 @@ public sealed partial class GitLabApiClient(HttpClient httpClient)
     {
         using var response = await ProviderRetryPolicy.SendAsync(
             token => httpClient.GetAsync(relativeUrl, token),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            retryPolicy: retryPolicy).ConfigureAwait(false);
         if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
             return default;
@@ -137,7 +140,8 @@ public sealed partial class GitLabApiClient(HttpClient httpClient)
 
             using var response = await ProviderRetryPolicy.SendAsync(
                 token => httpClient.GetAsync(nextUrl, token),
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                retryPolicy: retryPolicy).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
             var page = await response.Content.ReadFromJsonAsync(typeInfo, cancellationToken).ConfigureAwait(false) ?? [];
             results.AddRange(page);
@@ -186,7 +190,7 @@ public sealed partial class GitLabApiClient(HttpClient httpClient)
     {
         using var response = await ProviderRetryPolicy.SendAsync(
             token => httpClient.PostAsJsonAsync(relativeUrl, body, requestType, token),
-            cancellationToken, isIdempotent: false).ConfigureAwait(false);
+            cancellationToken, isIdempotent: false, retryPolicy: retryPolicy).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync(responseType, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"GitLab POST {relativeUrl} returned an empty body.");
@@ -197,7 +201,8 @@ public sealed partial class GitLabApiClient(HttpClient httpClient)
     {
         using var response = await ProviderRetryPolicy.SendAsync(
             token => httpClient.PutAsJsonAsync(relativeUrl, body, requestType, token),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            retryPolicy: retryPolicy).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync(responseType, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"GitLab PUT {relativeUrl} returned an empty body.");
