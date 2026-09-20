@@ -28,6 +28,8 @@ public sealed record CanonicalStateDocument
     public required string TargetBranch { get; init; }
     public required string BaseCommit { get; init; }
     public string? PendingBranch { get; init; }
+    public string? ExpectedImplementationHead { get; init; }
+    public string? PublicationStage { get; init; }
     public string? PullOrMergeRequest { get; init; }
     public required DateTimeOffset UpdatedAt { get; init; }
     public DateTimeOffset? ReviewFeedbackCutoff { get; init; }
@@ -86,6 +88,8 @@ public static partial class CanonicalStateSerializer
         PendingBranch = state.PendingBranch,
         TargetBranch = state.TargetBranch,
         BaseCommit = state.BaseCommit,
+        ExpectedImplementationHead = state.ExpectedImplementationHead,
+        PublicationStage = state.PublicationStage is { } publicationStage ? ToKebabCase(publicationStage.ToString()) : null,
         PullOrMergeRequest = pullOrMergeRequest,
         UpdatedAt = state.UpdatedAt,
         ReviewFeedbackCutoff = state.ReviewFeedbackCutoff,
@@ -102,6 +106,11 @@ public static partial class CanonicalStateSerializer
         if (!Guid.TryParse(document.WorkflowId, out var workflowIdValue))
         {
             throw new CanonicalStateException($"Canonical state workflowId '{document.WorkflowId}' is not a valid identifier.");
+        }
+
+        if (document.PublicationStage is not null && document.ExpectedImplementationHead is null)
+        {
+            throw new CanonicalStateException("Canonical state publicationStage requires expectedImplementationHead.");
         }
 
         var branch = ValidateBranchName(document.Branch, "branch");
@@ -125,7 +134,9 @@ public static partial class CanonicalStateSerializer
             document.InterruptedPhase is { } interruptedPhase ? ParseEnum<WorkflowPhase>(interruptedPhase, "interruptedPhase") : null,
             document.ReviewFeedbackCutoff,
             document.ReviewFeedbackIds is null ? null : new HashSet<string>(document.ReviewFeedbackIds, StringComparer.Ordinal),
-            document.PendingBranch is null ? null : ValidateBranchName(document.PendingBranch, "pendingBranch"));
+            document.PendingBranch is null ? null : ValidateBranchName(document.PendingBranch, "pendingBranch"),
+            document.ExpectedImplementationHead is null ? null : ValidateCommitSha(document.ExpectedImplementationHead),
+            document.PublicationStage is null ? null : ParseEnum<ImplementationPublicationStage>(document.PublicationStage, "publicationStage"));
     }
 
     [GeneratedRegex(@"^[A-Za-z0-9]([A-Za-z0-9._/-]*[A-Za-z0-9])?$")]

@@ -49,6 +49,9 @@ public sealed class ImplementationWorkflowTests : IDisposable
         Assert.Contains("Fixes #1", provider.MergeRequests[1].Description, StringComparison.Ordinal);
         var updated = provider.UpdatedComments[^1];
         Assert.Contains("Added a guard clause.", updated.Body, StringComparison.Ordinal);
+        var publishedState = CanonicalCommentMarkdown.Parse(updated.Body).State;
+        Assert.Equal(git.BranchCommitToReturn, publishedState.ExpectedImplementationHead);
+        Assert.Equal("branch-published", publishedState.PublicationStage);
         Assert.Contains(provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)], l => l == "agent:phase:review");
         Assert.Equal(1, git.PublishChangedSubmodulesCallCount);
     }
@@ -88,6 +91,29 @@ public sealed class ImplementationWorkflowTests : IDisposable
         git.OnLfsUpload = () => provider.AddComment(Repository, 1, "alice", "Please include this constraint.", clock.UtcNow.AddMinutes(1));
         var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
             "session-1", clock.UtcNow,
+            """{"summary":"Implemented.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await CreateWorkflow().RunAsync(CreateConfig(), WorkflowMode.Full, 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WaitingReason.NewInputDuringImplementation, outcome.State.WaitingReason);
+        Assert.Equal(0, git.PushCallCount);
+        Assert.Empty(provider.MergeRequests);
+    }
+
+    [Fact]
+    public async Task RunAsyncTreatsHumanCopiedLocatorAsNewInputDuringPublication()
+    {
+        var state = await SeedApprovedPlanAsync();
+        git.LfsRequired = true;
+        git.OnLfsUpload = () => provider.AddComment(
+            Repository,
+            1,
+            "alice",
+            CanonicalCommentMarkdown.StateLocatorMarker,
+            clock.UtcNow.AddMinutes(1));
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
             """{"summary":"Implemented.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
 
         var outcome = await CreateWorkflow().RunAsync(CreateConfig(), WorkflowMode.Full, 1, state, omp, CancellationToken.None);
@@ -304,6 +330,8 @@ public sealed class ImplementationWorkflowTests : IDisposable
             Phase = WorkflowPhase.Implementing,
             OperationalState = WorkflowOperationalState.Waiting,
             WaitingReason = WaitingReason.ManualIntervention,
+            ExpectedImplementationHead = git.RemoteBranchCommitToReturn,
+            PublicationStage = ImplementationPublicationStage.BranchPublished,
         };
         var canonical = Assert.Single(provider.IssueComments[(Repository.Id, 1)]);
         var existing = CanonicalCommentMarkdown.Parse(canonical.Body);
@@ -333,6 +361,87 @@ public sealed class ImplementationWorkflowTests : IDisposable
         Assert.Empty(omp.RunRequests);
         Assert.Single(provider.MergeRequests);
         Assert.Contains("Durably recorded implementation summary.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunAsyncDoesNotRecoverOrCreateMergeRequestFromAnOlderDeterministicBranch()
+    {
+        var plannedState = await SeedApprovedPlanAsync();
+        var interruptedState = plannedState with
+        {
+            Phase = WorkflowPhase.Implementing,
+            OperationalState = WorkflowOperationalState.Waiting,
+            WaitingReason = WaitingReason.ManualIntervention,
+            ExpectedImplementationHead = "beadfeed",
+            PublicationStage = ImplementationPublicationStage.BranchPublished,
+        };
+        var canonical = Assert.Single(provider.IssueComments[(Repository.Id, 1)]);
+        var existing = CanonicalCommentMarkdown.Parse(canonical.Body);
+        await provider.UpdateIssueCommentAsync(
+            Repository,
+            1,
+            canonical.Id,
+            CanonicalCommentMarkdown.Render(existing with
+            {
+                ImplementationResult = "**Durably recorded implementation summary.**",
+                State = CanonicalStateSerializer.ToDocument(interruptedState, null),
+            }),
+            CancellationToken.None);
+        git.RemoteBranchCommitToReturn = "deadbeef";
+
+        var omp = new FakeOmpClient();
+        var outcome = await CreateWorkflow().RunAsync(
+            CreateConfig(),
+            WorkflowMode.Full,
+            1,
+            interruptedState,
+            omp,
+            CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WaitingReason.ManualIntervention, outcome.State.WaitingReason);
+        Assert.Empty(omp.RunRequests);
+        Assert.Empty(provider.MergeRequests);
+        Assert.Contains("does not match the checkpointed implementation head", outcome.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunAsyncDoesNotCreateMergeRequestBeforeTheBranchPublishedCheckpoint()
+    {
+        var plannedState = await SeedApprovedPlanAsync();
+        var interruptedState = plannedState with
+        {
+            Phase = WorkflowPhase.Implementing,
+            OperationalState = WorkflowOperationalState.Waiting,
+            WaitingReason = WaitingReason.ManualIntervention,
+            ExpectedImplementationHead = git.RemoteBranchCommitToReturn,
+            PublicationStage = ImplementationPublicationStage.ResultCheckpointed,
+        };
+        var canonical = Assert.Single(provider.IssueComments[(Repository.Id, 1)]);
+        var existing = CanonicalCommentMarkdown.Parse(canonical.Body);
+        await provider.UpdateIssueCommentAsync(
+            Repository,
+            1,
+            canonical.Id,
+            CanonicalCommentMarkdown.Render(existing with
+            {
+                ImplementationResult = "**Durably recorded implementation summary.**",
+                State = CanonicalStateSerializer.ToDocument(interruptedState, null),
+            }),
+            CancellationToken.None);
+
+        var outcome = await CreateWorkflow().RunAsync(
+            CreateConfig(),
+            WorkflowMode.Full,
+            1,
+            interruptedState,
+            new FakeOmpClient(),
+            CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WaitingReason.ManualIntervention, outcome.State.WaitingReason);
+        Assert.Empty(provider.MergeRequests);
+        Assert.Contains("branch-published checkpoint is missing", outcome.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -554,6 +663,8 @@ public sealed class ImplementationWorkflowTests : IDisposable
             WaitingReason = WaitingReason.ManualIntervention,
             ReviewFeedbackCutoff = checkpointCutoff,
             ReviewFeedbackIds = new HashSet<string>(StringComparer.Ordinal) { "comment:1" },
+            ExpectedImplementationHead = git.RemoteBranchCommitToReturn,
+            PublicationStage = ImplementationPublicationStage.BranchPublished,
         };
         var canonical = Assert.Single(provider.IssueComments[(Repository.Id, 1)]);
         var content = CanonicalCommentMarkdown.Parse(canonical.Body);

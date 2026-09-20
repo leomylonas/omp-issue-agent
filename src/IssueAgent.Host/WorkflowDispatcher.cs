@@ -332,19 +332,36 @@ public sealed partial class WorkflowDispatcher(
 
         var command = commandResolution.Command;
         var publishRetainedRevision = false;
-        if (IsInitialPlanningBootstrapCheckpoint(state) && command is null)
+        var initialPlanningBootstrap = IsInitialPlanningBootstrapCheckpoint(state) &&
+            (command is null or WorkflowCommand.Continue);
+        var recoveringFailedInitialPlanningBootstrap =
+            TryGetFailedInitialPlanningBootstrapRecoveryCheckpoint(command, state, out var recoveredInitialCheckpoint);
+        if (initialPlanningBootstrap || recoveringFailedInitialPlanningBootstrap)
         {
-            if (reconciled.Disposition != ReconciliationDisposition.ResumeAllowed)
+            if (!recoveringFailedInitialPlanningBootstrap &&
+                command is null &&
+                reconciled.Disposition != ReconciliationDisposition.ResumeAllowed)
             {
                 return;
             }
 
+            if (initialPlanningBootstrap && command == WorkflowCommand.Continue)
+            {
+                await ConsumeCommandAsync(
+                    runtime.Provider, runtime.Repository, issueNumber, mergeRequest?.Number,
+                    commandResolution.Sources, WorkflowCommand.Continue, cancellationToken).ConfigureAwait(false);
+            }
+
             Directory.CreateDirectory(runtime.Config.WorkflowsStoragePath);
             var planning = new PlanningWorkflow(runtime.Dependencies);
+            var initialCheckpoint = recoveringFailedInitialPlanningBootstrap
+                ? await planning.ResumeInitialPlanningBootstrapAsync(
+                    runtime.Config, issueNumber, recoveredInitialCheckpoint, cancellationToken).ConfigureAwait(false)
+                : state;
             string? worktreePath = null;
             var bootstrapFailure = await ExecuteBootstrapWorktreeSetupAsync(
                     async retryToken => worktreePath = await planning
-                        .EnsureInitialPlanningWorktreeAsync(runtime.Config, state, retryToken)
+                        .EnsureInitialPlanningWorktreeAsync(runtime.Config, initialCheckpoint, retryToken)
                         .ConfigureAwait(false),
                     options.Value.Retry.ToPolicy(),
                     cancellationToken)
@@ -355,7 +372,7 @@ public sealed partial class WorkflowDispatcher(
                     .FailInitialPlanningBootstrapAsync(
                         runtime.Config,
                         issueNumber,
-                        state,
+                        initialCheckpoint,
                         bootstrapFailure,
                         cancellationToken)
                     .ConfigureAwait(false);
@@ -370,7 +387,7 @@ public sealed partial class WorkflowDispatcher(
                     issueNumber,
                     initialPlanningOmp,
                     cancellationToken,
-                    initialCheckpoint: state,
+                    initialCheckpoint: initialCheckpoint,
                     initialWorktreePath: retainedWorktreePath)
                 .ConfigureAwait(false);
             RecordDurableWorkflowFailure(outcome, metrics.PlanErrors, runtime.Tags);
@@ -610,6 +627,30 @@ public sealed partial class WorkflowDispatcher(
         state.PlanRevision == 0 &&
         string.IsNullOrEmpty(state.OmpSessionId) &&
         state.OmpSessionFile is null;
+
+    /// <summary>Recognizes a failed worktree-only planning bootstrap whose explicit continue
+    /// command must create a new initial OMP session rather than resume a nonexistent one.</summary>
+    internal static bool TryGetFailedInitialPlanningBootstrapRecoveryCheckpoint(
+        WorkflowCommand? command,
+        WorkflowState state,
+        out WorkflowState initialCheckpoint)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        if (command == WorkflowCommand.Continue &&
+            state.Phase == WorkflowPhase.Failed &&
+            state.InterruptedPhase == WorkflowPhase.Planning &&
+            state.PlanRevision == 0 &&
+            string.IsNullOrEmpty(state.OmpSessionId) &&
+            state.OmpSessionFile is null)
+        {
+            initialCheckpoint = state;
+            return true;
+        }
+
+        initialCheckpoint = null!;
+        return false;
+    }
 
 
     private static bool HasRetainedRevisionCheckpoint(WorkflowState state, CanonicalCommentContent content) =>

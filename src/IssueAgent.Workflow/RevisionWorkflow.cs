@@ -364,7 +364,8 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
 
         await foreach (var thread in deps.Provider.GetReviewThreadsAsync(repository, mergeRequestNumber, cancellationToken).ConfigureAwait(false))
         {
-            entries.Add($"thread:{thread.Id}:resolved={thread.IsResolved}");
+            entries.Add(ThreadResolutionEntry(thread.Id, thread.IsResolved));
+            ids.Add(ThreadResolutionEntry(thread.Id, thread.IsResolved));
             foreach (var comment in thread.Comments)
             {
                 var isAuthoritativeCanonicalComment = CanonicalCommentMarkdown.IsCanonicalComment(comment.Body) &&
@@ -415,6 +416,11 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                            mergeRequestNumber,
                            cancellationToken).ConfigureAwait(false))
         {
+            if (observedFeedbackIds is null || !observedFeedbackIds.Contains(ThreadResolutionEntry(thread.Id, thread.IsResolved)))
+            {
+                return true;
+            }
+
             foreach (var comment in thread.Comments)
             {
                 if (IsHumanFeedback(config, comment) &&
@@ -440,16 +446,30 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         DateTimeOffset cutoff,
         HashSet<string>? observedFeedbackIds)
     {
-        if ((comment.UpdatedAt ?? comment.CreatedAt) > cutoff || observedFeedbackIds is null)
+        if ((comment.UpdatedAt ?? comment.CreatedAt) > cutoff)
         {
-            return (comment.UpdatedAt ?? comment.CreatedAt) > cutoff;
+            return true;
+        }
+
+        if (observedFeedbackIds is null)
+        {
+            return false;
+        }
+
+        if (comment.ThreadId is { } threadId &&
+            !observedFeedbackIds.Contains(ThreadResolutionEntry(threadId, comment.IsResolved)))
+        {
+            return true;
         }
 
         var id = comment.CommentId is { } commentId
-            ? comment.ThreadId is { } threadId ? $"thread:{threadId}:{commentId}" : $"comment:{commentId}"
+            ? comment.ThreadId is { } commentThreadId ? $"thread:{commentThreadId}:{commentId}" : $"comment:{commentId}"
             : null;
         return id is null || !observedFeedbackIds.Contains(id);
     }
+
+    private static string ThreadResolutionEntry(string threadId, bool isResolved) =>
+        $"thread:{threadId}:resolved={isResolved}";
 
     private Task<WorkflowOutcome> PauseForMaterialDeviationAsync(
         WorkflowRepositoryConfig config,

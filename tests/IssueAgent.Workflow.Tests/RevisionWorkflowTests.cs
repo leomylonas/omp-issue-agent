@@ -469,6 +469,89 @@ public sealed class RevisionWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsyncRecoveryTreatsThreadResolutionChangeAfterPublicationAsNewFeedback()
+    {
+        var state = await SeedReviewStateAsync();
+        provider.ReviewThreads[(Repository.Id, 1)] =
+        [
+            new ProviderReviewThread(
+                "thread-1",
+                IsResolved: true,
+                [
+                    new ProviderComment(
+                        2,
+                        "carol",
+                        "Please handle this review concern.",
+                        clock.UtcNow,
+                        clock.UtcNow,
+                        new AttachmentSource("review-thread-comment", "2"),
+                        false),
+                ]),
+        ];
+        var workflow = new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock));
+        await workflow.RunAsync(
+            CreateConfig(),
+            1,
+            state,
+            new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"summary":"Addressed review concern.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}""")),
+            CancellationToken.None);
+
+        var publishedCheckpoint = CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body);
+        var publishedState = CanonicalStateSerializer.ToWorkflowState(publishedCheckpoint.State);
+        Assert.Contains("thread:thread-1:resolved=True", publishedState.ReviewFeedbackIds!);
+        provider.ReviewThreads[(Repository.Id, 1)] =
+        [
+            new ProviderReviewThread(
+                "thread-1",
+                IsResolved: false,
+                [
+                    new ProviderComment(
+                        2,
+                        "carol",
+                        "Please handle this review concern.",
+                        clock.UtcNow,
+                        clock.UtcNow,
+                        new AttachmentSource("review-thread-comment", "2"),
+                        false),
+                ]),
+        ];
+        var recoveryState = publishedState with
+        {
+            Phase = WorkflowPhase.Revising,
+            OperationalState = WorkflowOperationalState.Working,
+            WaitingReason = null,
+        };
+        var canonical = Assert.Single(provider.IssueComments[(Repository.Id, 1)]);
+        var content = CanonicalCommentMarkdown.Parse(canonical.Body);
+        await provider.UpdateIssueCommentAsync(
+            Repository,
+            1,
+            canonical.Id,
+            CanonicalCommentMarkdown.Render(content with
+            {
+                State = CanonicalStateSerializer.ToDocument(recoveryState, content.State.PullOrMergeRequest),
+            }),
+            CancellationToken.None);
+
+        var resumedOmp = new FakeOmpClient();
+        var outcome = await workflow.RunAsync(
+            CreateConfig(),
+            1,
+            recoveryState,
+            resumedOmp,
+            CancellationToken.None,
+            publishRetainedResult: true);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WaitingReason.NewFeedbackDuringRevision, outcome.State.WaitingReason);
+        Assert.Empty(resumedOmp.RunRequests);
+        Assert.Equal(1, git.PushCallCount);
+    }
+
+    [Fact]
     public async Task RunAsyncFailsClosedWhenReviewFeedbackCheckpointIsMissing()
     {
         var state = await SeedReviewStateAsync();

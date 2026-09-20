@@ -282,6 +282,32 @@ public sealed class WorkflowCommandRoutingTests
     }
 
     [Fact]
+    public void ContinueForFailedPreSessionPlanningBootstrapRestartsInitialPlanning()
+    {
+        var failedBootstrap = CreateState(WorkflowPhase.Failed, WorkflowOperationalState.Waiting) with
+        {
+            PlanRevision = 0,
+            ApprovedPlanRevision = null,
+            OmpSessionId = string.Empty,
+            OmpSessionFile = null,
+            InterruptedPhase = WorkflowPhase.Planning,
+        };
+
+        var recognized = WorkflowDispatcher.TryGetFailedInitialPlanningBootstrapRecoveryCheckpoint(
+            WorkflowCommand.Continue,
+            failedBootstrap,
+            out var initialCheckpoint);
+
+        Assert.True(recognized);
+        Assert.Equal(failedBootstrap, initialCheckpoint);
+        Assert.Equal(WorkflowCommand.Replan, WorkflowCommandRouting.ContinueRoute(failedBootstrap, failedBootstrap));
+        Assert.False(WorkflowDispatcher.TryGetFailedInitialPlanningBootstrapRecoveryCheckpoint(
+            WorkflowCommand.Continue,
+            failedBootstrap with { OmpSessionFile = "/sessions/session-1.jsonl" },
+            out _));
+    }
+
+    [Fact]
     public void SessionlessInitialPlanningCheckpointIsClassifiedForBoundedAgentExecution()
     {
         var checkpoint = CreateState(WorkflowPhase.Planning, WorkflowOperationalState.Working) with

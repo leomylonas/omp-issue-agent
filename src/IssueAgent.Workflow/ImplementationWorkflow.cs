@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using IssueAgent.Context;
 using IssueAgent.Domain;
 using IssueAgent.Omp;
@@ -358,10 +360,19 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                 cancellationToken).ConfigureAwait(false);
         }
 
-        // Durable pre-publication checkpoint: from this point, an interrupted attempt can be safely
-        // recovered by republishing this exact result once the branch and MR/PR are also confirmed
-        // to exist (see TryRecoverPublishedImplementationAsync).
-        var checkpointContent = workingContent with { ImplementationResult = resultMarkdown };
+        // Durable pre-publication checkpoint: it binds the recorded result to this exact local
+        // head, but explicitly does not claim the ref was published yet. Recovery may not infer a
+        // successful push from a deterministic branch name or an older remote ref.
+        var checkpointState = workingState with
+        {
+            ExpectedImplementationHead = headCommit,
+            PublicationStage = ImplementationPublicationStage.ResultCheckpointed,
+        };
+        var checkpointContent = workingContent with
+        {
+            ImplementationResult = resultMarkdown,
+            State = CanonicalStateSerializer.ToDocument(checkpointState, workingContent.State.PullOrMergeRequest),
+        };
         await UpsertCanonicalCommentAsync(config, issueNumber, checkpointContent, cancellationToken).ConfigureAwait(false);
 
         await deps.Git.PublishChangedSubmodulesAsync(
@@ -402,22 +413,32 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
 
         await deps.Git.PushAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
 
+        // Only this persisted stage authorizes recovery to create a PR/MR. If this checkpoint is
+        // absent after a crash, retain the result for human recovery rather than guessing whether
+        // an identically named branch is this attempt's publication.
+        var publishedBranchState = checkpointState with { PublicationStage = ImplementationPublicationStage.BranchPublished };
+        checkpointContent = checkpointContent with
+        {
+            State = CanonicalStateSerializer.ToDocument(publishedBranchState, checkpointContent.State.PullOrMergeRequest),
+        };
+        await UpsertCanonicalCommentAsync(config, issueNumber, checkpointContent, cancellationToken).ConfigureAwait(false);
+
         var mergeRequest = await FindOrCreateMergeRequestAsync(
-            config, issueNumber, issue, workingState, resultMarkdown, cancellationToken).ConfigureAwait(false);
+            config, issueNumber, issue, publishedBranchState, resultMarkdown, cancellationToken).ConfigureAwait(false);
 
         return await PublishReviewAsync(
             config,
             issueNumber,
-            workingState,
+            publishedBranchState,
             checkpointContent,
             mergeRequest,
             resultMarkdown,
             cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>Recovers an interrupted implementation attempt when the result was durably
-    /// recorded and the remote branch is present. The PR/MR may have been the operation interrupted
-    /// after push and before request creation, so recovery finds or creates it from that branch.</summary>
+    /// <summary>Recovers an interrupted implementation attempt only after the canonical
+    /// checkpoint proves this exact head was pushed. A deterministic branch name or a stale
+    /// remote ref is not evidence that this attempt may create or recover a review request.</summary>
     private async Task<WorkflowOutcome?> TryRecoverPublishedImplementationAsync(
         WorkflowRepositoryConfig config,
         long issueNumber,
@@ -430,12 +451,35 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             return null;
         }
 
+        if (currentState.PublicationStage != ImplementationPublicationStage.BranchPublished ||
+            currentState.ExpectedImplementationHead is not { Length: > 0 } expectedHead)
+        {
+            return await PauseAsync(
+                config,
+                issueNumber,
+                currentState,
+                existingContent,
+                implementationResult,
+                WaitingReason.ManualIntervention,
+                "Cannot recover implementation publication: the durable branch-published checkpoint is missing.",
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        await deps.Git.FetchAsync(config.Repository.Id, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
         var remoteBranchHead = await deps.Git
             .TryResolveRemoteBranchCommitAsync(config.Repository.Id, currentState.Branch, cancellationToken)
             .ConfigureAwait(false);
-        if (remoteBranchHead is null)
+        if (!string.Equals(remoteBranchHead, expectedHead, StringComparison.Ordinal))
         {
-            return null;
+            return await PauseAsync(
+                config,
+                issueNumber,
+                currentState,
+                existingContent,
+                implementationResult,
+                WaitingReason.ManualIntervention,
+                "Cannot recover implementation publication: the remote branch does not match the checkpointed implementation head.",
+                cancellationToken).ConfigureAwait(false);
         }
 
         var issue = await deps.Provider.GetIssueAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
@@ -689,17 +733,25 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
     {
         var issue = await deps.Provider.GetIssueAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
         var commentStamps = new List<string>();
+        string? authoritativeAuthor = null;
         await foreach (var comment in deps.Provider
             .GetIssueCommentsAsync(config.Repository, issueNumber, cancellationToken)
             .ConfigureAwait(false))
         {
-            if ((!config.IgnoreBotComments || !comment.IsBot) && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
+            var isAuthoritativeCanonicalComment = CanonicalCommentMarkdown.IsCanonicalComment(comment.Body) &&
+                CanonicalCommentMarkdown.IsAuthoritativeCanonicalComment(
+                    comment,
+                    authoritativeAuthor ??= await CanonicalCommentLocator
+                        .ResolveAuthoritativeIdentityAsync(deps.Provider, config.CanonicalCommentAuthor, cancellationToken)
+                        .ConfigureAwait(false));
+            if ((!config.IgnoreBotComments || !comment.IsBot) && !isAuthoritativeCanonicalComment)
             {
-                commentStamps.Add($"{comment.Id}:{comment.UpdatedAt:O}");
+                commentStamps.Add($"{comment.Id}:{comment.UpdatedAt:O}:{comment.Body}");
             }
         }
 
-        return new InputSnapshot(issue.Title, issue.Description, string.Join('|', commentStamps));
+        var digest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('|', commentStamps))));
+        return new InputSnapshot(issue.Title, issue.Description, digest);
     }
 
     private async Task<WorkflowOutcome> FailAsync(WorkflowRepositoryConfig config, long issueNumber, WorkflowState workingState, string message, CancellationToken cancellationToken)

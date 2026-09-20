@@ -67,6 +67,43 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             cancellationToken).ConfigureAwait(false);
         return worktreePath;
     }
+    /// <summary>Restores a failed pre-session bootstrap to its durable initial-planning
+    /// checkpoint after a human explicitly acknowledges the infrastructure failure.</summary>
+    public async Task<WorkflowState> ResumeInitialPlanningBootstrapAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState failedBootstrapState,
+        CancellationToken cancellationToken)
+    {
+        var initialState = failedBootstrapState with
+        {
+            Phase = WorkflowPhase.Planning,
+            OperationalState = WorkflowOperationalState.Working,
+            WaitingReason = null,
+            OmpSessionId = string.Empty,
+            OmpSessionFile = null,
+            InterruptedPhase = null,
+            UpdatedAt = deps.Clock.UtcNow,
+        };
+        await UpsertCanonicalCommentAsync(
+            config,
+            issueNumber,
+            new CanonicalCommentContent(
+                "Planning is in progress.",
+                [],
+                null,
+                CanonicalStateSerializer.ToDocument(initialState, pullOrMergeRequest: null)),
+            cancellationToken).ConfigureAwait(false);
+        await TransitionLabelsAsync(
+            config,
+            issueNumber,
+            WorkflowPhase.Planning,
+            WorkflowOperationalState.Working,
+            [WorkflowCommand.Continue],
+            cancellationToken).ConfigureAwait(false);
+        return initialState;
+    }
+
 
 
     /// <summary>Runs initial planning from its durable identity checkpoint.</summary>

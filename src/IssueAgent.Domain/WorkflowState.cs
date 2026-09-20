@@ -28,6 +28,14 @@ public enum WorkflowOperationalState
     Waiting,
 }
 
+/// <summary>Durable checkpoints for first implementation publication. Recovery may create a
+/// review request only after the exact expected head was pushed.</summary>
+public enum ImplementationPublicationStage
+{
+    ResultCheckpointed,
+    BranchPublished,
+}
+
 /// <summary>Human action or safety condition that requires an explicit decision.</summary>
 public enum WaitingReason
 {
@@ -99,7 +107,9 @@ public sealed record WorkflowState(
     WorkflowPhase? InterruptedPhase = null,
     DateTimeOffset? ReviewFeedbackCutoff = null,
     IReadOnlySet<string>? ReviewFeedbackIds = null,
-    string? PendingBranch = null)
+    string? PendingBranch = null,
+    string? ExpectedImplementationHead = null,
+    ImplementationPublicationStage? PublicationStage = null)
 {
     public void EnsureValid()
     {
@@ -121,6 +131,11 @@ public sealed record WorkflowState(
         if (OperationalState == WorkflowOperationalState.Working && WaitingReason is not null)
         {
             throw new InvalidOperationException("Working workflows cannot record a waiting reason.");
+        }
+
+        if (PublicationStage is not null && ExpectedImplementationHead is null)
+        {
+            throw new InvalidOperationException("Implementation publication stage requires an expected implementation head.");
         }
     }
 }
