@@ -178,14 +178,24 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                     cancellationToken).ConfigureAwait(false);
             }
 
+            ImplementationResult conflictResult;
             try
             {
-                _ = ImplementationResult.Parse(conflictOutcome.Completed!.ResultJson);
+                conflictResult = ImplementationResult.Parse(conflictOutcome.Completed!.ResultJson);
             }
             catch (WorkflowContractException exception)
             {
                 return await FailAsync(config, issueNumber, workingState, exception.Message, cancellationToken).ConfigureAwait(false);
             }
+
+            if (conflictResult.IsMaterialDeviation)
+            {
+                return await PauseForMaterialDeviationAsync(
+                    config, issueNumber, workingState, publicationCheckpoint, conflictResult, cancellationToken).ConfigureAwait(false);
+            }
+
+            resultMarkdown = conflictResult.RenderMarkdown();
+            publicationCheckpoint = publicationCheckpoint with { ImplementationResult = resultMarkdown };
         }
 
         var feedbackAfterRevision = await CaptureFeedbackSnapshotAsync(config, config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);

@@ -43,8 +43,7 @@ public sealed class GitLfsTests : IDisposable
 
         await manager.MaterializeLfsContentAsync("lfs-repo-3", worktreePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
 
-        using var repo = new Repository(worktreePath);
-        var hooksDir = Path.Combine(repo.Info.Path, "issueagent-disabled-hooks");
+        var hooksDir = Path.Combine(reposRoot, "lfs-repo-3", "issueagent-disabled-hooks");
         Assert.True(Directory.Exists(hooksDir));
         Assert.Empty(Directory.GetFiles(hooksDir));
     }

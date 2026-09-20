@@ -84,6 +84,32 @@ public sealed class PlanningWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunInitialPlanningAsyncReusesCheckpointedWorkspaceAfterRestart()
+    {
+        provider.AddIssue(Repository, 1, "Bug", "Description");
+        var workflow = CreateWorkflow();
+        var checkpoint = await workflow.CreateInitialCheckpointAsync(CreateConfig(), 1, CancellationToken.None);
+        Directory.CreateDirectory(Path.Combine(workspaceRoot, checkpoint.WorkflowId.ToString(), "worktree"));
+        var omp = new FakeOmpClient()
+            .EnqueueSessionId("session-recovered")
+            .EnqueueRun(new OmpCompletedEvent(
+                "session-recovered",
+                clock.UtcNow,
+                """{"planText":"Recovered plan.","decisions":[]}"""));
+
+        var outcome = await workflow.RunInitialPlanningAsync(
+            CreateConfig(),
+            1,
+            omp,
+            CancellationToken.None,
+            initialCheckpoint: checkpoint);
+
+        Assert.Equal(checkpoint.WorkflowId, outcome.State.WorkflowId);
+        Assert.Empty(git.CreatedWorktrees);
+        Assert.Equal("session-recovered", outcome.State.OmpSessionId);
+    }
+
+    [Fact]
     public async Task RunInitialPlanningAsyncMaterializesLfsWhenRequired()
     {
         provider.AddIssue(Repository, 1, "Add large asset", "Needs an LFS-tracked binary.");

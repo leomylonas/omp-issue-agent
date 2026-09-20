@@ -201,6 +201,34 @@ public sealed class RevisionWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsyncPausesForMaterialDeviationFromConflictResolutionBeforeLfsOrPush()
+    {
+        var state = await SeedReviewStateAsync();
+        git.MergeSucceeds = false;
+        git.LfsRequired = true;
+        var lfsUploadAttempted = false;
+        git.OnLfsUpload = () => lfsUploadAttempted = true;
+        var omp = new FakeOmpClient()
+            .EnqueueRun(new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"summary":"Revision.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""))
+            .EnqueueRun(new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"summary":"Conflict requires a new service boundary.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":["The merge conflict requires an unapproved service boundary."],"risks":[],"isMaterialDeviation":true,"materialDeviationExplanation":"Resolving the target conflict requires an unapproved service boundary."}"""));
+
+        var outcome = await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WaitingReason.MaterialPlanDeviation, outcome.State.WaitingReason);
+        Assert.False(lfsUploadAttempted);
+        Assert.Equal(0, git.PushCallCount);
+        Assert.Contains("Conflict requires a new service boundary.", CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body).ImplementationResult, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RunAsyncFailsWithoutPublishingWhenConflictResolutionDoesNotContainTarget()
     {
         var state = await SeedReviewStateAsync();

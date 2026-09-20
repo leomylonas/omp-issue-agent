@@ -14,9 +14,9 @@ namespace IssueAgent.Git;
 /// for the remote-touching operations (clone, fetch, push); all local operations (worktrees,
 /// branch resolution, reset, merge, rebase) still use LibGit2Sharp regardless of transport.
 ///
-/// Every bare repository and worktree gets an explicit, empty <c>core.hooksPath</c> so no Git hook
-/// can ever execute, and remote-touching git CLI calls run with <c>GIT_CONFIG_NOSYSTEM=1</c> and an
-/// isolated <c>HOME</c>/<c>XDG_CONFIG_HOME</c> so ambient host/global Git config is never inherited.
+/// Every bare repository and worktree configures a host-owned, empty <c>core.hooksPath</c> so no
+/// Git hook can ever execute. Remote-touching git CLI calls run with <c>GIT_CONFIG_NOSYSTEM=1</c>
+/// and an isolated <c>HOME</c>/<c>XDG_CONFIG_HOME</c> so ambient host/global Git config is never inherited.
 /// </summary>
 public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRepositoryManager
 {
@@ -28,6 +28,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         var path = BareRepositoryPath(repositoryId);
         if (Repository.IsValid(path))
         {
+            DisableHooks(path);
             HardenBareRepositoryAuthority(path);
             return;
         }
@@ -534,8 +535,20 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
     private static void DisableHooks(string repositoryOrWorktreePath)
     {
         using var repo = new Repository(repositoryOrWorktreePath);
-        var hooksDir = Path.Combine(repo.Info.Path, "issueagent-disabled-hooks");
+        var gitDirectoryPath = Path.GetFullPath(repo.Info.Path);
+        var commonDirectoryMarkerPath = Path.Combine(gitDirectoryPath, "commondir");
+        var commonGitDirectoryPath = File.Exists(commonDirectoryMarkerPath)
+            ? Path.GetFullPath(File.ReadAllText(commonDirectoryMarkerPath).Trim(), gitDirectoryPath)
+            : gitDirectoryPath;
+        var hooksDir = Path.Combine(commonGitDirectoryPath, "issueagent-disabled-hooks");
         Directory.CreateDirectory(hooksDir);
+        if (OperatingSystem.IsLinux())
+        {
+            File.SetUnixFileMode(
+                hooksDir,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
         repo.Config.Set("core.hooksPath", hooksDir, ConfigurationLevel.Local);
     }
 

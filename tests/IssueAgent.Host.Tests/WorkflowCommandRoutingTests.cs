@@ -257,6 +257,30 @@ public sealed class WorkflowCommandRoutingTests
         }
     }
 
+    [Fact]
+    public void RecoverableInitialPlanningCheckpointIsRoutedForBootstrapReuse()
+    {
+        var checkpoint = CreateState(WorkflowPhase.Planning, WorkflowOperationalState.Working) with
+        {
+            PlanRevision = 0,
+            OmpSessionId = string.Empty,
+            OmpSessionFile = null,
+        };
+        var canonical = new ProviderComment(
+            1,
+            "issue-agent",
+            CanonicalCommentMarkdown.Render(Content(checkpoint)),
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            new AttachmentSource("issue-comment", "1"),
+            IsBot: true);
+
+        var recognized = WorkflowDispatcher.TryGetInitialPlanningCheckpoint(canonical, out var recovered);
+
+        Assert.True(recognized);
+        Assert.Equal(checkpoint, recovered);
+    }
+
     private static WorkflowState ReviewState() => CreateState(WorkflowPhase.Review, WorkflowOperationalState.Waiting) with
     {
         WorkflowId = new WorkflowId(Guid.Parse("11111111-1111-1111-1111-111111111111")),

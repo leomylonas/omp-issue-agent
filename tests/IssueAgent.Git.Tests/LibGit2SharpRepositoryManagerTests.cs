@@ -17,11 +17,12 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
         cleanupPaths.Add(reposRoot);
     }
 
-    private static void RunGitCli(string workingDirectory, params string[] arguments)
+    private static string RunGitCli(string workingDirectory, params string[] arguments)
     {
         var startInfo = new ProcessStartInfo("git")
         {
             WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
         };
@@ -31,12 +32,15 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
         }
 
         using var process = Process.Start(startInfo)!;
+        var stdout = process.StandardOutput.ReadToEnd();
         var stderr = process.StandardError.ReadToEnd();
         process.WaitForExit();
         if (process.ExitCode != 0)
         {
             throw new InvalidOperationException($"git {string.Join(' ', arguments)} failed: {stderr}");
         }
+
+        return stdout;
     }
 
     [Fact]
@@ -284,6 +288,48 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
         Assert.True((File.GetUnixFileMode(reposRoot) & UnixFileMode.GroupExecute) != 0);
         Assert.True((File.GetUnixFileMode(Path.GetDirectoryName(worktreePath)!) & UnixFileMode.GroupExecute) != 0);
         Assert.Equal(bareHeadMode, File.GetUnixFileMode(bareHeadPath));
+    }
+
+    [Fact]
+    public async Task CreateWorktreeAsyncConfiguresHostOwnedHooksDirectoryForGitCli()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out var baseCommit));
+        await manager.EnsureBareRepositoryAsync("repo-hooks-permissions", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var barePath = Path.Combine(reposRoot, "repo-hooks-permissions");
+        var legacyHooksPath = Path.Combine(barePath, "old-disabled-hooks");
+        Directory.CreateDirectory(legacyHooksPath);
+        File.SetUnixFileMode(legacyHooksPath, File.GetUnixFileMode(legacyHooksPath) | UnixFileMode.GroupWrite);
+        using (var bareRepository = new Repository(barePath))
+        {
+            bareRepository.Config.Set("core.hooksPath", legacyHooksPath, ConfigurationLevel.Local);
+        }
+
+        await manager.EnsureBareRepositoryAsync("repo-hooks-permissions", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
+        await manager.CreateWorktreeAsync("repo-hooks-permissions", "wt-hooks", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
+
+        var hooksPath = Path.Combine(barePath, "issueagent-disabled-hooks");
+
+        var sentinelPath = Path.Combine(worktreePath, "pre-commit-fired");
+        var realHookPath = Path.Combine(barePath, "hooks", "pre-commit");
+        File.WriteAllText(realHookPath, $"#!/bin/sh\ntouch \"{sentinelPath}\"\n");
+        File.SetUnixFileMode(realHookPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        Assert.Equal(hooksPath, RunGitCli(worktreePath, "config", "--get", "core.hooksPath").Trim());
+        Assert.Equal(
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute,
+            File.GetUnixFileMode(hooksPath));
+
+        File.WriteAllText(Path.Combine(worktreePath, "new-file.txt"), "content");
+        RunGitCli(worktreePath, "add", "new-file.txt");
+        RunGitCli(worktreePath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Verify hooks stay disabled");
+
+        Assert.False(File.Exists(sentinelPath));
     }
 
     [Fact]

@@ -15,34 +15,25 @@ namespace IssueAgent.Workflow;
 /// </summary>
 public sealed class PlanningWorkflow(WorkflowDependencies deps)
 {
-    /// <summary>Runs initial planning for a newly eligible assignment end to end: creates the
-    /// workflow id, OMP session, and canonical comment; prepares the retained worktree; plans; and
-    /// publishes the plan with the workflow set to planned/waiting.</summary>
-    public async Task<WorkflowOutcome> RunInitialPlanningAsync(
+    /// <summary>Creates the durable identity checkpoint for a first planning attempt before any
+    /// retained worktree or OMP session exists.</summary>
+    public async Task<WorkflowState> CreateInitialCheckpointAsync(
         WorkflowRepositoryConfig config,
         long issueNumber,
-        IOmpClient omp,
         CancellationToken cancellationToken,
         WorkflowId? suppliedWorkflowId = null)
     {
         ArgumentNullException.ThrowIfNull(config);
-        ArgumentNullException.ThrowIfNull(omp);
         var workflowId = suppliedWorkflowId ?? WorkflowId.New();
-        Activity.Current?.SetTag("WorkflowId", workflowId.ToString());
         var issue = await deps.Provider.GetIssueAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
         var targetBranch = config.TargetBranchOverride;
         var baseCommit = await deps.Git.ResolveBranchCommitAsync(config.Repository.Id, targetBranch, cancellationToken).ConfigureAwait(false);
-
-        var session = await omp.CreateSessionAsync(config.PlanningRole, cancellationToken).ConfigureAwait(false);
-        var branchName = BranchNaming.DeriveBranchName(issueNumber, issue.Title);
         var initialState = new WorkflowState(
             workflowId, WorkflowPhase.Planning, WorkflowOperationalState.Working, null,
-            PlanRevision: 0, ApprovedPlanRevision: null, session.SessionId, branchName, targetBranch, baseCommit,
-            deps.Clock.UtcNow, PlanInputHasher.Compute(issue.Title, issue.Description), session.SessionFile);
+            PlanRevision: 0, ApprovedPlanRevision: null, OmpSessionId: string.Empty,
+            BranchNaming.DeriveBranchName(issueNumber, issue.Title), targetBranch, baseCommit,
+            deps.Clock.UtcNow, PlanInputHasher.Compute(issue.Title, issue.Description));
 
-        // Publish the planning/working checkpoint before creating any retained local state or
-        // invoking OMP. A restart can therefore distinguish an interrupted first attempt from a
-        // never-started workflow and preserve the stable workflow/session identity.
         await UpsertCanonicalCommentAsync(
             config,
             issueNumber,
@@ -52,16 +43,56 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
                 null,
                 CanonicalStateSerializer.ToDocument(initialState, pullOrMergeRequest: null)),
             cancellationToken).ConfigureAwait(false);
-
         await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Planning, WorkflowOperationalState.Working, [], cancellationToken)
             .ConfigureAwait(false);
+        return initialState;
+    }
 
+    /// <summary>Runs initial planning from its durable identity checkpoint.</summary>
+    public async Task<WorkflowOutcome> RunInitialPlanningAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        IOmpClient omp,
+        CancellationToken cancellationToken,
+        WorkflowId? suppliedWorkflowId = null,
+        WorkflowState? initialCheckpoint = null)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(omp);
+        var initialState = initialCheckpoint
+            ?? await CreateInitialCheckpointAsync(config, issueNumber, cancellationToken, suppliedWorkflowId).ConfigureAwait(false);
+        Activity.Current?.SetTag("WorkflowId", initialState.WorkflowId.ToString());
+
+        if (initialState.OmpSessionFile is null)
+        {
+            var session = await omp.CreateSessionAsync(config.PlanningRole, cancellationToken).ConfigureAwait(false);
+            initialState = initialState with { OmpSessionId = session.SessionId, OmpSessionFile = session.SessionFile };
+            await UpsertCanonicalCommentAsync(
+                config,
+                issueNumber,
+                new CanonicalCommentContent(
+                    "Planning is in progress.",
+                    [],
+                    null,
+                    CanonicalStateSerializer.ToDocument(initialState, pullOrMergeRequest: null)),
+                cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            await omp.ResumeSessionAsync(initialState.OmpSessionId, initialState.OmpSessionFile, cancellationToken).ConfigureAwait(false);
+        }
+
+        var workflowId = initialState.WorkflowId;
         var worktreePath = WorktreePath(config, workflowId);
-        var attachmentsPath = AttachmentsPath(config, workflowId);
-        await deps.Git.CreateWorktreeAsync(config.Repository.Id, workflowId.ToString(), worktreePath, branchName, baseCommit, cancellationToken)
-            .ConfigureAwait(false);
+        if (!Directory.Exists(worktreePath))
+        {
+            await deps.Git.CreateWorktreeAsync(
+                config.Repository.Id, workflowId.ToString(), worktreePath, initialState.Branch, initialState.BaseCommit, cancellationToken)
+                .ConfigureAwait(false);
+        }
         await PrepareWorktreeContentAsync(config, worktreePath, cancellationToken).ConfigureAwait(false);
         var planningInput = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
+        var attachmentsPath = AttachmentsPath(config, workflowId);
         var context = await deps.ContextBuilder
             .BuildAsync(config.Repository, issueNumber, initialState, currentPlan: null, mergeRequest: null, attachmentsPath, cancellationToken)
             .ConfigureAwait(false);
@@ -69,7 +100,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         var prompt = config.ApplyInstructions(PlanningPromptBuilder.BuildInitialPlanPrompt(context));
         await omp.SelectRoleAsync(config.PlanningRole, cancellationToken).ConfigureAwait(false);
         var outcome = await OmpRunCollector
-            .RunToCompletionAsync(omp, new OmpRunRequest(session.SessionId, worktreePath, prompt, config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
+            .RunToCompletionAsync(omp, new OmpRunRequest(initialState.OmpSessionId, worktreePath, prompt, config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
             .ConfigureAwait(false);
 
         if (!outcome.Succeeded)
@@ -82,7 +113,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         {
             var planningResult = PlanningResult.Parse(outcome.Completed!.ResultJson);
             var reconciledResult = await ReconcileNewInputDuringPlanningAsync(
-                config, issueNumber, omp, session.SessionId, worktreePath, context, planningResult, planningInput, currentPlan: null, cancellationToken)
+                config, issueNumber, omp, initialState.OmpSessionId, worktreePath, context, planningResult, planningInput, currentPlan: null, cancellationToken)
                 .ConfigureAwait(false);
             return await PublishPlanAsync(
                 config,

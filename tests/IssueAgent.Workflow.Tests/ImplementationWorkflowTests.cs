@@ -213,6 +213,39 @@ public sealed class ImplementationWorkflowTests : IDisposable
 
 
     [Fact]
+    public async Task RunAsyncPausesForMaterialDeviationFromFirstPublicationConflictResolutionBeforeLfsOrPush()
+    {
+        var state = await SeedApprovedPlanAsync();
+        git.BranchCommitToReturn = "latest-target";
+        git.LfsRequired = true;
+        var lfsUploadAttempted = false;
+        git.OnLfsUpload = () => lfsUploadAttempted = true;
+        var omp = new FakeOmpClient()
+            .EnqueueRun(new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"summary":"Implemented.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""))
+            .EnqueueRun(new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"summary":"Conflict requires a migration.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":["The target conflict exposes an unapproved schema migration."],"risks":[],"isMaterialDeviation":true,"materialDeviationExplanation":"Resolving the target conflict requires an unapproved schema migration."}"""));
+        var workflow = new ImplementationWorkflow(new WorkflowDependencies(
+            provider,
+            new UncommittedThenCleanGitManager(git, dirtyReports: 0, rebaseSucceeds: false),
+            CreateContextBuilder(),
+            notifier,
+            clock));
+
+        var outcome = await workflow.RunAsync(CreateConfig(), WorkflowMode.Full, 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WaitingReason.MaterialPlanDeviation, outcome.State.WaitingReason);
+        Assert.False(lfsUploadAttempted);
+        Assert.Equal(0, git.PushCallCount);
+        Assert.Contains("Conflict requires a migration.", CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body).ImplementationResult, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RunAsyncFailsWithoutPublishingWhenCorrectivePassFails()
     {
         var state = await SeedApprovedPlanAsync();
@@ -612,7 +645,10 @@ public sealed class ImplementationWorkflowTests : IDisposable
 
     /// <summary>Wraps a real <see cref="FakeGitRepositoryManager"/> and reports uncommitted changes
     /// for a controlled number of probes, so publication gates can be exercised deterministically.</summary>
-    private sealed class UncommittedThenCleanGitManager(FakeGitRepositoryManager inner, int dirtyReports = 1) : IGitRepositoryManager
+    private sealed class UncommittedThenCleanGitManager(
+        FakeGitRepositoryManager inner,
+        int dirtyReports = 1,
+        bool rebaseSucceeds = true) : IGitRepositoryManager
     {
         private int reported;
 
@@ -636,7 +672,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
 
         public ValueTask<string> GetHeadCommitAsync(string repositoryId, string worktreePath, CancellationToken cancellationToken) => inner.GetHeadCommitAsync(repositoryId, worktreePath, cancellationToken);
         public ValueTask UpdateSubmodulesAsync(string repositoryId, string worktreePath, Func<string, GitAuthentication?> authenticationResolver, CancellationToken cancellationToken) => inner.UpdateSubmodulesAsync(repositoryId, worktreePath, authenticationResolver, cancellationToken);
-        public ValueTask<bool> TryRebaseOntoAsync(string repositoryId, string worktreePath, string ontoCommit, GitIdentity identity, CancellationToken cancellationToken) => inner.TryRebaseOntoAsync(repositoryId, worktreePath, ontoCommit, identity, cancellationToken);
+        public ValueTask<bool> TryRebaseOntoAsync(string repositoryId, string worktreePath, string ontoCommit, GitIdentity identity, CancellationToken cancellationToken) => ValueTask.FromResult(rebaseSucceeds);
         public ValueTask<bool> TryMergeAsync(string repositoryId, string worktreePath, string commit, GitIdentity identity, CancellationToken cancellationToken) => inner.TryMergeAsync(repositoryId, worktreePath, commit, identity, cancellationToken);
         public ValueTask PushAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken) => inner.PushAsync(repositoryId, worktreePath, branchName, authentication, cancellationToken);
         public ValueTask RemoveWorktreeAsync(string repositoryId, string worktreeId, string worktreePath, CancellationToken cancellationToken) => inner.RemoveWorktreeAsync(repositoryId, worktreeId, worktreePath, cancellationToken);

@@ -165,56 +165,22 @@ public sealed partial class WorkflowDispatcher(
         }
 
         Directory.CreateDirectory(runtime.Config.WorkflowsStoragePath);
-        var workflowId = WorkflowId.New();
-        var initialIssue = await runtime.Provider.GetIssueAsync(runtime.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
-        var initialTargetBranch = runtime.Config.TargetBranchOverride;
-        var initialBaseCommit = await runtime.Dependencies.Git
-            .ResolveBranchCommitAsync(runtime.Repository.Id, initialTargetBranch, cancellationToken)
+        var planning = new PlanningWorkflow(runtime.Dependencies);
+        var initialCheckpoint = await planning
+            .CreateInitialCheckpointAsync(runtime.Config, issueNumber, cancellationToken)
             .ConfigureAwait(false);
-        var initialBranchName = BranchNaming.DeriveBranchName(issueNumber, initialIssue.Title);
-        var initialWorktreePath = Path.Combine(runtime.Config.WorkflowsStoragePath, workflowId.ToString(), "worktree");
-        var worktreeCreated = false;
-        IOmpClient omp = null!;
-        try
-        {
-            await runtime.Dependencies.Git.CreateWorktreeAsync(
-                runtime.Repository.Id,
-                workflowId.ToString(),
-                initialWorktreePath,
-                initialBranchName,
-                initialBaseCommit,
-                cancellationToken).ConfigureAwait(false);
-            worktreeCreated = true;
-            omp = StartOmp(runtime, issueNumber, initialWorktreePath);
-        }
-        catch
-        {
-            if (worktreeCreated)
-            {
-                try
-                {
-                    await runtime.Dependencies.Git
-                        .RemoveWorktreeAsync(runtime.Repository.Id, workflowId.ToString(), initialWorktreePath, CancellationToken.None)
-                        .ConfigureAwait(false);
-                    await runtime.Dependencies.Git
-                        .RemoveLocalBranchAsync(runtime.Repository.Id, initialBranchName, CancellationToken.None)
-                        .ConfigureAwait(false);
-                }
-                catch
-                {
-                    // Best-effort cleanup; the original startup failure remains authoritative.
-                }
-            }
-            throw;
-        }
-
-        await using var ompScope = omp;
+        await using var omp = StartOmp(runtime, issueNumber, runtime.Config.WorkflowsStoragePath);
         var stopwatch = Stopwatch.StartNew();
         metrics.PlanCount.Add(1, runtime.Tags);
         try
         {
-            await new PlanningWorkflow(runtime.Dependencies)
-                .RunInitialPlanningAsync(runtime.Config, issueNumber, omp, cancellationToken, workflowId)
+            await planning
+                .RunInitialPlanningAsync(
+                    runtime.Config,
+                    issueNumber,
+                    omp,
+                    cancellationToken,
+                    initialCheckpoint: initialCheckpoint)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -259,6 +225,21 @@ public sealed partial class WorkflowDispatcher(
         if (canonical is null)
         {
             await PauseMissingCanonicalStateAsync(runtime, issueNumber, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (TryGetInitialPlanningCheckpoint(canonical, out var initialCheckpoint))
+        {
+            Directory.CreateDirectory(runtime.Config.WorkflowsStoragePath);
+            await using var initialPlanningOmp = StartOmp(runtime, issueNumber, runtime.Config.WorkflowsStoragePath);
+            await new PlanningWorkflow(runtime.Dependencies)
+                .RunInitialPlanningAsync(
+                    runtime.Config,
+                    issueNumber,
+                    initialPlanningOmp,
+                    cancellationToken,
+                    initialCheckpoint: initialCheckpoint)
+                .ConfigureAwait(false);
             return;
         }
 
@@ -513,6 +494,28 @@ public sealed partial class WorkflowDispatcher(
             await dependencies.Git.ResetWorktreeAsync(
                 config.Repository.Id, worktreePath, remoteHead, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    internal static bool TryGetInitialPlanningCheckpoint(ProviderComment canonicalComment, out WorkflowState initialCheckpoint)
+    {
+        try
+        {
+            var state = CanonicalStateSerializer.ToWorkflowState(CanonicalCommentMarkdown.Parse(canonicalComment.Body).State);
+            if (state.Phase == WorkflowPhase.Planning &&
+                state.OperationalState == WorkflowOperationalState.Working &&
+                state.PlanRevision == 0)
+            {
+                initialCheckpoint = state;
+                return true;
+            }
+        }
+        catch (Exception exception) when (exception is CanonicalCommentCorruptException or CanonicalStateException)
+        {
+            // Reconciliation performs the durable corruption escalation.
+        }
+
+        initialCheckpoint = null!;
+        return false;
     }
 
     private static bool HasRetainedRevisionCheckpoint(WorkflowState state, CanonicalCommentContent content) =>

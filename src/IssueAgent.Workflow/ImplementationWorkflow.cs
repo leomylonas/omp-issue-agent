@@ -294,14 +294,23 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                     return await FailAsync(config, issueNumber, workingState, "Failed to resolve rebase conflicts before first publication.", cancellationToken).ConfigureAwait(false);
                 }
 
+                ImplementationResult conflictResult;
                 try
                 {
-                    _ = ImplementationResult.Parse(conflictOutcome.Completed!.ResultJson);
+                    conflictResult = ImplementationResult.Parse(conflictOutcome.Completed!.ResultJson);
                 }
                 catch (WorkflowContractException exception)
                 {
                     return await FailAsync(config, issueNumber, workingState, exception.Message, cancellationToken).ConfigureAwait(false);
                 }
+
+                if (conflictResult.IsMaterialDeviation)
+                {
+                    return await PauseForMaterialDeviationAsync(
+                        config, issueNumber, workingState, workingContent, conflictResult, cancellationToken).ConfigureAwait(false);
+                }
+
+                resultMarkdown = conflictResult.RenderMarkdown();
             }
         }
 
