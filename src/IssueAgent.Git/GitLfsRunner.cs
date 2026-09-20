@@ -201,10 +201,12 @@ public static class GitLfsRunner
 
         // git-lfs reads repository-local lfs.url/lfs.pushurl, which OMP can modify while working.
         // Command-line config has precedence, so force both operations to the configured remote
-        // rather than accepting a same-host path redirect from mutable worktree config. This is
-        // required for SSH too: its endpoint remains SSH so git-lfs obtains its transfer action
-        // through the canonical SSH remote.
-        var endpoint = new Uri(remote.GetLeftPart(UriPartial.Path).TrimEnd('/') + "/info/lfs").AbsoluteUri;
+        // rather than accepting a same-host path redirect from mutable worktree config. SSH uses
+        // the canonical repository URL for its authentication handshake; HTTPS uses its LFS API.
+        var repositoryUrl = remote.GetLeftPart(UriPartial.Path).TrimEnd('/');
+        var endpoint = remote.Scheme.Equals("ssh", StringComparison.OrdinalIgnoreCase)
+            ? repositoryUrl
+            : repositoryUrl + "/info/lfs";
         startInfo.ArgumentList.Add("-c");
         startInfo.ArgumentList.Add($"lfs.url={endpoint}");
         startInfo.ArgumentList.Add("-c");

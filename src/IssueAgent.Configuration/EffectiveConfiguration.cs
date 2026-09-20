@@ -394,7 +394,7 @@ public static class EffectiveConfigurationResolver
         {
             builder.Scheme = Uri.UriSchemeSsh;
             builder.Port = -1;
-            builder.UserName = git.SshUsername ?? string.Empty;
+            builder.UserName = git.SshUsername ?? "git";
         }
         return builder.Uri.ToString();
     }

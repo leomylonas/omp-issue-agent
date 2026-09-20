@@ -62,8 +62,8 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
             "ssh://remote-user@git.trusted.example/octo/widgets.git");
 
         Assert.Equal(
-            ["-c", "lfs.url=ssh://remote-user@git.trusted.example/octo/widgets.git/info/lfs",
-             "-c", "lfs.pushurl=ssh://remote-user@git.trusted.example/octo/widgets.git/info/lfs"],
+            ["-c", "lfs.url=ssh://remote-user@git.trusted.example/octo/widgets.git",
+             "-c", "lfs.pushurl=ssh://remote-user@git.trusted.example/octo/widgets.git"],
             startInfo.ArgumentList);
     }
 
