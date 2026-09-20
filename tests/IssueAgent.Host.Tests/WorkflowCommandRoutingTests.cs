@@ -384,6 +384,42 @@ public sealed class WorkflowCommandRoutingTests
     }
 
     [Fact]
+    public async Task RevisionRewriteRecoveryDoesNotRecreateMissingWorkspaceFromBaseWhenRemoteDisappearsAfterPreflight()
+    {
+        var state = ReviewState() with
+        {
+            Phase = WorkflowPhase.Revising,
+            WaitingReason = WaitingReason.RemoteHistoryRewrite,
+        };
+        var root = Path.Combine(Path.GetTempPath(), $"issue-agent-{Guid.NewGuid():N}");
+        try
+        {
+            var git = new ContinueRecoveryGit();
+            git.RemoteHeads.Enqueue("accepted-remote-head");
+            git.RemoteHeads.Enqueue(null);
+
+            var preflightHead = await git.TryResolveRemoteBranchCommitAsync(
+                "repo", state.Branch, CancellationToken.None);
+            var recovered = await WorkflowDispatcher.RecoverContinueWorkspaceAsync(
+                Dependencies(git),
+                Config(root),
+                state,
+                Content(state, implementationResult: "Retained revision result."),
+                CancellationToken.None);
+
+            Assert.Equal("accepted-remote-head", preflightHead);
+            Assert.False(recovered);
+            Assert.Empty(git.CreatedWorktrees);
+            Assert.Empty(git.ResetWorktrees);
+            Assert.False(Directory.Exists(Path.Combine(root, state.WorkflowId.ToString(), "worktree")));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ReviewContinueRecoveryRecreatesMissingWorkspaceAtRemoteHead()
     {
         var state = ReviewState();
@@ -531,12 +567,14 @@ public sealed class WorkflowCommandRoutingTests
     {
         public string? RemoteHead { get; init; }
 
+        public Queue<string?> RemoteHeads { get; } = [];
+
         public List<(string WorktreeId, string Branch, string BaseCommit)> CreatedWorktrees { get; } = [];
 
         public List<(string RepositoryId, string WorktreePath, string Commit)> ResetWorktrees { get; } = [];
 
         public ValueTask<string?> TryResolveRemoteBranchCommitAsync(string repositoryId, string branchName, CancellationToken cancellationToken) =>
-            ValueTask.FromResult(RemoteHead);
+            ValueTask.FromResult(RemoteHeads.Count > 0 ? RemoteHeads.Dequeue() : RemoteHead);
 
         public ValueTask CreateWorktreeAsync(string repositoryId, string worktreeId, string worktreePath, string branchName, string baseCommit, CancellationToken cancellationToken)
         {

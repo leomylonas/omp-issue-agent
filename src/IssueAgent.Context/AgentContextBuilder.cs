@@ -17,6 +17,10 @@ public sealed record AgentContextBuilderOptions
     /// <summary>The provider login authorized to publish canonical state. Without it, locator
     /// markers remain OMP-visible because their source cannot be authenticated.</summary>
     public string? CanonicalCommentAuthor { get; init; }
+
+    /// <summary>Configured enabled repositories whose issues may be read as related context.</summary>
+    public IReadOnlySet<string> AllowedRepositoryIds { get; init; } =
+        new HashSet<string>(StringComparer.Ordinal);
 }
 
 /// <summary>
@@ -110,6 +114,11 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
                     .GetIssueRelationshipsAsync(currentRepository, currentIssueNumber, cancellationToken)
                     .ConfigureAwait(false))
                 {
+                    if (!options.AllowedRepositoryIds.Contains(relationship.Repository.Id))
+                    {
+                        continue;
+                    }
+
                     var key = (relationship.Repository.Id, relationship.IssueNumber);
                     if (!visited.Add(key))
                     {

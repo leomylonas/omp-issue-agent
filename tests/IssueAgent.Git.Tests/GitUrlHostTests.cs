@@ -13,6 +13,16 @@ public sealed class GitUrlHostTests
     }
 
     [Theory]
+    [InlineData("https://git.example.test/group/project.git", "https://git.example.test:443")]
+    [InlineData("https://git.example.test:8443/group/project.git", "https://git.example.test:8443")]
+    [InlineData("ssh://git@git.example.test:2222/group/project.git", "ssh://git.example.test:2222")]
+    [InlineData("git@git.example.test:group/project.git", "ssh://git.example.test:22")]
+    public void TryGetTransportAuthorityIncludesSchemeAndPort(string url, string expectedAuthority)
+    {
+        Assert.Equal(expectedAuthority, GitUrlHost.TryGetTransportAuthority(url));
+    }
+
+    [Theory]
     [InlineData("")]
     [InlineData(null)]
     [InlineData("not-a-url")]

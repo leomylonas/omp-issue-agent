@@ -53,6 +53,22 @@ public sealed class FairWorkAdmissionTests
     }
 
     [Fact]
+    public void QueuedWorkIsAdmittedBeforeItStarts()
+    {
+        var admission = new FairWorkAdmission();
+        var item = Item("repo-a", WorkflowWorkPriority.NewPlanning, null, 1);
+
+        Assert.True(admission.TryEnqueue(item));
+        Assert.True(admission.IsAdmitted(item.Key));
+
+        Assert.True(admission.TryStart(out var started));
+        Assert.True(admission.IsAdmitted(item.Key));
+
+        admission.Complete(started!.Key);
+        Assert.False(admission.IsAdmitted(item.Key));
+    }
+
+    [Fact]
     public void RegistersAttemptCancellationBeforeExposingCandidateAsInFlight()
     {
         var admission = new FairWorkAdmission();

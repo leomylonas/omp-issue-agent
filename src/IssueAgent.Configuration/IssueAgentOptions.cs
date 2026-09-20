@@ -394,6 +394,13 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
                 {
                     failures.Add($"Repository '{repository.Id}' CloneUrl must not contain credentials or query/fragment components.");
                 }
+                if (repository.CloneUrl is { } tokenCloneUrl &&
+                    Uri.TryCreate(tokenCloneUrl, UriKind.Absolute, out var tokenCloneUri) &&
+                    tokenCloneUri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                    UsesTokenGitAuthentication(provider, mergedTrust))
+                {
+                    failures.Add($"Repository '{repository.Id}' CloneUrl must use HTTPS with token authentication.");
+                }
                 var hasOwner = !string.IsNullOrWhiteSpace(repository.OwnerOrNamespace) ||
                     repository.Name.Contains('/', StringComparison.Ordinal) ||
                     !string.IsNullOrWhiteSpace(provider.DefaultOwnerOrNamespace);
@@ -480,6 +487,12 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
                 break;
         }
     }
+
+    private static bool UsesTokenGitAuthentication(ProviderOptions provider, RepositorySettingsOptions merged) =>
+        (merged.Git?.Mode ?? (provider.Token is null
+            ? ConfiguredGitAuthenticationMode.Anonymous
+            : ConfiguredGitAuthenticationMode.ProviderToken)) is
+                ConfiguredGitAuthenticationMode.ProviderToken or ConfiguredGitAuthenticationMode.Token;
 
     private static void ValidateTlsTrust(
         TlsTrustOptions? tls,

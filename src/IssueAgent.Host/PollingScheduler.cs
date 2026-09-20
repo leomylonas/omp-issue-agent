@@ -102,7 +102,7 @@ public sealed partial class PollingScheduler(
                     if (classification.Priority == WorkflowWorkPriority.Reconciliation)
                     {
                         var key = new WorkflowWorkKey(provider.Name, repository.Id, issue.Number);
-                        if (workerPool.IsInFlight(key))
+                        if (workerPool.IsAdmitted(key))
                         {
                             continue;
                         }

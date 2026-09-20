@@ -473,16 +473,25 @@ public sealed partial class WorkflowDispatcher(
                     reconciled.Content!,
                     cancellationToken).ConfigureAwait(false);
             }
-            if (state.Phase == WorkflowPhase.Review && !recoveredAuthoritativeRemote)
+            if (!recoveredAuthoritativeRemote &&
+                (state.Phase == WorkflowPhase.Review ||
+                 (state.Phase == WorkflowPhase.Revising &&
+                  state.WaitingReason == WaitingReason.RemoteHistoryRewrite)))
             {
+                var waitingReason = state.Phase == WorkflowPhase.Review
+                    ? WaitingReason.ReviewRequested
+                    : WaitingReason.RemoteHistoryRewrite;
+                var message = state.Phase == WorkflowPhase.Review
+                    ? "The review branch is not available on the authoritative remote. The continue command was retained and will be retried after the branch is restored."
+                    : "The revision branch disappeared from the authoritative remote while recovery was in progress. The retained revision was not rebuilt from the planned base; restore the branch and continue again.";
                 await reconciliation.PauseForHumanAsync(
                     runtime.Config,
                     issueNumber,
                     canonical,
                     reconciled.Content!,
                     state,
-                    WaitingReason.ReviewRequested,
-                    "The review branch is not available on the authoritative remote. The continue command was retained and will be retried after the branch is restored.",
+                    waitingReason,
+                    message,
                     cancellationToken).ConfigureAwait(false);
                 return;
             }
@@ -582,8 +591,8 @@ public sealed partial class WorkflowDispatcher(
         }
     }
     /// <summary>Restores a continuation worktree from the remote branch when it exists. The
-    /// result tells Review acknowledgement handling whether an authoritative branch tip was
-    /// available; callers MUST NOT consume a Review continue command without that evidence.</summary>
+    /// result tells recovery handling whether an authoritative branch tip was available; callers
+    /// MUST NOT consume a Review or remote-history-rewrite Revision continue command without that evidence.</summary>
     internal static async Task<bool> RecoverContinueWorkspaceAsync(
         WorkflowDependencies dependencies,
         WorkflowRepositoryConfig config,
@@ -598,6 +607,12 @@ public sealed partial class WorkflowDispatcher(
         var mustResetRetainedRevisionToRemoteHead =
             state.WaitingReason == WaitingReason.RemoteHistoryRewrite &&
             HasRetainedRevisionCheckpoint(state, content);
+        if (state.Phase == WorkflowPhase.Revising &&
+            state.WaitingReason == WaitingReason.RemoteHistoryRewrite &&
+            remoteHead is null)
+        {
+            return false;
+        }
         if (!Directory.Exists(worktreePath))
         {
             if (state.Phase == WorkflowPhase.Review && remoteHead is null)
@@ -822,6 +837,10 @@ public sealed partial class WorkflowDispatcher(
             RelatedIssueTraversalDepth = resolved.RelatedIssueTraversalDepth,
             AttachmentLimits = limits,
             CanonicalCommentAuthor = canonicalCommentAuthor,
+            AllowedRepositoryIds = effectiveProvider.Repositories
+                .Where(repository => repository.Enabled)
+                .Select(repository => repository.Id)
+                .ToHashSet(StringComparer.Ordinal),
         };
         var context = new AgentContextBuilder(provider, new AttachmentPipeline(provider, limits), contextOptions);
         var dependencies = new WorkflowDependencies(provider, git, context, notifier, new SystemClock());

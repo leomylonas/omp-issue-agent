@@ -68,6 +68,12 @@ public sealed class FairWorkAdmission
         lock (gate) return admitted.TryGetValue(key, out var state) && state == AdmissionState.InFlight;
     }
 
+    /// <summary>Returns whether work is queued or currently executing for this workflow.</summary>
+    public bool IsAdmitted(WorkflowWorkKey key)
+    {
+        lock (gate) return admitted.ContainsKey(key);
+    }
+
     /// <summary>Returns false when the same provider/repository/issue is already queued or running.</summary>
     public bool TryEnqueue(WorkflowCandidate candidate)
     {

@@ -16,8 +16,8 @@ public sealed class ProviderRegistry
 {
     private readonly IReadOnlyDictionary<string, IGitProvider> providers;
     private readonly Dictionary<string, GitAuthentication> gitAuthentication;
-    private readonly Dictionary<string, string?> gitHostByRepository;
-    private readonly Dictionary<string, GitAuthentication> gitAuthenticationByHost;
+    private readonly Dictionary<string, string?> gitTransportAuthorityByRepository;
+    private readonly Dictionary<string, GitAuthentication> gitAuthenticationByTransportAuthority;
     public ProviderRegistry(
         EffectiveIssueAgentConfiguration configuration,
         RetryPolicy retryPolicy,
@@ -31,9 +31,9 @@ public sealed class ProviderRegistry
         ArgumentNullException.ThrowIfNull(retryPolicy);
         var built = new Dictionary<string, IGitProvider>(StringComparer.OrdinalIgnoreCase);
         var authentication = new Dictionary<string, GitAuthentication>(StringComparer.OrdinalIgnoreCase);
-        var gitHosts = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        var authenticationByHost = new Dictionary<string, GitAuthentication>(StringComparer.OrdinalIgnoreCase);
-        var ambiguousGitAuthenticationHosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var gitTransportAuthorities = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var authenticationByTransportAuthority = new Dictionary<string, GitAuthentication>(StringComparer.OrdinalIgnoreCase);
+        var ambiguousGitAuthenticationTransportAuthorities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var provider in configuration.Providers)
         {
             var created = Create(provider.Source, provider.ApiToken, ResolveProviderTlsTrust(provider.Repositories), retryPolicy);
@@ -46,32 +46,32 @@ public sealed class ProviderRegistry
             {
                 var gitAuth = ToGitAuthentication(repository.Git);
                 authentication[repository.Id] = gitAuth;
-                var host = GitUrlHost.TryGetHost(repository.CloneUrl);
-                gitHosts[repository.Id] = host;
-                if (host is null || ambiguousGitAuthenticationHosts.Contains(host))
+                var transportAuthority = GitUrlHost.TryGetTransportAuthority(repository.CloneUrl);
+                gitTransportAuthorities[repository.Id] = transportAuthority;
+                if (transportAuthority is null || ambiguousGitAuthenticationTransportAuthorities.Contains(transportAuthority))
                 {
                     continue;
                 }
 
-                if (authenticationByHost.TryGetValue(host, out var configuredAuthentication))
+                if (authenticationByTransportAuthority.TryGetValue(transportAuthority, out var configuredAuthentication))
                 {
                     if (!Equivalent(configuredAuthentication, gitAuth))
                     {
-                        authenticationByHost.Remove(host);
-                        ambiguousGitAuthenticationHosts.Add(host);
+                        authenticationByTransportAuthority.Remove(transportAuthority);
+                        ambiguousGitAuthenticationTransportAuthorities.Add(transportAuthority);
                     }
                 }
                 else
                 {
-                    authenticationByHost.Add(host, gitAuth);
+                    authenticationByTransportAuthority.Add(transportAuthority, gitAuth);
                 }
             }
         }
 
         providers = built;
         gitAuthentication = authentication;
-        gitHostByRepository = gitHosts;
-        gitAuthenticationByHost = authenticationByHost;
+        gitTransportAuthorityByRepository = gitTransportAuthorities;
+        gitAuthenticationByTransportAuthority = authenticationByTransportAuthority;
     }
 
     public IReadOnlyCollection<IGitProvider> All => providers.Values.ToArray();
@@ -85,19 +85,26 @@ public sealed class ProviderRegistry
             ? authentication
             : throw new KeyNotFoundException($"Resolved Git authentication for repository '{repositoryId}' was not found.");
 
-    /// <summary>Resolves recursive-submodule credentials by host (specification §11). The current
-    /// repository's authentication is used only for its own configured host. A different configured
-    /// host is usable when every configured mapping agrees; differing mappings fail closed.</summary>
-    public GitAuthentication? GetSubmoduleGitAuthentication(string repositoryId, string host)
+    /// <summary>Resolves recursive-submodule credentials by transport authority (specification §11).
+    /// The current repository's authentication is used only for its configured scheme, host, and port.
+    /// A different configured authority is usable when every configured mapping agrees; differing
+    /// mappings fail closed.</summary>
+    public GitAuthentication? GetSubmoduleGitAuthentication(string repositoryId, string remoteUrl)
     {
+        var transportAuthority = GitUrlHost.TryGetTransportAuthority(remoteUrl);
+        if (transportAuthority is null)
+        {
+            return null;
+        }
+
         var authentication = GetGitAuthentication(repositoryId);
-        if (gitHostByRepository.TryGetValue(repositoryId, out var repositoryHost) &&
-            string.Equals(repositoryHost, host, StringComparison.OrdinalIgnoreCase))
+        if (gitTransportAuthorityByRepository.TryGetValue(repositoryId, out var repositoryTransportAuthority) &&
+            string.Equals(repositoryTransportAuthority, transportAuthority, StringComparison.OrdinalIgnoreCase))
         {
             return authentication;
         }
 
-        return gitAuthenticationByHost.TryGetValue(host, out authentication) ? authentication : null;
+        return gitAuthenticationByTransportAuthority.TryGetValue(transportAuthority, out authentication) ? authentication : null;
     }
 
 

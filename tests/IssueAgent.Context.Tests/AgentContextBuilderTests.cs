@@ -7,6 +7,7 @@ public sealed class AgentContextBuilderTests
 {
     private static readonly RepositoryRef Repository = new("github/octo/widgets", "octo", "widgets");
     private readonly string destination = Path.Combine(Path.GetTempPath(), "issueagent-context-tests", Guid.NewGuid().ToString("N"));
+    private static readonly RepositoryRef UnconfiguredRepository = new("github/other/private", "other", "private");
 
     [Fact]
     public async Task BuildAsyncIncludesHumanCommentsAndExcludesBotCommentsByDefault()
@@ -81,6 +82,18 @@ public sealed class AgentContextBuilderTests
     }
 
     [Fact]
+    public async Task BuildAsyncDoesNotReadRelatedIssuesOutsideConfiguredAllowList()
+    {
+        var provider = new FakeGitProvider();
+        provider.AddIssue(Repository, 1, "Primary issue", "Primary description");
+        provider.AddRelationship(Repository, 1, "related", UnconfiguredRepository, 2);
+
+        var context = await BuildAsync(provider, 1);
+
+        Assert.Empty(context.RelatedIssues);
+    }
+
+    [Fact]
     public async Task BuildAsyncDetectsRelationshipCyclesWithoutInfiniteLoop()
     {
         var provider = new FakeGitProvider();
@@ -135,7 +148,11 @@ public sealed class AgentContextBuilderTests
 
     private static async Task<AgentContext> BuildAsync(FakeGitProvider provider, long issueNumber, int depth = 1)
     {
-        var options = new AgentContextBuilderOptions { RelatedIssueTraversalDepth = depth };
+        var options = new AgentContextBuilderOptions
+        {
+            RelatedIssueTraversalDepth = depth,
+            AllowedRepositoryIds = new HashSet<string>(StringComparer.Ordinal) { Repository.Id },
+        };
         var builder = new AgentContextBuilder(provider, new AttachmentPipeline(provider, options.AttachmentLimits), options);
         var state = new WorkflowState(
             WorkflowId.New(), WorkflowPhase.Planning, WorkflowOperationalState.Working, null,

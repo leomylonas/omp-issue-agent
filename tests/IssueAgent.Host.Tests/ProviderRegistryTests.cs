@@ -16,7 +16,7 @@ public sealed class ProviderRegistryTests
             Repository("repository-b", "https://git.example.test/team/b.git", "shared-token"),
             Repository("repository-local", "/srv/git/local.git", "token-local"));
 
-        var authentication = registry.GetSubmoduleGitAuthentication("repository-local", "git.example.test");
+        var authentication = registry.GetSubmoduleGitAuthentication("repository-local", "https://git.example.test/team/submodule.git");
 
         Assert.NotNull(authentication);
         Assert.Equal("shared-token", authentication.HttpsToken);
@@ -32,10 +32,10 @@ public sealed class ProviderRegistryTests
             Repository("repository-c", "https://other.example.test/team/c.git", "token-c"),
             Repository("repository-local", "/srv/git/local.git", "token-local"));
 
-        Assert.Equal("token-a", registry.GetSubmoduleGitAuthentication("repository-a", "git.example.test")?.HttpsToken);
-        Assert.Equal("token-b", registry.GetSubmoduleGitAuthentication("repository-b", "git.example.test")?.HttpsToken);
-        Assert.Null(registry.GetSubmoduleGitAuthentication("repository-local", "git.example.test"));
-        Assert.Equal("token-c", registry.GetSubmoduleGitAuthentication("repository-a", "other.example.test")?.HttpsToken);
+        Assert.Equal("token-a", registry.GetSubmoduleGitAuthentication("repository-a", "https://git.example.test/team/submodule.git")?.HttpsToken);
+        Assert.Equal("token-b", registry.GetSubmoduleGitAuthentication("repository-b", "https://git.example.test/team/submodule.git")?.HttpsToken);
+        Assert.Null(registry.GetSubmoduleGitAuthentication("repository-local", "https://git.example.test/team/submodule.git"));
+        Assert.Equal("token-c", registry.GetSubmoduleGitAuthentication("repository-a", "https://other.example.test/team/submodule.git")?.HttpsToken);
     }
 
     [Fact]
@@ -49,7 +49,7 @@ public sealed class ProviderRegistryTests
             Repository("repository-local", "/srv/git/local.git", "token-local",
                 ["ca-a.pem", "ca-b.pem"], ["sha256:tls-a", "sha256:tls-b"]));
 
-        Assert.Equal("shared-token", equivalent.GetSubmoduleGitAuthentication("repository-local", "git.example.test")?.HttpsToken);
+        Assert.Equal("shared-token", equivalent.GetSubmoduleGitAuthentication("repository-local", "https://git.example.test/team/submodule.git")?.HttpsToken);
 
         var differentSshFingerprint = CreateRegistry(
             Repository("repository-a", "https://git.example.test/team/a.git", "shared-token",
@@ -58,7 +58,7 @@ public sealed class ProviderRegistryTests
                 ["ca-a.pem", "ca-b.pem"], ["sha256:tls-a", "sha256:tls-b"], ["sha256:ssh-a", "sha256:ssh-c"]),
             Repository("repository-local", "/srv/git/local.git", "token-local",
                 ["ca-a.pem", "ca-b.pem"], ["sha256:tls-a", "sha256:tls-b"]));
-        Assert.Null(differentSshFingerprint.GetSubmoduleGitAuthentication("repository-local", "git.example.test"));
+        Assert.Null(differentSshFingerprint.GetSubmoduleGitAuthentication("repository-local", "https://git.example.test/team/submodule.git"));
         Assert.Throws<InvalidOperationException>(() => CreateRegistry(
             Repository("repository-a", "https://git.example.test/team/a.git", "shared-token",
                 ["ca-a.pem", "ca-b.pem"], ["sha256:tls-a", "sha256:tls-b"], ["sha256:ssh-a", "sha256:ssh-b"]),
@@ -84,6 +84,19 @@ public sealed class ProviderRegistryTests
                 tlsFingerprints: ["sha256:tls-a", "sha256:tls-b"], tlsMode: ConfiguredTlsTrustMode.Pinned),
             Repository("repository-b", "https://git.example.test/team/b.git", "shared-token",
                 tlsFingerprints: ["sha256:tls-a", "sha256:tls-c"], tlsMode: ConfiguredTlsTrustMode.Pinned)));
+    }
+
+    [Fact]
+    public void SubmoduleAuthenticationRequiresMatchingSchemeAndPort()
+    {
+        var registry = CreateRegistry(
+            Repository("repository-https", "https://git.example.test/team/a.git", "https-token"),
+            Repository("repository-ssh", "ssh://git@git.example.test:2222/team/b.git", "ssh-token"));
+
+        Assert.Equal("https-token", registry.GetSubmoduleGitAuthentication("repository-https", "https://git.example.test/team/submodule.git")?.HttpsToken);
+        Assert.Null(registry.GetSubmoduleGitAuthentication("repository-https", "ssh://git@git.example.test/team/submodule.git"));
+        Assert.Equal("ssh-token", registry.GetSubmoduleGitAuthentication("repository-https", "ssh://git@git.example.test:2222/team/submodule.git")?.HttpsToken);
+        Assert.Null(registry.GetSubmoduleGitAuthentication("repository-https", "https://git.example.test:8443/team/submodule.git"));
     }
 
     private static ProviderRegistry CreateRegistry(params EffectiveRepositoryConfiguration[] repositories)

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using LibGit2Sharp;
 
 namespace IssueAgent.Git.Tests;
@@ -735,6 +736,19 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
     }
 
     [Fact]
+    public void ResolveSubmoduleUrlPreservesScpTransportForRelativeUrl()
+    {
+        var method = typeof(LibGit2SharpRepositoryManager).GetMethod(
+            "ResolveSubmoduleUrl",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        var resolved = Assert.IsType<string>(
+            method.Invoke(null, ["../shared.git", "git@github.example:octo/widgets.git"]));
+
+        Assert.Equal("git@github.example:octo/shared.git", resolved);
+    }
+
+    [Fact]
     public async Task UpdateSubmodulesAsyncInitializesSshSubmoduleThroughGitSshTransport()
     {
         var submoduleSourcePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out _));
@@ -760,7 +774,7 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
         };
 
         WithFakeCommand("ssh", $"#!/bin/sh\nexec git-upload-pack \"{submoduleSourcePath}\"\n", () =>
-            manager.UpdateSubmodulesAsync("repo-ssh-submodule", worktreePath, host => host == "example.test" ? sshAuthentication : null, CancellationToken.None).AsTask().GetAwaiter().GetResult());
+            manager.UpdateSubmodulesAsync("repo-ssh-submodule", worktreePath, remoteUrl => GitUrlHost.TryGetHost(remoteUrl) == "example.test" ? sshAuthentication : null, CancellationToken.None).AsTask().GetAwaiter().GetResult());
 
         Assert.True(File.Exists(Path.Combine(worktreePath, "lib", "dependency", "README.md")));
     }
@@ -791,7 +805,7 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
         };
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            manager.UpdateSubmodulesAsync("repo-incompatible-ssh-submodule", worktreePath, host => host == "example.test" ? sshAuthentication : null, CancellationToken.None).AsTask());
+            manager.UpdateSubmodulesAsync("repo-incompatible-ssh-submodule", worktreePath, remoteUrl => GitUrlHost.TryGetHost(remoteUrl) == "example.test" ? sshAuthentication : null, CancellationToken.None).AsTask());
 
         Assert.Contains("SSH endpoint is ambiguous", exception.Message, StringComparison.Ordinal);
         Assert.False(Directory.Exists(Path.Combine(worktreePath, "lib", "dependency", ".git")));

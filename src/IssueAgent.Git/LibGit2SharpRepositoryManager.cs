@@ -57,7 +57,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
                 Checkout = false,
                 FetchOptions =
                 {
-                    CredentialsProvider = CredentialsHandlerFor(authentication, TryGetHost(cloneUrl)),
+                    CredentialsProvider = CredentialsHandlerFor(authentication, TryGetTransportAuthority(cloneUrl)),
                     CertificateCheck = CertificateCheckHandlerFor(authentication.TlsTrust),
                     OnTransferProgress = _ => !cancellationToken.IsCancellationRequested,
                 },
@@ -84,7 +84,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
             var refSpecs = remote.FetchRefSpecs.Select(r => r.Specification);
             Commands.Fetch(repo, remote.Name, refSpecs, new FetchOptions
             {
-                CredentialsProvider = CredentialsHandlerFor(authentication, TryGetHost(remote.Url)),
+                CredentialsProvider = CredentialsHandlerFor(authentication, TryGetTransportAuthority(remote.Url)),
                 CertificateCheck = CertificateCheckHandlerFor(authentication.TlsTrust),
                 OnTransferProgress = _ => !cancellationToken.IsCancellationRequested,
             }, logMessage: null);
@@ -309,13 +309,18 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
             return;
         }
 
-        var parentHost = TryGetHost(repo.Network.Remotes["origin"]?.Url);
+        var parentRemoteUrl = repo.Network.Remotes["origin"]?.Url;
         foreach (var submodule in repo.Submodules)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var submodulePath = GetSafeSubmodulePath(rootPath, repositoryPath, submodule.Path);
-            var host = TryGetHost(submodule.Url) ?? parentHost;
-            var authentication = host is null ? null : authenticationResolver(host);
+            var resolvedSubmoduleUrl = parentRemoteUrl is null
+                ? submodule.Url
+                : ResolveSubmoduleUrl(submodule.Url, parentRemoteUrl);
+            var transportAuthority = TryGetTransportAuthority(resolvedSubmoduleUrl);
+            var authentication = transportAuthority is null
+                ? null
+                : authenticationResolver(resolvedSubmoduleUrl);
             var effectiveAuthentication = authentication ?? GitAuthentication.Anonymous(TlsTrust.System);
 
             if (effectiveAuthentication.Mode == GitAuthenticationMode.Ssh)
@@ -323,7 +328,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
                 await GitSshTransport.UpdateSubmoduleAsync(
                     repositoryPath,
                     submodule.Path,
-                    GetSshTransportRemoteUrl(submodule.Url, repo.Network.Remotes["origin"]?.Url),
+                    GetSshTransportRemoteUrl(resolvedSubmoduleUrl, parentRemoteUrl),
                     effectiveAuthentication,
                     cancellationToken).ConfigureAwait(false);
             }
@@ -337,7 +342,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
                         Init = true,
                         FetchOptions =
                         {
-                            CredentialsProvider = CredentialsHandlerFor(effectiveAuthentication, host),
+                            CredentialsProvider = CredentialsHandlerFor(effectiveAuthentication, transportAuthority),
                             CertificateCheck = CertificateCheckHandlerFor(effectiveAuthentication.TlsTrust),
                             OnTransferProgress = _ => !cancellationToken.IsCancellationRequested,
                         },
@@ -365,8 +370,8 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
 
         if (TryGetHost(submoduleUrl) is null && parentRemoteUrl is not null && IsSshRemoteUrl(parentRemoteUrl))
         {
-            // Git resolves relative submodule URLs against the parent remote, so the parent endpoint
-            // supplies the SSH host key policy without ever guessing a different credential target.
+            // Relative URLs are resolved before this method is called. Retain this fallback for
+            // callers that provide a local parent remote, where no SSH target can be derived.
             return parentRemoteUrl;
         }
 
@@ -494,7 +499,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         var remote = repo.Network.Remotes["origin"];
         repo.Network.Push(remote, $"refs/heads/{branchName}:refs/heads/{branchName}", new PushOptions
         {
-            CredentialsProvider = CredentialsHandlerFor(authentication, TryGetHost(remote.Url)),
+            CredentialsProvider = CredentialsHandlerFor(authentication, TryGetTransportAuthority(remote.Url)),
             CertificateCheck = CertificateCheckHandlerFor(authentication.TlsTrust),
             OnPushTransferProgress = (_, _, _) => !cancellationToken.IsCancellationRequested,
         });
@@ -571,8 +576,8 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
                 ?? throw new InvalidOperationException($"Repository '{repositoryPath}' has no origin remote for LFS materialization.");
         var authentication = isRootRepository
             ? rootAuthentication
-            : TryGetHost(canonicalRemoteUrl) is { } host
-                ? submoduleAuthenticationResolver(host) ?? GitAuthentication.Anonymous(TlsTrust.System)
+            : GitUrlHost.TryGetTransportAuthority(canonicalRemoteUrl) is not null
+                ? submoduleAuthenticationResolver(canonicalRemoteUrl) ?? GitAuthentication.Anonymous(TlsTrust.System)
                 : GitAuthentication.Anonymous(TlsTrust.System);
 
         if (GitLfsRunner.RepositoryRequiresLfs(repositoryPath))
@@ -686,10 +691,10 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
                 $"Changed submodule '{repositoryPath}' origin does not match its committed .gitmodules URL.");
         }
 
-        var host = TryGetHost(authoritativeRemoteUrl);
-        var authentication = host is null
+        var transportAuthority = GitUrlHost.TryGetTransportAuthority(authoritativeRemoteUrl);
+        var authentication = transportAuthority is null
             ? GitAuthentication.Anonymous(TlsTrust.System)
-            : authenticationResolver(host) ?? GitAuthentication.Anonymous(TlsTrust.System);
+            : authenticationResolver(authoritativeRemoteUrl) ?? GitAuthentication.Anonymous(TlsTrust.System);
         var previousTree = previousCommit is null
             ? null
             : repository.Lookup<Commit>(previousCommit)?.Tree
@@ -753,7 +758,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
 
         repository.Network.Push(remote, $"{head.Sha}:refs/heads/{branchName}", new PushOptions
         {
-            CredentialsProvider = CredentialsHandlerFor(authentication, host),
+            CredentialsProvider = CredentialsHandlerFor(authentication, transportAuthority),
             CertificateCheck = CertificateCheckHandlerFor(authentication.TlsTrust),
             OnPushTransferProgress = (_, _, _) => !cancellationToken.IsCancellationRequested,
         });
@@ -837,6 +842,13 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         if (Uri.TryCreate(parentRemoteUrl, UriKind.Absolute, out var parentUri))
         {
             return new Uri(new Uri(parentUri.GetLeftPart(UriPartial.Path).TrimEnd('/') + "/"), submoduleUrl).ToString();
+        }
+
+        if (TryNormalizeScpLikeSshRemote(parentRemoteUrl, out var scpParentUri))
+        {
+            var resolved = new Uri(new Uri(scpParentUri.GetLeftPart(UriPartial.Path).TrimEnd('/') + "/"), submoduleUrl);
+            var authority = parentRemoteUrl[..parentRemoteUrl.IndexOf(':')];
+            return $"{authority}:{resolved.AbsolutePath.TrimStart('/')}";
         }
 
         return Path.GetFullPath(Path.Combine(Path.GetDirectoryName(parentRemoteUrl) ?? ".", submoduleUrl));
@@ -1048,15 +1060,43 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
 
     private static string? TryGetHost(string? url) => GitUrlHost.TryGetHost(url);
 
+    private static string? TryGetTransportAuthority(string? url) => GitUrlHost.TryGetTransportAuthority(url);
+
+    private static bool TryNormalizeScpLikeSshRemote(string url, out Uri remote)
+    {
+        var colon = url.IndexOf(':');
+        if (colon <= 0 || colon == url.Length - 1 || url.AsSpan(colon).StartsWith("://"))
+        {
+            remote = null!;
+            return false;
+        }
+
+        var authority = url[..colon];
+        if (authority.Contains('/') || authority.Contains('\\') || string.IsNullOrWhiteSpace(authority))
+        {
+            remote = null!;
+            return false;
+        }
+
+        return Uri.TryCreate($"ssh://{authority}/{url[(colon + 1)..]}", UriKind.Absolute, out remote!);
+    }
+
     /// <summary>Returns credentials for <paramref name="authentication"/> only when libgit2's
-    /// callback URL host matches <paramref name="expectedHost"/> (specification §11: never forward
-    /// credentials to an unexpected host, including via a followed redirect). A <see langword="null"/>
-    /// <paramref name="expectedHost"/> means the caller could not determine an expected host and no
-    /// credentials are ever returned.</summary>
-    private static CredentialsHandler CredentialsHandlerFor(GitAuthentication authentication, string? expectedHost) =>
+    /// callback URL transport authority matches <paramref name="expectedTransportAuthority"/>
+    /// (specification §11: never forward credentials to an unexpected scheme, host, or port,
+    /// including via a followed redirect). A <see langword="null"/>
+    /// <paramref name="expectedTransportAuthority"/> means the caller could not determine an
+    /// expected authority and no credentials are ever returned.</summary>
+    private static CredentialsHandler CredentialsHandlerFor(
+        GitAuthentication authentication,
+        string? expectedTransportAuthority) =>
         (url, usernameFromUrl, types) =>
         {
-            if (expectedHost is null || !string.Equals(TryGetHost(url), expectedHost, StringComparison.OrdinalIgnoreCase))
+            if (expectedTransportAuthority is null ||
+                !string.Equals(
+                    TryGetTransportAuthority(url),
+                    expectedTransportAuthority,
+                    StringComparison.OrdinalIgnoreCase))
             {
                 return new DefaultCredentials();
             }

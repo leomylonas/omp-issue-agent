@@ -65,10 +65,10 @@ public interface IGitRepositoryManager
     ValueTask<string> GetHeadCommitAsync(string repositoryId, string worktreePath, CancellationToken cancellationToken);
 
     /// <summary>Recursively initializes and updates the worktree's submodules using the supplied
-    /// per-host authentication resolver. A submodule host outside <paramref name="authenticationResolver"/>'s
-    /// known hosts is updated anonymously; failure when authentication is required is reported via
-    /// <see cref="SubmoduleAuthenticationRequiredException"/>. Paths escaping the root worktree or
-    /// traversing symbolic links are rejected.</summary>
+    /// resolver, which receives each resolved submodule remote URL. Credentials are matched by
+    /// transport scheme, host, and port; an unknown endpoint is updated anonymously, and a later
+    /// authentication failure is reported via <see cref="SubmoduleAuthenticationRequiredException"/>.
+    /// Paths escaping the root worktree or traversing symbolic links are rejected.</summary>
     ValueTask UpdateSubmodulesAsync(string repositoryId, string worktreePath, Func<string, GitAuthentication?> authenticationResolver, CancellationToken cancellationToken);
 
     /// <summary>Rebases the worktree's current branch onto <paramref name="ontoCommit"/>. Returns
@@ -96,9 +96,9 @@ public interface IGitRepositoryManager
     bool WorktreeRequiresLfs(string worktreePath);
 
     /// <summary>Recursively replaces LFS pointer files in the worktree and its initialized
-    /// submodules with real content, resolving each submodule's credentials by its own origin host.
-    /// Throws <see cref="GitLfsUnavailableException"/> if any repository requires LFS but
-    /// <c>git-lfs</c> is not available.</summary>
+    /// submodules with real content, resolving each submodule's credentials from its complete
+    /// origin URL. Throws <see cref="GitLfsUnavailableException"/> if any repository requires LFS
+    /// but <c>git-lfs</c> is not available.</summary>
     ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, Func<string, GitAuthentication?> submoduleAuthenticationResolver, CancellationToken cancellationToken);
 
     /// <summary>Recursively publishes every changed submodule commit, including its LFS objects,

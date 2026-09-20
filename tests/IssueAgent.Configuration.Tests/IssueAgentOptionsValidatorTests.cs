@@ -320,6 +320,46 @@ public sealed class IssueAgentOptionsValidatorTests
         Assert.Contains(result.Failures!, failure => failure.Contains("BaseUri must use HTTPS", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData(ConfiguredGitAuthenticationMode.ProviderToken)]
+    [InlineData(ConfiguredGitAuthenticationMode.Token)]
+    public void ValidateRejectsPlaintextCloneUrlWhenTokenAuthenticationIsConfigured(ConfiguredGitAuthenticationMode mode)
+    {
+        var options = CreateOptions() with
+        {
+            Defaults = new RepositorySettingsOptions
+            {
+                Git = new GitTransportOptions
+                {
+                    Mode = mode,
+                    Token = mode == ConfiguredGitAuthenticationMode.Token
+                        ? new SecretSource { Env = "GIT_TOKEN" }
+                        : null,
+                },
+            },
+            Providers =
+            [
+                CreateProvider() with
+                {
+                    Repositories =
+                    [
+                        new RepositoryOptions
+                        {
+                            Id = "github/example/repo",
+                            Name = "example/repo",
+                            CloneUrl = "http://github.example/example/repo.git",
+                        },
+                    ],
+                },
+            ],
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("CloneUrl must use HTTPS with token authentication", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void ValidateRejectsTelegramWithoutExactlyOneTokenSourceOrChatId()
     {
