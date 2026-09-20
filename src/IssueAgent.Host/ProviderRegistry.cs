@@ -41,12 +41,22 @@ public sealed class ProviderRegistry
                 authentication[repository.Id] = gitAuth;
                 var host = GitUrlHost.TryGetHost(repository.CloneUrl);
                 gitHosts[repository.Id] = host;
-                if (host is not null &&
-                    !ambiguousGitAuthenticationHosts.Contains(host) &&
-                    !authenticationByHost.TryAdd(host, gitAuth))
+                if (host is null || ambiguousGitAuthenticationHosts.Contains(host))
                 {
-                    authenticationByHost.Remove(host);
-                    ambiguousGitAuthenticationHosts.Add(host);
+                    continue;
+                }
+
+                if (authenticationByHost.TryGetValue(host, out var configuredAuthentication))
+                {
+                    if (!Equivalent(configuredAuthentication, gitAuth))
+                    {
+                        authenticationByHost.Remove(host);
+                        ambiguousGitAuthenticationHosts.Add(host);
+                    }
+                }
+                else
+                {
+                    authenticationByHost.Add(host, gitAuth);
                 }
             }
         }
@@ -70,7 +80,7 @@ public sealed class ProviderRegistry
 
     /// <summary>Resolves recursive-submodule credentials by host (specification §11). The current
     /// repository's authentication is used only for its own configured host. A different configured
-    /// host is usable only when it has exactly one configured mapping; ambiguous mappings fail closed.</summary>
+    /// host is usable when every configured mapping agrees; differing mappings fail closed.</summary>
     public GitAuthentication? GetSubmoduleGitAuthentication(string repositoryId, string host)
     {
         var authentication = GetGitAuthentication(repositoryId);
@@ -127,6 +137,23 @@ public sealed class ProviderRegistry
 
         return trusts[0];
     }
+
+    private static bool Equivalent(GitAuthentication left, GitAuthentication right) =>
+        left.Mode == right.Mode &&
+        left.HttpsUsername == right.HttpsUsername &&
+        left.HttpsToken == right.HttpsToken &&
+        left.SshPrivateKey == right.SshPrivateKey &&
+        left.SshPrivateKeyPassphrase == right.SshPrivateKeyPassphrase &&
+        left.SshUsername == right.SshUsername &&
+        Equivalent(left.TlsTrust, right.TlsTrust) &&
+        Equivalent(left.SshTrust, right.SshTrust);
+
+    private static bool Equivalent(SshTrust? left, SshTrust? right) =>
+        left is null
+            ? right is null
+            : right is not null &&
+              left.Mode == right.Mode &&
+              left.Fingerprints.SequenceEqual(right.Fingerprints, StringComparer.OrdinalIgnoreCase);
 
     private static bool Equivalent(TlsTrust left, TlsTrust right) =>
         left.Mode == right.Mode &&

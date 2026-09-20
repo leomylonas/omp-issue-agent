@@ -72,7 +72,7 @@ public interface IGitRepositoryManager
     ValueTask<bool> TryMergeAsync(string repositoryId, string worktreePath, string commit, GitIdentity identity, CancellationToken cancellationToken);
 
     /// <summary>Pushes <paramref name="branchName"/> from the worktree to its configured remote.
-    /// Never force-pushes.</summary>
+    /// Rejects a dirty worktree and never force-pushes.</summary>
     ValueTask PushAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken);
 
     /// <summary>Removes the worktree and its administrative metadata. Does not touch the bare

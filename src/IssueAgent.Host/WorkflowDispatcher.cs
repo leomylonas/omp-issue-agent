@@ -389,10 +389,16 @@ public sealed partial class WorkflowDispatcher(
             var routedCommand = WorkflowCommandRouting.ContinueRoute(state, durableState);
             var preservesRetainedContinuation = state.WaitingReason is
                 WaitingReason.NewInputDuringImplementation or WaitingReason.MaterialPlanDeviation or
-                WaitingReason.NewFeedbackDuringRevision;
+                WaitingReason.NewFeedbackDuringRevision ||
+                HasRetainedRevisionCheckpoint(state, reconciled.Content!);
             if (!preservesRetainedContinuation)
             {
-                await RecoverContinueWorkspaceAsync(runtime.Dependencies, runtime.Config, state, cancellationToken).ConfigureAwait(false);
+                await RecoverContinueWorkspaceAsync(
+                    runtime.Dependencies,
+                    runtime.Config,
+                    state,
+                    reconciled.Content!,
+                    cancellationToken).ConfigureAwait(false);
             }
             if (routedCommand is null)
             {
@@ -406,8 +412,7 @@ public sealed partial class WorkflowDispatcher(
             // checkpoint and transitions phase/state labels. A process crash before that durable
             // hand-off then leaves the command available for safe replay.
             publishRetainedRevision = routedCommand == WorkflowCommand.Revise &&
-                state.Phase == WorkflowPhase.Revising &&
-                reconciled.Content!.ImplementationResult is { Length: > 0 };
+                HasRetainedRevisionCheckpoint(state, reconciled.Content!);
             command = routedCommand;
         }
 
@@ -482,6 +487,7 @@ public sealed partial class WorkflowDispatcher(
         WorkflowDependencies dependencies,
         WorkflowRepositoryConfig config,
         WorkflowState state,
+        CanonicalCommentContent content,
         CancellationToken cancellationToken)
     {
         var worktreePath = Path.Combine(config.WorkflowsStoragePath, state.WorkflowId.ToString(), "worktree");
@@ -498,7 +504,8 @@ public sealed partial class WorkflowDispatcher(
                 remoteHead ?? state.BaseCommit,
                 cancellationToken).ConfigureAwait(false);
         }
-        else if (state.WaitingReason is not (WaitingReason.NewInputDuringImplementation or
+        else if (!HasRetainedRevisionCheckpoint(state, content) &&
+                 state.WaitingReason is not (WaitingReason.NewInputDuringImplementation or
                      WaitingReason.MaterialPlanDeviation or WaitingReason.NewFeedbackDuringRevision) &&
                  remoteHead is not null &&
                  !await dependencies.Git.HasUncommittedChangesAsync(
@@ -508,6 +515,10 @@ public sealed partial class WorkflowDispatcher(
                 config.Repository.Id, worktreePath, remoteHead, cancellationToken).ConfigureAwait(false);
         }
     }
+
+    private static bool HasRetainedRevisionCheckpoint(WorkflowState state, CanonicalCommentContent content) =>
+        state.Phase == WorkflowPhase.Revising &&
+        content.ImplementationResult is { Length: > 0 };
 
 
 

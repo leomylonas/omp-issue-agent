@@ -517,6 +517,23 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task PushAsyncRejectsDirtyWorktreeWithoutPublishing()
+    {
+        var bareRemotePath = Track(TempGitFixtures.CreateBareRemoteRepository(out var baseCommit));
+        await manager.EnsureBareRepositoryAsync("repo-push-dirty", bareRemotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
+        await manager.CreateWorktreeAsync("repo-push-dirty", "wt-push-dirty", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
+
+        File.WriteAllText(Path.Combine(worktreePath, "uncommitted.txt"), "must not publish\n");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            manager.PushAsync("repo-push-dirty", worktreePath, "agent/issue-1", TempGitFixtures.AnonymousAuthentication(), CancellationToken.None).AsTask());
+
+        using var bareRepo = new Repository(bareRemotePath);
+        Assert.Null(bareRepo.Branches["agent/issue-1"]);
+    }
+
+    [Fact]
     public async Task PushAsyncUsesTheCanonicalBareRepositoryWhenOmpReplacesWorktreeGitMetadata()
     {
         var bareRemotePath = Track(TempGitFixtures.CreateBareRemoteRepository(out var baseCommit));

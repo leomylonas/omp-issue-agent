@@ -9,7 +9,22 @@ namespace IssueAgent.Host.Tests;
 public sealed class ProviderRegistryTests
 {
     [Fact]
-    public void SubmoduleAuthenticationUsesCurrentRepositoryAndRejectsAmbiguousHostMappings()
+    public void SubmoduleAuthenticationRetainsEquivalentHostMappings()
+    {
+        var registry = CreateRegistry(
+            Repository("repository-a", "https://git.example.test/team/a.git", "shared-token"),
+            Repository("repository-b", "https://git.example.test/team/b.git", "shared-token"),
+            Repository("repository-local", "/srv/git/local.git", "token-local"));
+
+        var authentication = registry.GetSubmoduleGitAuthentication("repository-local", "git.example.test");
+
+        Assert.NotNull(authentication);
+        Assert.Equal("shared-token", authentication.HttpsToken);
+        Assert.Equal(TlsTrustMode.System, authentication.TlsTrust.Mode);
+    }
+
+    [Fact]
+    public void SubmoduleAuthenticationUsesCurrentRepositoryAndRejectsDifferentHostMappings()
     {
         var registry = CreateRegistry(
             Repository("repository-a", "https://git.example.test/team/a.git", "token-a"),

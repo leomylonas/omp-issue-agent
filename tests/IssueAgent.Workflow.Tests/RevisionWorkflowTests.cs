@@ -163,6 +163,54 @@ public sealed class RevisionWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsyncFailsWithoutPublishingWhenConflictResolutionDoesNotContainTarget()
+    {
+        var state = await SeedReviewStateAsync();
+        git.MergeSucceeds = false;
+        git.RemoteBranchIsDescendant = false;
+        var omp = new FakeOmpClient()
+            .EnqueueRun(new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"summary":"Revision.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""))
+            .EnqueueRun(new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"summary":"Conflict resolved.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Failed, outcome.Status);
+        Assert.Equal(0, git.PushCallCount);
+        Assert.Contains("does not contain the latest target commit", Assert.Single(notifier.Notifications).Message, StringComparison.Ordinal);
+    }
+
+
+    [Fact]
+    public async Task RunAsyncFailsWithoutPublishingWhenConflictResolutionLeavesWorktreeDirty()
+    {
+        var state = await SeedReviewStateAsync();
+        git.MergeSucceeds = false;
+        git.WorktreeHasUncommittedChanges = true;
+        var omp = new FakeOmpClient()
+            .EnqueueRun(new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"summary":"Revision.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""))
+            .EnqueueRun(new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"summary":"Conflict resolved.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Failed, outcome.Status);
+        Assert.Equal(0, git.PushCallCount);
+        Assert.Contains("not clean after target integration", Assert.Single(notifier.Notifications).Message, StringComparison.Ordinal);
+    }
+    [Fact]
     public async Task RunAsyncPausesForMaterialDeviationBeforeMergeOrPush()
     {
         var state = await SeedReviewStateAsync();

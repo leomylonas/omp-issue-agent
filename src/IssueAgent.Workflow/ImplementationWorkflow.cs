@@ -120,6 +120,12 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         var attachmentsPath = AttachmentsPath(config, currentState.WorkflowId);
         var (context, inputSnapshot) = await BuildContextForInputSnapshotAsync(
             config, issueNumber, workingState, currentPlan, attachmentsPath, cancellationToken).ConfigureAwait(false);
+        if (IsPlanStale(inputSnapshot, existingContent))
+        {
+            return await PauseForStalePlanAsync(
+                config, issueNumber, workingState, workingContent, string.Empty, cancellationToken,
+                [WorkflowCommand.Implement]).ConfigureAwait(false);
+        }
         await omp.SelectRoleAsync(config.ImplementationRole, cancellationToken).ConfigureAwait(false);
         var implementOutcome = await OmpRunCollector
             .RunToCompletionAsync(omp, new OmpRunRequest(currentState.OmpSessionId, worktreePath, config.ApplyInstructions(ImplementationPromptBuilder.BuildImplementationPrompt(context)), config.OmpAllowedEnvironment, config.OmpTimeout), cancellationToken)
@@ -305,6 +311,12 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         // timestamps rather than a bare count, so an edited comment or attachment is caught even if
         // the comment count is unchanged (specification §22).
         var latestInputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
+        if (IsPlanStale(latestInputSnapshot, workingContent))
+        {
+            return await PauseForStalePlanAsync(
+                config, issueNumber, workingState, workingContent, resultMarkdown, cancellationToken).ConfigureAwait(false);
+        }
+
         if (latestInputSnapshot != inputSnapshot)
         {
             return await PauseAsync(
@@ -315,6 +327,27 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                 resultMarkdown,
                 WaitingReason.NewInputDuringImplementation,
                 "New or edited human input arrived during implementation. The current worktree was retained; choose continue, replan, or cancel.",
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        if (await deps.Git.HasUncommittedChangesAsync(config.Repository.Id, worktreePath, cancellationToken).ConfigureAwait(false))
+        {
+            return await FailAsync(
+                config,
+                issueNumber,
+                workingState,
+                "Worktree is not clean after target integration; publication was not attempted.",
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        var headCommit = await deps.Git.GetHeadCommitAsync(config.Repository.Id, worktreePath, cancellationToken).ConfigureAwait(false);
+        if (!await deps.Git.IsAncestorAsync(config.Repository.Id, latestTargetCommit, headCommit, cancellationToken).ConfigureAwait(false))
+        {
+            return await FailAsync(
+                config,
+                issueNumber,
+                workingState,
+                "Resolved worktree does not contain the latest target commit; publication was not attempted.",
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -510,9 +543,37 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
     /// <summary>The plan is stale when the issue's title/description content no longer matches
     /// what the currently published plan was written against. A missing hash is also stale rather
     /// than being treated as a fresh plan (specification §22).</summary>
+
     private static bool IsPlanStale(ProviderIssue issue, CanonicalCommentContent existingContent) =>
+        IsPlanStale(new InputSnapshot(issue.Title, issue.Description, string.Empty), existingContent);
+
+    private static bool IsPlanStale(InputSnapshot input, CanonicalCommentContent existingContent) =>
         existingContent.State.PlanInputHash is not { Length: > 0 } hash ||
-        !string.Equals(hash, PlanInputHasher.Compute(issue.Title, issue.Description), StringComparison.Ordinal);
+        !string.Equals(hash, PlanInputHasher.Compute(input.Title, input.Description), StringComparison.Ordinal);
+
+    private Task<WorkflowOutcome> PauseForStalePlanAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState workingState,
+        CanonicalCommentContent existingContent,
+        string implementationResult,
+        CancellationToken cancellationToken,
+        IReadOnlyCollection<WorkflowCommand>? commandsToConsume = null) =>
+        PauseAsync(
+            config,
+            issueNumber,
+            workingState with
+            {
+                Phase = WorkflowPhase.Planned,
+                OperationalState = WorkflowOperationalState.Waiting,
+                WaitingReason = WaitingReason.ReplanRequired,
+            },
+            existingContent,
+            implementationResult,
+            WaitingReason.ReplanRequired,
+            "The issue title or description changed since the approved plan, or the plan input hash is missing. Replan before implementing.",
+            cancellationToken,
+            commandsToConsume);
 
     private Task<WorkflowOutcome> PauseForMaterialDeviationAsync(
         WorkflowRepositoryConfig config,
@@ -592,8 +653,8 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
 
 
     /// <summary>Captures implementation input before prompt construction. When input changes while
-    /// context is assembled, rebuild the prompt context but retain the original baseline so the
-    /// pre-push gate still pauses before any work based on post-baseline input is published.</summary>
+    /// context is assembled, rebuild the prompt context and capture a final baseline for the
+    /// pre-prompt plan-staleness and pre-push input gates.</summary>
     private async Task<(AgentContext Context, InputSnapshot InputSnapshot)> BuildContextForInputSnapshotAsync(
         WorkflowRepositoryConfig config,
         long issueNumber,
@@ -612,6 +673,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             context = await deps.ContextBuilder
                 .BuildAsync(config.Repository, issueNumber, workingState, currentPlan, mergeRequest: null, attachmentsPath, cancellationToken)
                 .ConfigureAwait(false);
+            baseline = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
         }
 
         return (context, baseline);

@@ -320,7 +320,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
 
 
     [Fact]
-    public async Task RunAsyncRebuildsPromptContextAndPausesWhenInputChangesDuringContextConstruction()
+    public async Task RunAsyncPausesForReplanBeforePromptWhenTitleOrDescriptionChangesDuringContextConstruction()
     {
         var state = await SeedApprovedPlanAsync();
         var inputChanged = false;
@@ -334,18 +334,41 @@ public sealed class ImplementationWorkflowTests : IDisposable
                     Description = "Revised requirements from the issue.",
                     UpdatedAt = clock.UtcNow.AddMinutes(1),
                 };
-                provider.AddComment(
-                    Repository,
-                    1,
-                    "alice",
-                    "The implementation must retain the existing API.",
-                    clock.UtcNow.AddMinutes(1));
             }
         };
-        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
-            "session-1",
-            clock.UtcNow,
-            """{"summary":"Implemented the plan.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var omp = new FakeOmpClient();
+        var outcome = await CreateWorkflow().RunAsync(
+            CreateConfig(),
+            WorkflowMode.Full,
+            1,
+            state,
+            omp,
+            CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WorkflowPhase.Planned, outcome.State.Phase);
+        Assert.Equal(WaitingReason.ReplanRequired, outcome.State.WaitingReason);
+        Assert.Empty(omp.RunRequests);
+        Assert.Equal(0, git.PushCallCount);
+        Assert.Empty(provider.MergeRequests);
+    }
+
+    [Fact]
+    public async Task RunAsyncPausesForReplanBeforePushWhenTitleOrDescriptionChangesDuringImplementation()
+    {
+        var state = await SeedApprovedPlanAsync();
+        var omp = new FakeOmpClient();
+        omp.EnqueueRun(
+            onStart: () => provider.Issues[(Repository.Id, 1)] = provider.Issues[(Repository.Id, 1)] with
+            {
+                Title = "Bug with revised requirements",
+                UpdatedAt = clock.UtcNow.AddMinutes(1),
+            },
+            new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"summary":"Implemented the approved plan.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
 
         var outcome = await CreateWorkflow().RunAsync(
             CreateConfig(),
@@ -355,11 +378,9 @@ public sealed class ImplementationWorkflowTests : IDisposable
             omp,
             CancellationToken.None);
 
-        Assert.Equal(WaitingReason.NewInputDuringImplementation, outcome.State.WaitingReason);
-        Assert.Contains(
-            "Revised requirements from the issue.",
-            Assert.Single(omp.RunRequests).Prompt,
-            StringComparison.Ordinal);
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WorkflowPhase.Planned, outcome.State.Phase);
+        Assert.Equal(WaitingReason.ReplanRequired, outcome.State.WaitingReason);
         Assert.Equal(0, git.PushCallCount);
         Assert.Empty(provider.MergeRequests);
     }

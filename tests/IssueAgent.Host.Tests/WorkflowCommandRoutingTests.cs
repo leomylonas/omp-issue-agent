@@ -165,7 +165,7 @@ public sealed class WorkflowCommandRoutingTests
             var git = new ContinueRecoveryGit { RemoteHead = "remote-rewrite" };
 
             await WorkflowDispatcher.RecoverContinueWorkspaceAsync(
-                Dependencies(git), Config(root), state, CancellationToken.None);
+                Dependencies(git), Config(root), state, Content(state), CancellationToken.None);
 
             Assert.Equal([("repo", worktreePath, "remote-rewrite")], git.ResetWorktrees);
             Assert.Empty(git.CreatedWorktrees);
@@ -192,7 +192,37 @@ public sealed class WorkflowCommandRoutingTests
             var git = new ContinueRecoveryGit { RemoteHead = "remote-rewrite" };
 
             await WorkflowDispatcher.RecoverContinueWorkspaceAsync(
-                Dependencies(git), Config(root), state, CancellationToken.None);
+                Dependencies(git), Config(root), state, Content(state), CancellationToken.None);
+
+            Assert.Empty(git.ResetWorktrees);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RevisionContinueRecoveryPreservesCheckpointedCleanLocalAheadRevision()
+    {
+        var state = ReviewState() with
+        {
+            Phase = WorkflowPhase.Revising,
+            WaitingReason = WaitingReason.ManualIntervention,
+        };
+        var root = Path.Combine(Path.GetTempPath(), $"issue-agent-{Guid.NewGuid():N}");
+        var worktreePath = Path.Combine(root, state.WorkflowId.ToString(), "worktree");
+        Directory.CreateDirectory(worktreePath);
+        try
+        {
+            var git = new ContinueRecoveryGit { RemoteHead = "remote-rewrite" };
+
+            await WorkflowDispatcher.RecoverContinueWorkspaceAsync(
+                Dependencies(git),
+                Config(root),
+                state,
+                Content(state, implementationResult: "Revision committed locally before the process stopped."),
+                CancellationToken.None);
 
             Assert.Empty(git.ResetWorktrees);
         }
@@ -212,7 +242,7 @@ public sealed class WorkflowCommandRoutingTests
             var git = new ContinueRecoveryGit { RemoteHead = "remote-rewrite" };
 
             await WorkflowDispatcher.RecoverContinueWorkspaceAsync(
-                Dependencies(git), Config(root), state, CancellationToken.None);
+                Dependencies(git), Config(root), state, Content(state), CancellationToken.None);
 
             Assert.Equal([(state.WorkflowId.ToString(), "agent/issue-1", "remote-rewrite")], git.CreatedWorktrees);
             Assert.Empty(git.ResetWorktrees);
@@ -243,6 +273,12 @@ public sealed class WorkflowCommandRoutingTests
         new Dictionary<string, string>(),
         "plan",
         "task");
+
+    private static CanonicalCommentContent Content(WorkflowState state, string? implementationResult = null) => new(
+        "Plan",
+        [],
+        implementationResult,
+        CanonicalStateSerializer.ToDocument(state, pullOrMergeRequest: null));
 
     private sealed class ContinueRecoveryGit : IGitRepositoryManager
     {

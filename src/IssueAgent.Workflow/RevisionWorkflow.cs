@@ -202,6 +202,27 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         }
 
         var worktreePath = WorktreePath(config, workingState.WorkflowId);
+        if (await deps.Git.HasUncommittedChangesAsync(config.Repository.Id, worktreePath, cancellationToken).ConfigureAwait(false))
+        {
+            return await FailAsync(
+                config,
+                issueNumber,
+                workingState,
+                "Worktree is not clean after target integration; publication was not attempted.",
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        var headCommit = await deps.Git.GetHeadCommitAsync(config.Repository.Id, worktreePath, cancellationToken).ConfigureAwait(false);
+        if (!await deps.Git.IsAncestorAsync(config.Repository.Id, latestTargetCommit, headCommit, cancellationToken).ConfigureAwait(false))
+        {
+            return await FailAsync(
+                config,
+                issueNumber,
+                workingState,
+                "Resolved worktree does not contain the latest target commit; publication was not attempted.",
+                cancellationToken).ConfigureAwait(false);
+        }
+
         if (deps.Git.WorktreeRequiresLfs(worktreePath))
         {
             await deps.Git.UploadLfsObjectsAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);

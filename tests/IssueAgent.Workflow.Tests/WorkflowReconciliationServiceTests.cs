@@ -64,6 +64,7 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
     {
         git.BranchCommitToReturn = "local-sha";
         git.RemoteBranchCommitToReturn = "remote-sha";
+        git.RemoteBranchIsDescendant = false;
         var (state, canonical) = SeedWorkflow(WorkflowPhase.Implementing, WorkflowOperationalState.Waiting, WaitingReason.ManualIntervention);
 
         var result = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);

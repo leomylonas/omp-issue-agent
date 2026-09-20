@@ -410,10 +410,17 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
 
     public async ValueTask PushAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken)
     {
+        // Do not trust worktreePath/.git here: OMP can rewrite it. The registered linked-worktree
+        // metadata is owned by the hardened bare repository and identifies the real index.
+        var bareRepositoryPath = BareRepositoryPath(repositoryId);
+        if (HasTrustedUncommittedChanges(bareRepositoryPath, worktreePath))
+        {
+            throw new InvalidOperationException("Cannot publish a worktree with uncommitted changes.");
+        }
+
         // OMP can edit a retained worktree, including its .git file. Resolve both the ref and
         // remote from the canonical bare repository, which is never made group-writable, so a
         // worktree cannot redirect a credential-bearing push.
-        var bareRepositoryPath = BareRepositoryPath(repositoryId);
         if (authentication.Mode == GitAuthenticationMode.Ssh)
         {
             await GitSshTransport.PushAsync(bareRepositoryPath, branchName, authentication, cancellationToken).ConfigureAwait(false);
@@ -481,6 +488,26 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
             branchName,
             authentication,
             cancellationToken).ConfigureAwait(false);
+    }
+
+    private static bool HasTrustedUncommittedChanges(string bareRepositoryPath, string worktreePath)
+    {
+        var expectedGitFile = Path.GetFullPath(Path.Combine(worktreePath, ".git"));
+        var worktreesPath = Path.Combine(bareRepositoryPath, "worktrees");
+        foreach (var metadataPath in Directory.GetDirectories(worktreesPath))
+        {
+            var gitDirectoryPath = Path.Combine(metadataPath, "gitdir");
+            if (!File.Exists(gitDirectoryPath) ||
+                !string.Equals(Path.GetFullPath(File.ReadAllText(gitDirectoryPath).Trim()), expectedGitFile, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            using var worktreeRepository = new Repository(metadataPath);
+            return worktreeRepository.RetrieveStatus(new StatusOptions()).IsDirty;
+        }
+
+        throw new InvalidOperationException("Cannot publish an unregistered worktree.");
     }
 
     private string GetCanonicalOriginUrl(string repositoryId)

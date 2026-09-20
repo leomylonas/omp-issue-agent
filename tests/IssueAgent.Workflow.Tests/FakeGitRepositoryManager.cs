@@ -31,7 +31,7 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
 
     public string? RemoteBranchCommitToReturn { get; set; } = "abc123";
 
-    public bool RemoteBranchIsDescendant { get; set; }
+    public bool RemoteBranchIsDescendant { get; set; } = true;
 
     public ValueTask<string?> TryResolveRemoteBranchCommitAsync(string repositoryId, string branchName, CancellationToken cancellationToken) =>
         ValueTask.FromResult(RemoteBranchCommitToReturn);
@@ -55,7 +55,9 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask<bool> HasUncommittedChangesAsync(string repositoryId, string worktreePath, CancellationToken cancellationToken) => ValueTask.FromResult(false);
+    public bool WorktreeHasUncommittedChanges { get; set; }
+
+    public ValueTask<bool> HasUncommittedChangesAsync(string repositoryId, string worktreePath, CancellationToken cancellationToken) => ValueTask.FromResult(WorktreeHasUncommittedChanges);
 
     public ValueTask<string> GetHeadCommitAsync(string repositoryId, string worktreePath, CancellationToken cancellationToken) => ValueTask.FromResult(BranchCommitToReturn);
 
