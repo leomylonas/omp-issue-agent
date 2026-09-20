@@ -259,9 +259,12 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
         WorkflowState state,
         WaitingReason reason,
         string explanation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool recordNewBlocker = false)
     {
-        var alreadyRecorded = state.OperationalState == WorkflowOperationalState.Waiting && state.WaitingReason == reason;
+        var alreadyRecorded = !recordNewBlocker &&
+            state.OperationalState == WorkflowOperationalState.Waiting &&
+            state.WaitingReason == reason;
         var waitingState = state with
         {
             OperationalState = WorkflowOperationalState.Waiting,
@@ -271,7 +274,6 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
                 : state.InterruptedPhase,
             UpdatedAt = alreadyRecorded ? state.UpdatedAt : dependencies.Clock.UtcNow,
         };
-
         if (!alreadyRecorded)
         {
             await PersistCanonicalStateAsync(config, issueNumber, canonicalComment, content, waitingState, cancellationToken)

@@ -157,6 +157,35 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ChangedRemoteRewriteBlockerIsPersistedAndNotifiedEvenWhenTheReasonIsUnchanged()
+    {
+        var (state, canonical) = SeedWorkflow(
+            WorkflowPhase.Revising,
+            WorkflowOperationalState.Waiting,
+            WaitingReason.RemoteHistoryRewrite);
+
+        var result = await CreateService().PauseForHumanAsync(
+            CreateConfig(),
+            1,
+            canonical,
+            CanonicalCommentMarkdown.Parse(canonical.Body),
+            state,
+            WaitingReason.RemoteHistoryRewrite,
+            "The revision branch disappeared from the authoritative remote before the retained revision could be rebuilt.",
+            CancellationToken.None,
+            recordNewBlocker: true);
+
+        var persisted = CanonicalStateSerializer.ToWorkflowState(
+            CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body).State);
+        Assert.Equal(ReconciliationDisposition.Waiting, result.Disposition);
+        Assert.Equal(WaitingReason.RemoteHistoryRewrite, persisted.WaitingReason);
+        Assert.Equal(clock.UtcNow, persisted.UpdatedAt);
+        Assert.Equal(
+            "The revision branch disappeared from the authoritative remote before the retained revision could be rebuilt.",
+            Assert.Single(notifier.Notifications).Message);
+    }
+
+    [Fact]
     public async Task InterruptedPlanningRecordsItsOriginalPhaseBeforeWaiting()
     {
         var (state, canonical) = SeedWorkflow(WorkflowPhase.Planning, WorkflowOperationalState.Working, waitingReason: null);

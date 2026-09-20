@@ -93,6 +93,25 @@ public sealed class AgentContextBuilderTests
         Assert.Empty(context.RelatedIssues);
     }
 
+    [Theory]
+    [InlineData("github/octo/widgets")]
+    [InlineData("42")]
+    public async Task BuildAsyncReadsConfiguredRelatedRepositoryWhenProviderReportsAlternateId(string providerRepositoryId)
+    {
+        var provider = new FakeGitProvider();
+        var configuredRepository = new RepositoryRef("configured/octo-widgets", Repository.OwnerOrNamespace, Repository.Name);
+        var providerRepository = new RepositoryRef(providerRepositoryId, Repository.OwnerOrNamespace, Repository.Name);
+        provider.AddIssue(configuredRepository, 1, "Primary issue", "Primary description");
+        provider.AddIssue(configuredRepository, 2, "Related issue", "Related description");
+        provider.AddRelationship(configuredRepository, 1, "related", providerRepository, 2);
+
+        var context = await BuildAsync(provider, 1, repository: configuredRepository);
+
+        var related = Assert.Single(context.RelatedIssues);
+        Assert.Equal(configuredRepository.Id, related.Issue.RepositoryId);
+        Assert.Equal(2, related.Issue.Number);
+    }
+
     [Fact]
     public async Task BuildAsyncDetectsRelationshipCyclesWithoutInfiniteLoop()
     {
@@ -146,12 +165,17 @@ public sealed class AgentContextBuilderTests
         Assert.Equal("thread-1", reviewComment.ThreadId);
     }
 
-    private static async Task<AgentContext> BuildAsync(FakeGitProvider provider, long issueNumber, int depth = 1)
+    private static async Task<AgentContext> BuildAsync(
+        FakeGitProvider provider,
+        long issueNumber,
+        int depth = 1,
+        RepositoryRef? repository = null)
     {
+        var effectiveRepository = repository ?? Repository;
         var options = new AgentContextBuilderOptions
         {
             RelatedIssueTraversalDepth = depth,
-            AllowedRepositoryIds = new HashSet<string>(StringComparer.Ordinal) { Repository.Id },
+            AllowedRepositories = [effectiveRepository],
         };
         var builder = new AgentContextBuilder(provider, new AttachmentPipeline(provider, options.AttachmentLimits), options);
         var state = new WorkflowState(
@@ -159,7 +183,7 @@ public sealed class AgentContextBuilderTests
             0, null, "omp-session", "agent/issue-1", "main", "abc123", DateTimeOffset.UtcNow);
 
         return await builder.BuildAsync(
-            Repository, issueNumber, state, currentPlan: null, mergeRequest: null,
+            effectiveRepository, issueNumber, state, currentPlan: null, mergeRequest: null,
             Path.Combine(Path.GetTempPath(), "issueagent-context-tests", Guid.NewGuid().ToString("N")),
             CancellationToken.None);
     }

@@ -385,6 +385,15 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
                 var mergedTrust = EffectiveConfigurationResolver.Merge(options.Defaults, provider.Defaults, repository.Settings);
                 ValidateMergedTrust(mergedTrust, $"Repository '{repository.Id}' (merged effective settings)", failures);
                 ValidateGitCredentials(provider, mergedTrust, $"Repository '{repository.Id}'", failures);
+                // A derived HTTPS clone URL preserves the provider BaseUri scheme unless SSH is
+                // selected; token modes use LibGit2Sharp rather than SSH.
+                if (repository.CloneUrl is null &&
+                    provider.BaseUri is { } providerBaseUri &&
+                    providerBaseUri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                    UsesTokenGitAuthentication(provider, mergedTrust))
+                {
+                    failures.Add($"Repository '{repository.Id}' derived CloneUrl must use HTTPS with token authentication.");
+                }
                 if (repository.CloneUrl is { } cloneUrl &&
                     Uri.TryCreate(cloneUrl, UriKind.Absolute, out var parsedCloneUrl) &&
                     ((parsedCloneUrl.Scheme is "http" or "https" && parsedCloneUrl.UserInfo.Length > 0) ||

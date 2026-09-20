@@ -361,6 +361,36 @@ public sealed class IssueAgentOptionsValidatorTests
     }
 
     [Fact]
+    public void ValidateRejectsPlaintextDerivedCloneUrlWhenInheritedTokenAuthenticationIsConfigured()
+    {
+        var options = CreateOptions() with
+        {
+            Defaults = new RepositorySettingsOptions
+            {
+                Git = new GitTransportOptions
+                {
+                    Mode = ConfiguredGitAuthenticationMode.Token,
+                    Token = new SecretSource { Env = "GIT_TOKEN" },
+                },
+            },
+            Providers =
+            [
+                CreateProvider() with
+                {
+                    BaseUri = new Uri("http://github.example/"),
+                    Token = null,
+                    IdentityOverride = "IssueAgent",
+                },
+            ],
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("derived CloneUrl must use HTTPS with token authentication", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ValidateRejectsTelegramWithoutExactlyOneTokenSourceOrChatId()
     {
         var options = CreateOptions() with

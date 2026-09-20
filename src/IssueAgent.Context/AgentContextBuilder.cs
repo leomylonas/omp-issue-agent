@@ -18,9 +18,9 @@ public sealed record AgentContextBuilderOptions
     /// markers remain OMP-visible because their source cannot be authenticated.</summary>
     public string? CanonicalCommentAuthor { get; init; }
 
-    /// <summary>Configured enabled repositories whose issues may be read as related context.</summary>
-    public IReadOnlySet<string> AllowedRepositoryIds { get; init; } =
-        new HashSet<string>(StringComparer.Ordinal);
+    /// <summary>Configured enabled repositories whose issues may be read as related context.
+    /// Repository references retain the configured provider-native identifier for follow-up reads.</summary>
+    public IReadOnlyList<RepositoryRef> AllowedRepositories { get; init; } = [];
 }
 
 /// <summary>
@@ -114,23 +114,24 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
                     .GetIssueRelationshipsAsync(currentRepository, currentIssueNumber, cancellationToken)
                     .ConfigureAwait(false))
                 {
-                    if (!options.AllowedRepositoryIds.Contains(relationship.Repository.Id))
+                    var allowedRepository = FindAllowedRepository(relationship.Repository);
+                    if (allowedRepository is null)
                     {
                         continue;
                     }
 
-                    var key = (relationship.Repository.Id, relationship.IssueNumber);
+                    var key = (allowedRepository.Id, relationship.IssueNumber);
                     if (!visited.Add(key))
                     {
                         continue;
                     }
 
                     var relatedIssueContext = await BuildIssueContextAsync(
-                        relationship.Repository, relationship.IssueNumber, attachmentsDestinationDirectory, remainingBudget, cancellationToken)
+                        allowedRepository, relationship.IssueNumber, attachmentsDestinationDirectory, remainingBudget, cancellationToken)
                         .ConfigureAwait(false);
 
                     results.Add(new RelatedIssueContext(relationship.Relationship, relatedIssueContext));
-                    nextFrontier.Add((relationship.Repository, relationship.IssueNumber));
+                    nextFrontier.Add((allowedRepository, relationship.IssueNumber));
                 }
             }
 
@@ -139,6 +140,11 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
 
         return results;
     }
+
+    private RepositoryRef? FindAllowedRepository(RepositoryRef relatedRepository) =>
+        options.AllowedRepositories.SingleOrDefault(configuredRepository =>
+            string.Equals(configuredRepository.OwnerOrNamespace, relatedRepository.OwnerOrNamespace, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(configuredRepository.Name, relatedRepository.Name, StringComparison.OrdinalIgnoreCase));
 
 
     /// <summary>Builds review/comment/attachment context for an already-located merge request.</summary>

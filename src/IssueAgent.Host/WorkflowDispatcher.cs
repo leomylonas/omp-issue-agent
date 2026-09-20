@@ -450,8 +450,20 @@ public sealed partial class WorkflowDispatcher(
                     .TryResolveRemoteBranchCommitAsync(runtime.Repository.Id, state.Branch, cancellationToken)
                     .ConfigureAwait(false) is null)
             {
-                // There is no accepted branch tip from which a fresh revision can be rebuilt.
-                // Keep the retained local result untouched for an explicit human recovery decision.
+                // The prior rewrite blocker had an accepted remote tip. Its disappearance is a
+                // new recovery blocker even though both conditions share the rewrite enum.
+                // Durably re-record and notify it without consuming the acknowledgement command.
+                await reconciliation.PauseForHumanAsync(
+                    runtime.Config,
+                    issueNumber,
+                    canonical,
+                    reconciled.Content!,
+                    state,
+                    WaitingReason.RemoteHistoryRewrite,
+                    "The revision branch disappeared from the authoritative remote before the retained revision could be rebuilt. Restore the branch and continue again.",
+                    cancellationToken,
+                    recordNewBlocker: state.Phase == WorkflowPhase.Revising &&
+                        state.WaitingReason == WaitingReason.RemoteHistoryRewrite).ConfigureAwait(false);
                 return;
             }
             var routedCommand = rebuildRetainedRevisionFromRemoteHead
@@ -492,7 +504,9 @@ public sealed partial class WorkflowDispatcher(
                     state,
                     waitingReason,
                     message,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken,
+                    recordNewBlocker: state.Phase == WorkflowPhase.Revising &&
+                        state.WaitingReason == WaitingReason.RemoteHistoryRewrite).ConfigureAwait(false);
                 return;
             }
             if (routedCommand is null)
@@ -837,10 +851,10 @@ public sealed partial class WorkflowDispatcher(
             RelatedIssueTraversalDepth = resolved.RelatedIssueTraversalDepth,
             AttachmentLimits = limits,
             CanonicalCommentAuthor = canonicalCommentAuthor,
-            AllowedRepositoryIds = effectiveProvider.Repositories
+            AllowedRepositories = effectiveProvider.Repositories
                 .Where(repository => repository.Enabled)
-                .Select(repository => repository.Id)
-                .ToHashSet(StringComparer.Ordinal),
+                .Select(repository => new RepositoryRef(repository.Id, repository.OwnerOrNamespace, repository.Name))
+                .ToArray(),
         };
         var context = new AgentContextBuilder(provider, new AttachmentPipeline(provider, limits), contextOptions);
         var dependencies = new WorkflowDependencies(provider, git, context, notifier, new SystemClock());
