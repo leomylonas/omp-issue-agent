@@ -20,7 +20,7 @@ namespace IssueAgent.Git;
 /// </summary>
 public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRepositoryManager
 {
-    private static readonly string[] mutableBareRepositoryDirectories = ["objects", "refs", "logs", "worktrees"];
+    private static readonly string[] mutableBareRepositoryDirectories = ["objects", "refs", "worktrees"];
 
 
     public ValueTask EnsureBareRepositoryAsync(string repositoryId, string cloneUrl, GitAuthentication authentication, CancellationToken cancellationToken)
@@ -179,6 +179,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
                 ConfigureLfsFilters(worktreePath);
                 if (OperatingSystem.IsLinux())
                 {
+                    HardenBareRepositoryAuthority(barePath);
                     MakeWorktreeWritableByOmp(worktreePath);
                     MakeLinkedWorktreeMetadataWritableByOmp(barePath, worktreeId);
                 }
@@ -200,6 +201,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         ConfigureLfsFilters(worktreePath);
         if (OperatingSystem.IsLinux())
         {
+            HardenBareRepositoryAuthority(barePath);
             MakeWorktreeWritableByOmp(worktreePath);
             MakeLinkedWorktreeMetadataWritableByOmp(barePath, worktreeId);
         }
@@ -406,6 +408,18 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         if (File.Exists(configPath))
         {
             File.SetUnixFileMode(configPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+
+        // OMP commits through a linked worktree. Git writes its objects, branch refs, and
+        // linked-worktree metadata in the shared bare database; grant its shared group only those
+        // mutable paths, never the bare root or remote configuration.
+        foreach (var directory in mutableBareRepositoryDirectories)
+        {
+            var path = Path.Combine(bareRepositoryPath, directory);
+            if (Directory.Exists(path))
+            {
+                MakeDirectoryTreeWritableByOmp(path);
+            }
         }
     }
 

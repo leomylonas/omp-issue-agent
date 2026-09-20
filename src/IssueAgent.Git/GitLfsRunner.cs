@@ -140,16 +140,22 @@ public static class GitLfsRunner
         {
             case GitAuthenticationMode.ProviderToken or GitAuthenticationMode.Token:
                 var origin = TryGetHttpsUri(GetOriginUrl(startInfo.WorkingDirectory));
-                var endpoint = ResolveLfsEndpointUri(startInfo.WorkingDirectory) ?? origin;
-                if (origin is null || endpoint is null ||
-                    !string.Equals(endpoint.Authority, origin.Authority, StringComparison.OrdinalIgnoreCase))
+                var endpoints = GetConfiguredLfsEndpoints(startInfo.WorkingDirectory);
+                if (endpoints.Any(endpoint => TryGetHttpsUri(endpoint) is null))
                 {
-                    // The effective LFS endpoint (possibly overridden by a committed .lfsconfig)
-                    // is not the trusted HTTPS origin authority: never forward credentials.
+                    throw new InvalidOperationException(
+                        "Every configured Git LFS pull or push endpoint must be an absolute HTTPS URI before credentials can be used.");
+                }
+                if (origin is null ||
+                    endpoints.Any(endpoint => !IsHttpsEndpointAtAuthority(endpoint, origin.Authority)))
+                {
+                    // A local or committed LFS override can redirect either pulls or pushes. Never
+                    // offer the repository token unless every configured endpoint is HTTPS at the
+                    // exact trusted origin authority.
                     break;
                 }
 
-                ApplyHttpsTlsTrust(startInfo, authentication.TlsTrust);
+                ApplyHttpsTlsTrust(startInfo, authentication.TlsTrust, isolatedHome);
 
                 var askPassPath = Path.Combine(isolatedHome, "askpass.sh");
                 File.WriteAllText(askPassPath, "#!/bin/sh\nprintf '%s\\n' \"$ISSUEAGENT_GIT_TOKEN\"\n");
@@ -165,6 +171,9 @@ public static class GitLfsRunner
 
             case GitAuthenticationMode.Ssh:
                 var trust = authentication.SshTrust ?? throw new InvalidOperationException("SSH transport requires an explicit host-verification policy; none was configured.");
+                // Hybrid LFS authentication obtains credentials over SSH and then transfers the
+                // objects over HTTPS. Apply the same HTTPS CA policy before git-lfs starts.
+                ApplyHttpsTlsTrust(startInfo, authentication.TlsTrust, isolatedHome);
                 var remoteUrl = GetOriginUrl(startInfo.WorkingDirectory);
                 startInfo.Environment["GIT_SSH_COMMAND"] = GitSshTransport.BuildSshCommandForLfs(authentication, trust, remoteUrl, isolatedHome);
                 break;
@@ -187,33 +196,70 @@ public static class GitLfsRunner
         return url;
     }
 
-    /// <summary>Resolves the LFS endpoint git-lfs will use. A configured endpoint must be an
-    /// absolute HTTPS URI so token credentials cannot be offered to an ambiguous transport.</summary>
-    private static Uri? ResolveLfsEndpointUri(string workingDirectory)
+    /// <summary>Gets every endpoint override that can redirect an LFS pull or push. Both the
+    /// worktree config and a committed <c>.lfsconfig</c> participate in git-lfs resolution.</summary>
+    private static List<string> GetConfiguredLfsEndpoints(string workingDirectory)
     {
-        var lfsConfigPath = Path.Combine(workingDirectory, ".lfsconfig");
-        if (!File.Exists(lfsConfigPath))
-        {
-            return null;
-        }
+        string[] keys =
+        [
+            "lfs.url",
+            "lfs.pushurl",
+            "remote.origin.lfsurl",
+            "remote.origin.lfspushurl",
+            "remote.origin.pushurl",
+        ];
 
-        using var process = Process.Start(new ProcessStartInfo("git")
+        var endpoints = new List<string>();
+        foreach (var key in keys)
         {
-            ArgumentList = { "-c", "core.hooksPath=/dev/null", "config", "--file", lfsConfigPath, "--get", "lfs.url" },
+            endpoints.AddRange(GetConfigValues(workingDirectory, key, filePath: null));
+
+            var lfsConfigPath = Path.Combine(workingDirectory, ".lfsconfig");
+            if (File.Exists(lfsConfigPath))
+            {
+                endpoints.AddRange(GetConfigValues(workingDirectory, key, lfsConfigPath));
+            }
+        }
+        return endpoints;
+    }
+
+    private static string[] GetConfigValues(string workingDirectory, string key, string? filePath)
+    {
+        var startInfo = new ProcessStartInfo("git")
+        {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
-        }) ?? throw new InvalidOperationException("Failed to start git process.");
-        var url = process.StandardOutput.ReadToEnd().Trim();
-        process.WaitForExit();
-        if (string.IsNullOrEmpty(url))
+        };
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("core.hooksPath=/dev/null");
+        if (filePath is null)
         {
-            return null;
+            startInfo.ArgumentList.Add("-C");
+            startInfo.ArgumentList.Add(workingDirectory);
+            startInfo.ArgumentList.Add("config");
+            startInfo.ArgumentList.Add("--local");
         }
+        else
+        {
+            startInfo.ArgumentList.Add("config");
+            startInfo.ArgumentList.Add("--file");
+            startInfo.ArgumentList.Add(filePath);
+        }
+        startInfo.ArgumentList.Add("--get-all");
+        startInfo.ArgumentList.Add(key);
+        startInfo.Environment["GIT_CONFIG_NOSYSTEM"] = "1";
 
-        return TryGetHttpsUri(url) ?? throw new InvalidOperationException(
-            "The configured Git LFS endpoint must be an absolute HTTPS URI before credentials can be used.");
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start git process.");
+        var values = process.StandardOutput.ReadToEnd()
+            .Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        process.WaitForExit();
+        return values;
     }
+
+    private static bool IsHttpsEndpointAtAuthority(string endpoint, string authority) =>
+        TryGetHttpsUri(endpoint) is { } uri &&
+        string.Equals(uri.Authority, authority, StringComparison.OrdinalIgnoreCase);
 
     private static Uri? TryGetHttpsUri(string url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
@@ -222,19 +268,46 @@ public static class GitLfsRunner
             ? uri
             : null;
 
-    private static void ApplyHttpsTlsTrust(ProcessStartInfo startInfo, TlsTrust tlsTrust)
+    private static void ApplyHttpsTlsTrust(ProcessStartInfo startInfo, TlsTrust tlsTrust, string isolatedHome)
     {
         switch (tlsTrust.Mode)
         {
             case TlsTrustMode.System:
                 return;
+            case TlsTrustMode.SystemPlusAdditionalCa:
+                startInfo.Environment["GIT_SSL_CAINFO"] = CreateCaBundle(tlsTrust.AdditionalCaCertificatePaths, isolatedHome);
+                return;
             case TlsTrustMode.None:
                 startInfo.Environment["GIT_SSL_NO_VERIFY"] = "true";
                 return;
-            default:
+            case TlsTrustMode.Pinned:
                 throw new InvalidOperationException(
-                    $"git-lfs cannot safely enforce the configured TLS trust mode '{tlsTrust.Mode}'.");
+                    "git-lfs cannot enforce certificate fingerprints. Configure system trust or system-plus-additional-ca trust for Git LFS HTTPS transfers.");
+            default:
+                throw new InvalidOperationException($"git-lfs cannot safely enforce the configured TLS trust mode '{tlsTrust.Mode}'.");
         }
+    }
+
+    private static string CreateCaBundle(IReadOnlyList<string> certificatePaths, string isolatedHome)
+    {
+        if (certificatePaths.Count == 0)
+        {
+            throw new InvalidOperationException("git-lfs system-plus-additional-ca trust requires at least one CA certificate path.");
+        }
+        if (certificatePaths.Count == 1)
+        {
+            return certificatePaths[0];
+        }
+
+        var bundlePath = Path.Combine(isolatedHome, "additional-ca-bundle.pem");
+        using var destination = File.Create(bundlePath);
+        foreach (var certificatePath in certificatePaths)
+        {
+            using var source = File.OpenRead(certificatePath);
+            source.CopyTo(destination);
+            destination.WriteByte((byte)'\n');
+        }
+        return bundlePath;
     }
 }
 

@@ -73,6 +73,90 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
         Assert.False(startInfo.Environment.ContainsKey("ISSUEAGENT_GIT_TOKEN"));
     }
 
+    [Theory]
+    [InlineData("lfs.pushurl", "https://attacker.example/lfs")]
+    [InlineData("remote.origin.lfsurl", "https://attacker.example/lfs")]
+    [InlineData("remote.origin.lfspushurl", "https://attacker.example/lfs")]
+    [InlineData("remote.origin.pushurl", "https://attacker.example/widgets.git")]
+    public void ApplyAuthenticationNeverForwardsTokenWhenAnyLfsPullOrPushOverrideNamesADifferentAuthority(string key, string endpoint)
+    {
+        var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example/octo/widgets.git");
+        RunGitCli(worktreePath, "config", key, endpoint);
+        var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
+
+        InvokeApplyAuthentication(startInfo, new GitAuthentication { Mode = GitAuthenticationMode.Token, HttpsToken = "super-secret-token" }, Track());
+
+        Assert.False(startInfo.Environment.ContainsKey("GIT_ASKPASS"));
+        Assert.False(startInfo.Environment.ContainsKey("ISSUEAGENT_GIT_TOKEN"));
+    }
+
+    [Fact]
+    public void ApplyAuthenticationConfiguresAdditionalCaForHttpsLfs()
+    {
+        var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example/octo/widgets.git");
+        var certificatePath = Path.Combine(Track(), "additional-ca.pem");
+        File.WriteAllText(certificatePath, "test certificate");
+        var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
+
+        InvokeApplyAuthentication(startInfo, new GitAuthentication
+        {
+            Mode = GitAuthenticationMode.Token,
+            HttpsToken = "super-secret-token",
+            TlsTrust = new TlsTrust
+            {
+                Mode = TlsTrustMode.SystemPlusAdditionalCa,
+                AdditionalCaCertificatePaths = [certificatePath],
+            },
+        }, Track());
+
+        Assert.Equal(certificatePath, startInfo.Environment["GIT_SSL_CAINFO"]);
+        Assert.Equal("super-secret-token", startInfo.Environment["ISSUEAGENT_GIT_TOKEN"]);
+    }
+
+    [Fact]
+    public void ApplyAuthenticationConfiguresAdditionalCaForSshAuthenticatedHttpsLfs()
+    {
+        var worktreePath = CreateWorktreeWithOrigin("ssh://git.trusted.example/octo/widgets.git");
+        var certificatePath = Path.Combine(Track(), "additional-ca.pem");
+        File.WriteAllText(certificatePath, "test certificate");
+        var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
+
+        InvokeApplyAuthentication(startInfo, new GitAuthentication
+        {
+            Mode = GitAuthenticationMode.Ssh,
+            SshPrivateKey = "test key",
+            SshTrust = new SshTrust { Mode = SshHostVerificationMode.None },
+            TlsTrust = new TlsTrust
+            {
+                Mode = TlsTrustMode.SystemPlusAdditionalCa,
+                AdditionalCaCertificatePaths = [certificatePath],
+            },
+        }, Track());
+
+        Assert.Equal(certificatePath, startInfo.Environment["GIT_SSL_CAINFO"]);
+        Assert.True(startInfo.Environment.ContainsKey("GIT_SSH_COMMAND"));
+    }
+
+    [Fact]
+    public void ApplyAuthenticationFailsClosedForSshAuthenticatedHttpsLfsWithPinnedTls()
+    {
+        var worktreePath = CreateWorktreeWithOrigin("ssh://git.trusted.example/octo/widgets.git");
+        var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
+
+        var exception = Assert.Throws<TargetInvocationException>(() =>
+            InvokeApplyAuthentication(startInfo, new GitAuthentication
+            {
+                Mode = GitAuthenticationMode.Ssh,
+                SshPrivateKey = "test key",
+                SshTrust = new SshTrust { Mode = SshHostVerificationMode.None },
+                TlsTrust = new TlsTrust { Mode = TlsTrustMode.Pinned, Fingerprints = ["sha256/fingerprint"] },
+            }, Track()));
+
+        var failure = Assert.IsType<InvalidOperationException>(exception.InnerException);
+        Assert.Contains("system-plus-additional-ca", failure.Message, StringComparison.Ordinal);
+        Assert.False(startInfo.Environment.ContainsKey("GIT_SSH_COMMAND"));
+    }
+
     [Fact]
     public void ApplyAuthenticationNeverForwardsTokenWhenOriginUsesHttp()
     {

@@ -139,7 +139,7 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
     }
 
     [Fact]
-    public async Task CreateWorktreeAsyncMakesCheckoutAndLinkedMetadataGroupWritableForOmp()
+    public async Task CreateWorktreeAsyncMakesCheckoutAndRequiredBareGitMetadataGroupWritableForOmp()
     {
         if (!OperatingSystem.IsLinux())
         {
@@ -158,9 +158,18 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
         var checkoutDirectoryMode = File.GetUnixFileMode(worktreePath);
         Assert.True((checkoutMode & (UnixFileMode.GroupRead | UnixFileMode.GroupWrite)) == (UnixFileMode.GroupRead | UnixFileMode.GroupWrite));
         Assert.True((checkoutDirectoryMode & (UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute)) == (UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute));
-        var linkedMetadataPath = Path.Combine(reposRoot, "repo-group-permissions", "worktrees", "wt-permissions");
+        var barePath = Path.Combine(reposRoot, "repo-group-permissions");
+        var linkedMetadataPath = Path.Combine(barePath, "worktrees", "wt-permissions");
         var linkedIndexMode = File.GetUnixFileMode(Path.Combine(linkedMetadataPath, "index"));
         Assert.True((linkedIndexMode & (UnixFileMode.GroupRead | UnixFileMode.GroupWrite)) == (UnixFileMode.GroupRead | UnixFileMode.GroupWrite));
+        foreach (var mutableDirectory in new[] { "objects", "refs", "worktrees" })
+        {
+            var mode = File.GetUnixFileMode(Path.Combine(barePath, mutableDirectory));
+            Assert.True(
+                (mode & (UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute)) ==
+                (UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute));
+        }
+        Assert.False((File.GetUnixFileMode(barePath) & UnixFileMode.GroupWrite) != 0);
         Assert.Equal(bareHeadMode, File.GetUnixFileMode(bareHeadPath));
     }
 
