@@ -524,13 +524,20 @@ public sealed class GitHubProvider(
             }
             catch (RateLimitExceededException exception) when (attempt < retryPolicy.MaxAttempts)
             {
-                var delay = exception.GetRetryAfterTimeSpan();
-                await DelayForProviderInstructionAsync(delay, cancellationToken).ConfigureAwait(false);
+                await DelayForProviderInstructionAsync(
+                    GetRateLimitRetryAfter(exception, attempt),
+                    cancellationToken).ConfigureAwait(false);
             }
             catch (SecondaryRateLimitExceededException exception) when (attempt < retryPolicy.MaxAttempts)
             {
                 await DelayForProviderInstructionAsync(
-                    GetSecondaryRetryAfter(exception) ?? GetSecondaryFallbackDelay(attempt),
+                    GetRetryAfter(exception) ?? GetRateLimitFallbackDelay(attempt),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (ApiException exception) when ((int)exception.StatusCode == (int)HttpStatusCode.TooManyRequests && attempt < retryPolicy.MaxAttempts)
+            {
+                await DelayForProviderInstructionAsync(
+                    GetRetryAfter(exception) ?? GetRateLimitFallbackDelay(attempt),
                     cancellationToken).ConfigureAwait(false);
             }
             catch (ApiException exception) when (isIdempotent && ((int)exception.StatusCode == (int)HttpStatusCode.RequestTimeout || (int)exception.StatusCode >= 500) && attempt < retryPolicy.MaxAttempts)
@@ -568,7 +575,7 @@ public sealed class GitHubProvider(
     }
 
 
-    private static TimeSpan? GetSecondaryRetryAfter(SecondaryRateLimitExceededException exception)
+    private static TimeSpan? GetRetryAfter(ApiException exception)
     {
         if (exception.HttpResponse?.Headers is { } headers &&
             headers.TryGetValue("Retry-After", out var value))
@@ -590,7 +597,16 @@ public sealed class GitHubProvider(
         return null;
     }
 
-    private TimeSpan GetSecondaryFallbackDelay(int attempt) => retryPolicy.GetDelay(attempt);
+    private TimeSpan GetRateLimitRetryAfter(RateLimitExceededException exception, int attempt) =>
+        GetRetryAfter(exception) ??
+        (HasHeader(exception, "X-RateLimit-Reset")
+            ? exception.GetRetryAfterTimeSpan()
+            : GetRateLimitFallbackDelay(attempt));
+
+    private static bool HasHeader(ApiException exception, string name) =>
+        exception.HttpResponse?.Headers is { } headers && headers.TryGetValue(name, out _);
+
+    private TimeSpan GetRateLimitFallbackDelay(int attempt) => retryPolicy.GetRateLimitFallbackDelay(attempt);
 
     private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(5);
 

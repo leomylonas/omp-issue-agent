@@ -10,6 +10,8 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
     public string BranchCommitToReturn { get; set; } = "abc123";
 
     public List<(string WorktreeId, string WorktreePath, string BranchName, string BaseCommit)> CreatedWorktrees { get; } = [];
+    public Dictionary<string, string> WorktreeBranches { get; } = [];
+
 
     public Action? OnCreateWorktree { get; set; }
 
@@ -44,6 +46,7 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
     {
         OnCreateWorktree?.Invoke();
         Directory.CreateDirectory(worktreePath);
+        WorktreeBranches.TryAdd(worktreePath, branchName);
         CreatedWorktrees.Add((worktreeId, worktreePath, branchName, baseCommit));
         return ValueTask.CompletedTask;
     }
@@ -58,15 +61,36 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
         CancellationToken cancellationToken)
     {
         RenamedWorktreeBranches.Add((repositoryId, worktreePath, expectedCurrentBranch, newBranchName));
+        var currentBranch = WorktreeBranches.GetValueOrDefault(worktreePath, expectedCurrentBranch);
+        if (string.Equals(currentBranch, newBranchName, StringComparison.Ordinal))
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        if (!string.Equals(currentBranch, expectedCurrentBranch, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Worktree '{worktreePath}' is checked out on '{currentBranch}', not expected branch '{expectedCurrentBranch}' or retry branch '{newBranchName}'.");
+        }
+
+        WorktreeBranches[worktreePath] = newBranchName;
         return ValueTask.CompletedTask;
     }
 
     public List<(string RepositoryId, string WorktreePath, string Commit)> ResetWorktrees { get; } = [];
 
+    public int ResetWorktreeFailuresRemaining { get; set; }
+
     public int ResetWorktreeCallCount => ResetWorktrees.Count;
 
     public ValueTask ResetWorktreeAsync(string repositoryId, string worktreePath, string commit, CancellationToken cancellationToken)
     {
+        if (ResetWorktreeFailuresRemaining > 0)
+        {
+            ResetWorktreeFailuresRemaining--;
+            throw new InvalidOperationException("Simulated worktree reset failure.");
+        }
+
         ResetWorktrees.Add((repositoryId, worktreePath, commit));
         return ValueTask.CompletedTask;
     }

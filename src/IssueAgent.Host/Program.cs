@@ -34,8 +34,10 @@ builder.Services.AddSingleton<IReadOnlyCollection<IssueAgent.Providers.IGitProvi
 builder.Services.AddSingleton<IssueAgent.Git.IGitRepositoryManager>(services =>
 {
     var options = services.GetRequiredService<Microsoft.Extensions.Options.IOptions<IssueAgentOptions>>().Value;
-    var inner = new IssueAgent.Git.LibGit2SharpRepositoryManager(
-        Path.Combine(options.Workspace.RootPath, "repos"));
+    var inner = new IssueAgent.Git.RetryingGitRepositoryManager(
+        new IssueAgent.Git.LibGit2SharpRepositoryManager(
+            Path.Combine(options.Workspace.RootPath, "repos")),
+        services.GetRequiredService<IssueAgent.Domain.RetryPolicy>());
     return new ObservableGitRepositoryManager(
         inner,
         services.GetRequiredService<IssueAgentMetrics>(),

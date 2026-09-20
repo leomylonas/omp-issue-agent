@@ -11,6 +11,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../../src/IssueAgent.Domain/IssueAgent.Domain.csproj" />
     <ProjectReference Include="../../src/IssueAgent.Git/IssueAgent.Git.csproj" />
   </ItemGroup>
 </Project>

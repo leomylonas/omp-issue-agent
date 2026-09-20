@@ -2,4 +2,7 @@
   <ItemGroup>
     <PackageReference Include="LibGit2Sharp" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../IssueAgent.Domain/IssueAgent.Domain.csproj" />
+  </ItemGroup>
 </Project>

@@ -1,6 +1,6 @@
 namespace IssueAgent.Domain;
 
-/// <summary>Resolved bounded retry behavior shared by provider, notification, and OMP boundaries.</summary>
+/// <summary>Resolved bounded retry behavior shared by provider, Git, notification, and OMP boundaries.</summary>
 public sealed record RetryPolicy
 {
     public int MaxAttempts { get; init; } = 3;
@@ -10,6 +10,9 @@ public sealed record RetryPolicy
     public double BackoffMultiplier { get; init; } = 2.0;
 
     public TimeSpan MaxJitter { get; init; } = TimeSpan.FromMilliseconds(250);
+    /// <summary>Conservative base delay when a provider rejects a request for rate limiting without a usable retry window.</summary>
+    public TimeSpan RateLimitFallbackDelay { get; init; } = TimeSpan.FromMinutes(1);
+
 
     public static RetryPolicy Default { get; } = new();
 
@@ -23,6 +26,21 @@ public sealed record RetryPolicy
             ? 0
             : Random.Shared.NextDouble() * MaxJitter.TotalMilliseconds;
         return exponential + TimeSpan.FromMilliseconds(jitterMilliseconds);
+    }
+
+    /// <summary>Returns the bounded exponential fallback for a rate-limit rejection that supplied no usable retry instruction.</summary>
+    public TimeSpan GetRateLimitFallbackDelay(int failedAttempt)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(failedAttempt, 1);
+        var milliseconds = RateLimitFallbackDelay.TotalMilliseconds * Math.Pow(BackoffMultiplier, failedAttempt - 1);
+        var exponential = TimeSpan.FromMilliseconds(Math.Min(milliseconds, TimeSpan.FromMinutes(5).TotalMilliseconds));
+        var jitterMilliseconds = MaxJitter.TotalMilliseconds <= 0
+            ? 0
+            : Random.Shared.NextDouble() * MaxJitter.TotalMilliseconds;
+        return TimeSpan.FromMilliseconds(Math.Min(
+            exponential.TotalMilliseconds + jitterMilliseconds,
+            TimeSpan.FromMinutes(5).TotalMilliseconds));
+
     }
 
     /// <summary>Runs an operation until it succeeds or exhausts this policy's attempts.</summary>

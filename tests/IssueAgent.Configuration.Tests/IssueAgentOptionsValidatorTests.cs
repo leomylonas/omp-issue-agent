@@ -78,6 +78,20 @@ public sealed class IssueAgentOptionsValidatorTests
     }
 
     [Fact]
+    public void ValidateRejectsInvalidRateLimitFallbackDelay()
+    {
+        var options = CreateOptions() with
+        {
+            Retry = new RetryOptions { RateLimitFallbackDelay = TimeSpan.Zero },
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("RateLimitFallbackDelay", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void RootRetryOptionsResolveTheConfiguredPolicy()
     {
         var options = new RetryOptions
@@ -86,6 +100,7 @@ public sealed class IssueAgentOptionsValidatorTests
             InitialDelay = TimeSpan.FromMilliseconds(20),
             BackoffMultiplier = 3,
             MaxJitter = TimeSpan.Zero,
+            RateLimitFallbackDelay = TimeSpan.FromSeconds(10),
         };
 
         var policy = options.ToPolicy();
@@ -93,6 +108,8 @@ public sealed class IssueAgentOptionsValidatorTests
         Assert.Equal(4, policy.MaxAttempts);
         Assert.Equal(TimeSpan.FromMilliseconds(20), policy.GetDelay(1));
         Assert.Equal(TimeSpan.FromMilliseconds(60), policy.GetDelay(2));
+        Assert.Equal(TimeSpan.FromSeconds(10), policy.GetRateLimitFallbackDelay(1));
+        Assert.Equal(TimeSpan.FromSeconds(30), policy.GetRateLimitFallbackDelay(2));
     }
 
     [Fact]

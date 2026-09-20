@@ -141,7 +141,10 @@ public static class ProviderRetryPolicy
 
         return instructedDelay is { } instructed
             ? (instructed <= TimeSpan.Zero ? TimeSpan.Zero : instructed)
-            : retryPolicy.GetDelay(attempt);
+            : IsDefinitiveRateLimitRejection(response)
+                ? retryPolicy.GetRateLimitFallbackDelay(attempt)
+                : retryPolicy.GetDelay(attempt);
+
     }
 
     private static async Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken)

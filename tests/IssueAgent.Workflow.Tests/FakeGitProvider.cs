@@ -16,6 +16,8 @@ public sealed class FakeGitProvider : IGitProvider
     public List<(long IssueNumber, string Body)> CreatedComments { get; } = [];
 
     public List<(long IssueNumber, long CommentId, string Body)> UpdatedComments { get; } = [];
+    public int UpdateIssueCommentFailuresRemaining { get; set; }
+
 
     public Dictionary<int, ProviderMergeRequest> MergeRequests { get; } = [];
 
@@ -100,6 +102,12 @@ public sealed class FakeGitProvider : IGitProvider
 
     public ValueTask<ProviderComment> UpdateIssueCommentAsync(RepositoryRef repository, long issueNumber, long commentId, string body, CancellationToken cancellationToken)
     {
+        if (UpdateIssueCommentFailuresRemaining > 0)
+        {
+            UpdateIssueCommentFailuresRemaining--;
+            throw new InvalidOperationException("Simulated provider comment update failure.");
+        }
+
         UpdatedComments.Add((issueNumber, commentId, body));
         var key = (repository.Id, issueNumber);
         var list = IssueComments[key];

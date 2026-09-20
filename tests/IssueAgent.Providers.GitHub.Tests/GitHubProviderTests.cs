@@ -289,6 +289,104 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
+    public async Task GetIssueAsyncUsesConservativeFallbackForAHeaderlessSecondaryRateLimit()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7").UsingGet())
+            .InScenario("github-headerless-secondary-rate-limit")
+            .WillSetStateTo("retried")
+            .RespondWith(Response.Create().WithStatusCode(403).WithBody("""{"message":"secondary rate limit"}"""));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7").UsingGet())
+            .InScenario("github-headerless-secondary-rate-limit")
+            .WhenStateIs("retried")
+            .RespondWith(JsonResponse("""{"number":7,"title":"Recovered","body":"ok","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","labels":[],"assignees":[]}"""));
+        var provider = GitHubProviderFactory.Create(new GitHubProviderConfiguration(
+            "github",
+            new Uri(fixture.Server.Url! + "/"),
+            null,
+            ["github.example"],
+            Retry: new IssueAgent.Domain.RetryPolicy
+            {
+                InitialDelay = TimeSpan.Zero,
+                MaxJitter = TimeSpan.Zero,
+                RateLimitFallbackDelay = TimeSpan.FromMinutes(1),
+            }));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            provider.GetIssueAsync(Repository, 7, cancellation.Token).AsTask());
+
+        Assert.Equal(1, fixture.Server.LogEntries.Count(entry => entry.RequestMessage!.Path == "/api/v3/repos/octo/widgets/issues/7"));
+    }
+
+
+    [Fact]
+    public async Task GetIssueAsyncUsesConservativeFallbackForAHeaderlessPrimaryRateLimit()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7").UsingGet())
+            .InScenario("github-headerless-primary-rate-limit")
+            .WillSetStateTo("retried")
+            .RespondWith(Response.Create().WithStatusCode(429).WithBody("""{"message":"API rate limit exceeded"}"""));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7").UsingGet())
+            .InScenario("github-headerless-primary-rate-limit")
+            .WhenStateIs("retried")
+            .RespondWith(JsonResponse("""{"number":7,"title":"Recovered","body":"ok","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","labels":[],"assignees":[]}"""));
+        var provider = GitHubProviderFactory.Create(new GitHubProviderConfiguration(
+            "github",
+            new Uri(fixture.Server.Url! + "/"),
+            null,
+            ["github.example"],
+            Retry: new IssueAgent.Domain.RetryPolicy
+            {
+                InitialDelay = TimeSpan.Zero,
+                MaxJitter = TimeSpan.Zero,
+                RateLimitFallbackDelay = TimeSpan.FromMinutes(1),
+            }));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            provider.GetIssueAsync(Repository, 7, cancellation.Token).AsTask());
+
+        Assert.Equal(1, fixture.Server.LogEntries.Count(entry => entry.RequestMessage!.Path == "/api/v3/repos/octo/widgets/issues/7"));
+    }
+
+    [Fact]
+    public async Task GetIssueAsyncUsesConservativeFallbackForAnExhausted403WithoutResetInformation()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7").UsingGet())
+            .InScenario("github-exhausted-rate-limit")
+            .WillSetStateTo("retried")
+            .RespondWith(Response.Create()
+                .WithStatusCode(403)
+                .WithHeader("X-RateLimit-Remaining", "0")
+                .WithBody("""{"message":"API rate limit exceeded"}"""));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7").UsingGet())
+            .InScenario("github-exhausted-rate-limit")
+            .WhenStateIs("retried")
+            .RespondWith(JsonResponse("""{"number":7,"title":"Recovered","body":"ok","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","labels":[],"assignees":[]}"""));
+        var provider = GitHubProviderFactory.Create(new GitHubProviderConfiguration(
+            "github",
+            new Uri(fixture.Server.Url! + "/"),
+            null,
+            ["github.example"],
+            Retry: new IssueAgent.Domain.RetryPolicy
+            {
+                InitialDelay = TimeSpan.Zero,
+                MaxJitter = TimeSpan.Zero,
+                RateLimitFallbackDelay = TimeSpan.FromMinutes(1),
+            }));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            provider.GetIssueAsync(Repository, 7, cancellation.Token).AsTask());
+
+        Assert.Equal(1, fixture.Server.LogEntries.Count(entry => entry.RequestMessage!.Path == "/api/v3/repos/octo/widgets/issues/7"));
+    }
+    [Fact]
     public async Task GetDefaultBranchAsyncReturnsTheRepositorysConfiguredDefaultBranch()
     {
         fixture.Server

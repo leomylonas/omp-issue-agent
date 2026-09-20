@@ -327,8 +327,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         string issueDescription,
         CancellationToken cancellationToken)
     {
-        if (BranchNaming.TryDeriveSuggestedBranchName(issueNumber, issueTitle, planningResult.SuggestedSlug) is { } suggestedBranch &&
-            !string.Equals(workingState.Branch, suggestedBranch, StringComparison.Ordinal))
+        if (BranchNaming.TryDeriveSuggestedBranchName(issueNumber, issueTitle, planningResult.SuggestedSlug) is { } suggestedBranch)
         {
             await deps.Git.RenameWorktreeBranchAsync(
                 config.Repository.Id,
@@ -336,7 +335,32 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
                 workingState.Branch,
                 suggestedBranch,
                 cancellationToken).ConfigureAwait(false);
-            workingState = workingState with { Branch = suggestedBranch };
+
+            if (!string.Equals(workingState.Branch, suggestedBranch, StringComparison.Ordinal))
+            {
+                workingState = workingState with { Branch = suggestedBranch, UpdatedAt = deps.Clock.UtcNow };
+
+                // Renaming the checked-out branch is durable local state. Checkpoint its new name
+                // before further publication work so a provider/process failure can reconcile a
+                // retry against either the old durable branch name or the already-renamed worktree.
+                var canonical = await CanonicalCommentLocator
+                    .FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken)
+                    .ConfigureAwait(false);
+                if (canonical is null)
+                {
+                    throw new WorkflowContractException("Cannot checkpoint suggested branch: no canonical comment was found.");
+                }
+
+                var existingContent = CanonicalCommentMarkdown.Parse(canonical.Body);
+                await UpsertCanonicalCommentAsync(
+                    config,
+                    issueNumber,
+                    existingContent with
+                    {
+                        State = CanonicalStateSerializer.ToDocument(workingState, existingContent.State.PullOrMergeRequest),
+                    },
+                    cancellationToken).ConfigureAwait(false);
+            }
         }
 
         // OMP's planning contract is read-only. Discard any accidental planning-time edits or

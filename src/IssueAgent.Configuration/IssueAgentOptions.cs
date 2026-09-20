@@ -47,12 +47,15 @@ public sealed record RetryOptions
 
     public TimeSpan MaxJitter { get; init; } = TimeSpan.FromMilliseconds(250);
 
+    public TimeSpan RateLimitFallbackDelay { get; init; } = TimeSpan.FromMinutes(1);
+
     public RetryPolicy ToPolicy() => new()
     {
         MaxAttempts = MaxAttempts,
         InitialDelay = InitialDelay,
         BackoffMultiplier = BackoffMultiplier,
         MaxJitter = MaxJitter,
+        RateLimitFallbackDelay = RateLimitFallbackDelay,
     };
 }
 
@@ -228,6 +231,10 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
             if (options.Retry.MaxJitter < TimeSpan.Zero || options.Retry.MaxJitter > TimeSpan.FromMinutes(1))
             {
                 failures.Add("IssueAgent:Retry:MaxJitter must be between zero and one minute.");
+            }
+            if (options.Retry.RateLimitFallbackDelay <= TimeSpan.Zero || options.Retry.RateLimitFallbackDelay > TimeSpan.FromMinutes(5))
+            {
+                failures.Add("IssueAgent:Retry:RateLimitFallbackDelay must be greater than zero and no more than five minutes.");
             }
         }
 

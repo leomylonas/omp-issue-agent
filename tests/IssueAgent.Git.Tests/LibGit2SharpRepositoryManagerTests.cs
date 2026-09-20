@@ -251,6 +251,39 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task RenameWorktreeBranchAsyncTreatsAnAlreadyRenamedWorktreeAsRecoverySuccess()
+    {
+        var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out var baseCommit));
+        await manager.EnsureBareRepositoryAsync("repo-rename-recovery", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
+        const string originalBranch = "agent/issue-1-original";
+        const string suggestedBranch = "agent/issue-1-suggested";
+        await manager.CreateWorktreeAsync(
+            "repo-rename-recovery",
+            "wt-rename-recovery",
+            worktreePath,
+            originalBranch,
+            baseCommit,
+            CancellationToken.None);
+
+        await manager.RenameWorktreeBranchAsync(
+            "repo-rename-recovery",
+            worktreePath,
+            originalBranch,
+            suggestedBranch,
+            CancellationToken.None);
+        await manager.RenameWorktreeBranchAsync(
+            "repo-rename-recovery",
+            worktreePath,
+            originalBranch,
+            suggestedBranch,
+            CancellationToken.None);
+
+        using var worktree = new Repository(worktreePath);
+        Assert.Equal(suggestedBranch, worktree.Head.FriendlyName);
+    }
+
+    [Fact]
     public async Task CreateWorktreeAsyncMakesCheckoutAndRequiredBareGitMetadataGroupWritableForOmp()
     {
         if (!OperatingSystem.IsLinux())

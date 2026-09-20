@@ -33,6 +33,13 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
             return;
         }
 
+        if (Directory.Exists(path))
+        {
+            // A transport failure can leave a partial clone directory. The canonical path is owned
+            // by this manager and is not a repository, so discard it before a safe retry.
+            DeleteDirectoryRobust(path);
+        }
+
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
         if (authentication.Mode == GitAuthenticationMode.Ssh)
@@ -228,10 +235,18 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         CancellationToken cancellationToken)
     {
         using var repo = new Repository(worktreePath);
-        if (!string.Equals(repo.Head.FriendlyName, expectedCurrentBranch, StringComparison.Ordinal))
+        var currentBranch = repo.Head.FriendlyName;
+        if (string.Equals(currentBranch, newBranchName, StringComparison.Ordinal))
+        {
+            // The branch rename completed before the durable workflow checkpoint could be
+            // published. Treat the retry as reconciled rather than trying to rename it again.
+            return ValueTask.CompletedTask;
+        }
+
+        if (!string.Equals(currentBranch, expectedCurrentBranch, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
-                $"Retained worktree '{worktreePath}' is checked out on '{repo.Head.FriendlyName}', not expected branch '{expectedCurrentBranch}'.");
+                $"Retained worktree '{worktreePath}' is checked out on '{currentBranch}', not expected branch '{expectedCurrentBranch}' or retry branch '{newBranchName}'.");
         }
 
         if (string.Equals(expectedCurrentBranch, newBranchName, StringComparison.Ordinal))

@@ -55,6 +55,58 @@ public sealed class ProviderRetryPolicyTests
         Assert.Equal(System.Net.HttpStatusCode.Created, response.StatusCode);
     }
 
+    [Theory]
+    [InlineData(System.Net.HttpStatusCode.TooManyRequests)]
+    [InlineData(System.Net.HttpStatusCode.Forbidden)]
+    public async Task SendAsyncUsesConservativeFallbackForRateLimitsWithoutAUsableRetryWindow(System.Net.HttpStatusCode statusCode)
+    {
+        var attempts = 0;
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ProviderRetryPolicy.SendAsync(
+            _ =>
+            {
+                attempts++;
+                var response = new HttpResponseMessage(statusCode);
+                if (statusCode == System.Net.HttpStatusCode.Forbidden)
+                {
+                    response.Headers.Add("X-RateLimit-Remaining", "0");
+                }
+
+                return Task.FromResult(response);
+            },
+            cancellation.Token,
+            retryPolicy: new IssueAgent.Domain.RetryPolicy
+            {
+                InitialDelay = TimeSpan.Zero,
+                MaxJitter = TimeSpan.Zero,
+                RateLimitFallbackDelay = TimeSpan.FromMinutes(1),
+            }));
+
+        Assert.Equal(1, attempts);
+    }
+
+    [Fact]
+    public async Task SendAsyncUsesTheGlobalTransientBackoffInsteadOfTheRateLimitFallback()
+    {
+        var attempts = 0;
+
+        using var response = await ProviderRetryPolicy.SendAsync(
+            _ => Task.FromResult(new HttpResponseMessage(++attempts == 1
+                ? System.Net.HttpStatusCode.ServiceUnavailable
+                : System.Net.HttpStatusCode.OK)),
+            CancellationToken.None,
+            retryPolicy: new IssueAgent.Domain.RetryPolicy
+            {
+                InitialDelay = TimeSpan.Zero,
+                MaxJitter = TimeSpan.Zero,
+                RateLimitFallbackDelay = TimeSpan.FromMinutes(1),
+            });
+
+        Assert.Equal(2, attempts);
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+    }
+
     [Fact]
     public async Task SendAsyncRetriesTransientTransportFailuresForIdempotentRequests()
     {
