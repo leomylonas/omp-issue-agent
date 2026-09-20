@@ -372,6 +372,11 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
 
             foreach (var repository in provider.Repositories)
             {
+                if (!IsSafeRepositoryId(repository.Id))
+                {
+                    failures.Add($"Repository id '{repository.Id}' must be non-empty, relative, and contain no traversal segments.");
+                }
+
                 if (!repositoryIds.Add(repository.Id))
                 {
                     failures.Add($"Repository id '{repository.Id}' is duplicated across providers.");
@@ -405,6 +410,12 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
     /// <summary>Intrinsically local shape checks (secret-source arity, non-negative numbers) that
     /// hold regardless of what a higher or lower configuration level supplies, so these run at every
     /// level independently rather than only on the merged result.</summary>
+    private static bool IsSafeRepositoryId(string? repositoryId) =>
+        !string.IsNullOrWhiteSpace(repositoryId) &&
+        !Path.IsPathRooted(repositoryId) &&
+        !repositoryId.StartsWith('\\') &&
+        !repositoryId.Split(['/', '\\'], StringSplitOptions.None).Any(segment => segment is "." or "..");
+
     private static void ValidateLocalSettings(RepositorySettingsOptions settings, string path, List<string> failures)
     {
         if (settings.RelatedIssueTraversalDepth is < 0)

@@ -77,6 +77,24 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
         Assert.True(Repository.IsValid(Path.Combine(reposRoot, "repo-1")));
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("/repository")]
+    [InlineData("../repository")]
+    [InlineData("github/../repository")]
+    public async Task EnsureBareRepositoryAsyncRejectsUnsafeRepositoryIdsBeforeFilesystemAccess(string repositoryId)
+    {
+        var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
+            manager.EnsureBareRepositoryAsync(
+                repositoryId,
+                Path.Combine(reposRoot, "unreachable-remote"),
+                TempGitFixtures.AnonymousAuthentication(),
+                CancellationToken.None).AsTask());
+
+        Assert.Contains("repositoryId", exception.ParamName, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task EnsureBareRepositoryAsyncDoesNotMakeDirectoriesAboveNormalizedWorkspaceTraversable()
     {

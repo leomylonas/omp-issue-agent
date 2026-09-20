@@ -1,3 +1,6 @@
+using System.Runtime.InteropServices;
+using System.Text;
+
 using IssueAgent.Configuration;
 using Microsoft.Extensions.Options;
 
@@ -101,16 +104,27 @@ public sealed partial class StartupValidator(
         Message = "Provider identity validation failed for {Provider}; polling will retry at runtime")]
     private static partial void LogProviderValidationWarning(ILogger logger, Exception exception, string provider);
 
-    private static void ValidateOmp(string executablePath)
+    internal static void ValidateOmp(string executablePath)
     {
         if (string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
         {
             throw new InvalidOperationException($"Required OMP executable '{executablePath}' was not found.");
         }
 
-        if (!OperatingSystem.IsWindows() && !File.GetUnixFileMode(executablePath).HasFlag(UnixFileMode.UserExecute))
+        if (!OperatingSystem.IsWindows() && !HasEffectiveExecuteAccess(executablePath))
         {
-            throw new InvalidOperationException($"Required OMP executable '{executablePath}' is not executable.");
+            throw new InvalidOperationException($"Required OMP executable '{executablePath}' is not executable by the service identity.");
         }
     }
+
+    internal static bool HasEffectiveExecuteAccess(string path) =>
+        OperatingSystem.IsWindows() ||
+        FAccessAt(CurrentWorkingDirectory, Encoding.UTF8.GetBytes(string.Concat(path, '\0')), ExecuteAccess, EffectiveAccess) == 0;
+
+    [DllImport("libc", EntryPoint = "faccessat", SetLastError = true)]
+    private static extern int FAccessAt(int directoryFileDescriptor, byte[] path, int mode, int flags);
+
+    private const int CurrentWorkingDirectory = -100;
+    private const int ExecuteAccess = 1;
+    private const int EffectiveAccess = 0x200;
 }

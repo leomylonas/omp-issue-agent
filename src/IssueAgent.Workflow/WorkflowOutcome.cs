@@ -29,13 +29,7 @@ public static class CanonicalCommentLocator
         CancellationToken cancellationToken,
         string? configuredIdentity = null)
     {
-        var authoritativeIdentity = string.IsNullOrWhiteSpace(configuredIdentity)
-            ? (await provider.GetCurrentIdentityAsync(cancellationToken).ConfigureAwait(false)).Login
-            : configuredIdentity.Trim();
-        if (string.IsNullOrWhiteSpace(authoritativeIdentity))
-        {
-            throw new CanonicalCommentCorruptException("Authoritative provider identity has no login; canonical workflow state cannot be trusted.");
-        }
+        var authoritativeIdentity = await ResolveAuthoritativeIdentityAsync(provider, configuredIdentity, cancellationToken).ConfigureAwait(false);
 
         ProviderComment? canonicalComment = null;
         await foreach (var comment in provider.GetIssueCommentsAsync(repository, issueNumber, cancellationToken).ConfigureAwait(false))
@@ -55,5 +49,21 @@ public static class CanonicalCommentLocator
         }
 
         return canonicalComment;
+    }
+
+    public static async ValueTask<string> ResolveAuthoritativeIdentityAsync(
+        IGitProvider provider,
+        string? configuredIdentity,
+        CancellationToken cancellationToken)
+    {
+        var authoritativeIdentity = string.IsNullOrWhiteSpace(configuredIdentity)
+            ? (await provider.GetCurrentIdentityAsync(cancellationToken).ConfigureAwait(false)).Login
+            : configuredIdentity.Trim();
+        if (string.IsNullOrWhiteSpace(authoritativeIdentity))
+        {
+            throw new CanonicalCommentCorruptException("Authoritative provider identity has no login; canonical workflow state cannot be trusted.");
+        }
+
+        return authoritativeIdentity;
     }
 }

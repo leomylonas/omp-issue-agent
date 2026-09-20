@@ -21,6 +21,8 @@ namespace IssueAgent.Git;
 public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRepositoryManager
 {
     private static readonly string[] mutableBareRepositoryDirectories = ["objects", "refs", "worktrees"];
+    private readonly string normalizedReposRootPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(reposRootPath));
+
 
 
     public async ValueTask EnsureBareRepositoryAsync(string repositoryId, string cloneUrl, GitAuthentication authentication, CancellationToken cancellationToken)
@@ -772,7 +774,28 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         return repository.Network.Remotes["origin"].Url;
     }
 
-    private string BareRepositoryPath(string repositoryId) => Path.Combine(reposRootPath, repositoryId);
+    private string BareRepositoryPath(string repositoryId)
+    {
+        if (string.IsNullOrWhiteSpace(repositoryId) ||
+            Path.IsPathRooted(repositoryId) ||
+            repositoryId.StartsWith('\\') ||
+            repositoryId.Split(['/', '\\'], StringSplitOptions.None).Any(segment => segment is "." or ".."))
+        {
+            throw new ArgumentException("Repository IDs must be non-empty, relative, and contain no traversal segments.", nameof(repositoryId));
+        }
+
+        var path = Path.GetFullPath(Path.Combine(normalizedReposRootPath, repositoryId));
+        var relativePath = Path.GetRelativePath(normalizedReposRootPath, path);
+        if (Path.IsPathRooted(relativePath) ||
+            string.Equals(relativePath, ".", StringComparison.Ordinal) ||
+            string.Equals(relativePath, "..", StringComparison.Ordinal) ||
+            relativePath.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+        {
+            throw new ArgumentException("Repository ID resolves outside the repository cache root.", nameof(repositoryId));
+        }
+
+        return path;
+    }
 
     private static void DisableHooks(string repositoryOrWorktreePath)
     {
@@ -817,7 +840,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         File.SetUnixFileMode(
             bareRepositoryPath,
             UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupExecute);
-        MakeAncestorDirectoriesTraversableByOmp(bareRepositoryPath, Path.GetDirectoryName(reposRootPath)!);
+        MakeAncestorDirectoriesTraversableByOmp(bareRepositoryPath, Path.GetDirectoryName(normalizedReposRootPath) ?? normalizedReposRootPath);
         var configPath = Path.Combine(bareRepositoryPath, "config");
         if (File.Exists(configPath))
         {
@@ -847,7 +870,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
             return;
         }
 
-        MakeAncestorDirectoriesTraversableByOmp(worktreePath, Path.GetDirectoryName(reposRootPath)!);
+        MakeAncestorDirectoriesTraversableByOmp(worktreePath, Path.GetDirectoryName(normalizedReposRootPath) ?? normalizedReposRootPath);
         MakeDirectoryTreeWritableByOmp(worktreePath);
     }
 

@@ -413,6 +413,28 @@ public sealed class IssueAgentOptionsValidatorTests
         Assert.False(validator.Validate(null, options).Failed);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("/repository")]
+    [InlineData("../repository")]
+    [InlineData("github/../repository")]
+    public void ValidateRejectsUnsafeRepositoryIds(string repositoryId)
+    {
+        var options = CreateOptions() with
+        {
+            Providers = [CreateProvider() with
+            {
+                Repositories = [new RepositoryOptions { Id = repositoryId, Name = "example/repository" }],
+            }],
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("Repository id", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void ValidateRejectsCloneUrlQueryAndFragment()
     {

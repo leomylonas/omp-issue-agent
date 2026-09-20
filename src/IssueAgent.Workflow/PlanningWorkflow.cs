@@ -256,9 +256,16 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
     {
         var issue = await deps.Provider.GetIssueAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
         var commentStamps = new List<string>();
+        string? authoritativeAuthor = null;
         await foreach (var comment in deps.Provider.GetIssueCommentsAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false))
         {
-            if ((!config.IgnoreBotComments || !comment.IsBot) && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
+            var isAuthoritativeCanonicalComment = CanonicalCommentMarkdown.IsCanonicalComment(comment.Body) &&
+                CanonicalCommentMarkdown.IsAuthoritativeCanonicalComment(
+                    comment,
+                    authoritativeAuthor ??= await CanonicalCommentLocator
+                        .ResolveAuthoritativeIdentityAsync(deps.Provider, config.CanonicalCommentAuthor, cancellationToken)
+                        .ConfigureAwait(false));
+            if ((!config.IgnoreBotComments || !comment.IsBot) && !isAuthoritativeCanonicalComment)
             {
                 commentStamps.Add($"{comment.Id}:{comment.UpdatedAt:O}:{comment.Body}");
             }
@@ -398,7 +405,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         CancellationToken cancellationToken)
     {
         var canonical = await CanonicalCommentLocator
-            .FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken)
+            .FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken, config.CanonicalCommentAuthor)
             .ConfigureAwait(false);
         if (canonical is null)
         {

@@ -726,6 +726,9 @@ public sealed partial class WorkflowDispatcher(
             IgnoreBotComments = resolved.IgnoreBotComments,
             RelatedIssueTraversalDepth = resolved.RelatedIssueTraversalDepth,
             AttachmentLimits = limits,
+            CanonicalCommentAuthor = string.IsNullOrWhiteSpace(effectiveProvider.Source.IdentityOverride)
+                ? (await provider.GetCurrentIdentityAsync(cancellationToken).ConfigureAwait(false)).Login
+                : effectiveProvider.Source.IdentityOverride.Trim(),
         };
         var context = new AgentContextBuilder(provider, new AttachmentPipeline(provider, limits), contextOptions);
         var dependencies = new WorkflowDependencies(provider, git, context, notifier, new SystemClock());

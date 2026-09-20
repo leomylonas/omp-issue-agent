@@ -78,6 +78,23 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             cancellationToken).ConfigureAwait(false);
         if (retainedResult is { Length: > 0 })
         {
+            if (await HasUnseenFeedbackSinceCheckpointAsync(
+                    config,
+                    mergeRequest.Number,
+                    existingContent.State.ReviewFeedbackCutoff.Value,
+                    existingContent.State.ReviewFeedbackIds,
+                    cancellationToken).ConfigureAwait(false))
+            {
+                return await PauseForNewFeedbackAsync(
+                    config,
+                    issueNumber,
+                    workingState,
+                    workingContent,
+                    retainedResult,
+                    "Unprocessed review feedback was found while recovering a retained revision. The retained worktree was preserved; review the feedback and request another revision.",
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             var feedbackBeforePublication = await CaptureFeedbackSnapshotAsync(config, config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
             return await PublishRevisionAsync(
                 config, issueNumber, workingState, workingContent, retainedResult, mergeRequest, feedbackBeforePublication, omp, cancellationToken)
@@ -329,9 +346,16 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         var cutoff = deps.Clock.UtcNow;
         var entries = new HashSet<string>(StringComparer.Ordinal);
         var ids = new HashSet<string>(StringComparer.Ordinal);
+        string? authoritativeAuthor = null;
         await foreach (var comment in deps.Provider.GetMergeRequestCommentsAsync(repository, mergeRequestNumber, cancellationToken).ConfigureAwait(false))
         {
-            if ((!config.IgnoreBotComments || !comment.IsBot) && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
+            var isAuthoritativeCanonicalComment = CanonicalCommentMarkdown.IsCanonicalComment(comment.Body) &&
+                CanonicalCommentMarkdown.IsAuthoritativeCanonicalComment(
+                    comment,
+                    authoritativeAuthor ??= await CanonicalCommentLocator
+                        .ResolveAuthoritativeIdentityAsync(deps.Provider, config.CanonicalCommentAuthor, cancellationToken)
+                        .ConfigureAwait(false));
+            if ((!config.IgnoreBotComments || !comment.IsBot) && !isAuthoritativeCanonicalComment)
             {
                 entries.Add($"comment:{comment.Id}:{comment.UpdatedAt:O}:{comment.Body}");
                 ids.Add($"comment:{comment.Id}");
@@ -343,7 +367,13 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             entries.Add($"thread:{thread.Id}:resolved={thread.IsResolved}");
             foreach (var comment in thread.Comments)
             {
-                if ((!config.IgnoreBotComments || !comment.IsBot) && !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
+                var isAuthoritativeCanonicalComment = CanonicalCommentMarkdown.IsCanonicalComment(comment.Body) &&
+                    CanonicalCommentMarkdown.IsAuthoritativeCanonicalComment(
+                        comment,
+                        authoritativeAuthor ??= await CanonicalCommentLocator
+                            .ResolveAuthoritativeIdentityAsync(deps.Provider, config.CanonicalCommentAuthor, cancellationToken)
+                            .ConfigureAwait(false));
+                if ((!config.IgnoreBotComments || !comment.IsBot) && !isAuthoritativeCanonicalComment)
                 {
                     entries.Add($"thread:{thread.Id}:{comment.Id}:{comment.UpdatedAt:O}:{comment.Body}");
                     ids.Add($"thread:{thread.Id}:{comment.Id}");
@@ -353,6 +383,57 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
 
         return new FeedbackSnapshot(entries, ids, cutoff);
     }
+
+    private async Task<bool> HasUnseenFeedbackSinceCheckpointAsync(
+        WorkflowRepositoryConfig config,
+        long mergeRequestNumber,
+        DateTimeOffset cutoff,
+        IReadOnlyCollection<string>? handledFeedbackIds,
+        CancellationToken cancellationToken)
+    {
+        var observedFeedbackIds = handledFeedbackIds is null
+            ? null
+            : new HashSet<string>(handledFeedbackIds, StringComparer.Ordinal);
+
+        await foreach (var comment in deps.Provider.GetMergeRequestCommentsAsync(
+                           config.Repository,
+                           mergeRequestNumber,
+                           cancellationToken).ConfigureAwait(false))
+        {
+            if (IsHumanFeedback(config, comment) &&
+                IsNewFeedbackSinceCheckpoint(
+                    new HumanComment(comment.AuthorLogin, comment.CreatedAt, comment.Body, UpdatedAt: comment.UpdatedAt, CommentId: comment.Id),
+                    cutoff,
+                    observedFeedbackIds))
+            {
+                return true;
+            }
+        }
+
+        await foreach (var thread in deps.Provider.GetReviewThreadsAsync(
+                           config.Repository,
+                           mergeRequestNumber,
+                           cancellationToken).ConfigureAwait(false))
+        {
+            foreach (var comment in thread.Comments)
+            {
+                if (IsHumanFeedback(config, comment) &&
+                    IsNewFeedbackSinceCheckpoint(
+                        new HumanComment(comment.AuthorLogin, comment.CreatedAt, comment.Body, thread.Id, thread.IsResolved, comment.UpdatedAt, comment.Id),
+                        cutoff,
+                        observedFeedbackIds))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsHumanFeedback(WorkflowRepositoryConfig config, ProviderComment comment) =>
+        (!config.IgnoreBotComments || !comment.IsBot) &&
+        !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body);
 
     private static bool IsNewFeedbackSinceCheckpoint(
         HumanComment comment,

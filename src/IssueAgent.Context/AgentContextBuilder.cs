@@ -13,6 +13,10 @@ public sealed record AgentContextBuilderOptions
     public int RelatedIssueTraversalDepth { get; init; } = 1;
 
     public AttachmentLimits AttachmentLimits { get; init; } = new();
+
+    /// <summary>The provider login authorized to publish canonical state. Without it, locator
+    /// markers remain OMP-visible because their source cannot be authenticated.</summary>
+    public string? CanonicalCommentAuthor { get; init; }
 }
 
 /// <summary>
@@ -65,7 +69,8 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
         var humanComments = new List<HumanComment>();
         await foreach (var comment in provider.GetIssueCommentsAsync(repository, issueNumber, cancellationToken).ConfigureAwait(false))
         {
-            if (comment.IsBot && options.IgnoreBotComments || CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
+            if (comment.IsBot && options.IgnoreBotComments ||
+                await IsAuthoritativeCanonicalCommentAsync(comment, cancellationToken).ConfigureAwait(false))
             {
                 continue;
             }
@@ -143,7 +148,8 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
         var comments = new List<HumanComment>();
         await foreach (var comment in provider.GetMergeRequestCommentsAsync(repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false))
         {
-            if (comment.IsBot && options.IgnoreBotComments || CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
+            if (comment.IsBot && options.IgnoreBotComments ||
+                await IsAuthoritativeCanonicalCommentAsync(comment, cancellationToken).ConfigureAwait(false))
             {
                 continue;
             }
@@ -159,7 +165,8 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
         {
             foreach (var comment in thread.Comments)
             {
-                if (comment.IsBot && options.IgnoreBotComments || CanonicalCommentMarkdown.IsCanonicalComment(comment.Body))
+                if (comment.IsBot && options.IgnoreBotComments ||
+                    await IsAuthoritativeCanonicalCommentAsync(comment, cancellationToken).ConfigureAwait(false))
                 {
                     continue;
                 }
@@ -172,5 +179,17 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
         }
 
         return new MergeRequestContext(mergeRequest.Number, mergeRequest.Description, comments, reviewThreads, attachments);
+    }
+
+    private ValueTask<bool> IsAuthoritativeCanonicalCommentAsync(ProviderComment comment, CancellationToken cancellationToken)
+    {
+        if (!CanonicalCommentMarkdown.IsCanonicalComment(comment.Body) ||
+            string.IsNullOrWhiteSpace(options.CanonicalCommentAuthor))
+        {
+            return ValueTask.FromResult(false);
+        }
+
+        return ValueTask.FromResult(
+            CanonicalCommentMarkdown.IsAuthoritativeCanonicalComment(comment, options.CanonicalCommentAuthor.Trim()));
     }
 }

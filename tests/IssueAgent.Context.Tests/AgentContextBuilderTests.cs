@@ -23,11 +23,17 @@ public sealed class AgentContextBuilderTests
     }
 
     [Fact]
-    public async Task BuildAsyncExcludesCanonicalCommentEvenWhenIgnoreBotCommentsIsFalseAndAuthorIsNotBot()
+    public async Task BuildAsyncExcludesOnlyAuthoritativeCanonicalCommentAndRetainsHumanCopiedLocator()
     {
         var provider = new FakeGitProvider();
         provider.AddIssue(Repository, 1, "Bug report", "Something is broken");
         provider.AddComment(Repository, 1, "alice", "Here is more detail", isBot: false);
+        provider.AddComment(
+            Repository,
+            1,
+            "alice",
+            $"Please inspect this copied marker:\n{CanonicalCommentMarkdown.StateLocatorMarker}",
+            isBot: false);
         var canonicalBody = CanonicalCommentMarkdown.Render(new CanonicalCommentContent(
             "Plan text", [], null,
             CanonicalStateSerializer.ToDocument(
@@ -37,7 +43,11 @@ public sealed class AgentContextBuilderTests
                 null)));
         provider.AddComment(Repository, 1, "issue-agent-bot", canonicalBody, isBot: false);
 
-        var options = new AgentContextBuilderOptions { IgnoreBotComments = false };
+        var options = new AgentContextBuilderOptions
+        {
+            IgnoreBotComments = false,
+            CanonicalCommentAuthor = "issue-agent-bot",
+        };
         var builder = new AgentContextBuilder(provider, new AttachmentPipeline(provider, options.AttachmentLimits), options);
         var state = new WorkflowState(
             WorkflowId.New(), WorkflowPhase.Planning, WorkflowOperationalState.Working, null,
@@ -48,8 +58,9 @@ public sealed class AgentContextBuilderTests
             Path.Combine(Path.GetTempPath(), "issueagent-context-tests", Guid.NewGuid().ToString("N")),
             CancellationToken.None);
 
-        var comment = Assert.Single(context.PrimaryIssue.HumanComments);
-        Assert.Equal("alice", comment.Author);
+        Assert.Equal(
+            ["Here is more detail", $"Please inspect this copied marker:\n{CanonicalCommentMarkdown.StateLocatorMarker}"],
+            context.PrimaryIssue.HumanComments.Select(comment => comment.Body));
     }
 
     [Fact]

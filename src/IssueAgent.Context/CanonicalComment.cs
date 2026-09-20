@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using IssueAgent.Providers;
 
 namespace IssueAgent.Context;
 
@@ -95,6 +96,16 @@ public static partial class CanonicalCommentMarkdown
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Split('\n')
             .Any(line => string.Equals(line.Trim(), StateLocatorMarker, StringComparison.Ordinal));
+    }
+
+    /// <summary>Returns whether a comment is canonical workflow state from the provider identity
+    /// trusted to publish it. A human copying the locator marker remains ordinary OMP-visible input.</summary>
+    public static bool IsAuthoritativeCanonicalComment(ProviderComment comment, string authoritativeAuthor)
+    {
+        ArgumentNullException.ThrowIfNull(comment);
+        ArgumentException.ThrowIfNullOrWhiteSpace(authoritativeAuthor);
+        return IsCanonicalComment(comment.Body) &&
+            string.Equals(comment.AuthorLogin, authoritativeAuthor, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>Parses a canonical comment body. Throws <see cref="CanonicalCommentCorruptException"/>

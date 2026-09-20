@@ -238,6 +238,56 @@ public sealed class RevisionWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsyncRecoveryPausesWhenDurableHandledIdsExcludeExistingFeedback()
+    {
+        var reviewState = await SeedReviewStateAsync();
+        var canonical = Assert.Single(provider.IssueComments[(Repository.Id, 1)]);
+        var interruptedState = reviewState with
+        {
+            Phase = WorkflowPhase.Revising,
+            OperationalState = WorkflowOperationalState.Working,
+            WaitingReason = null,
+            ReviewFeedbackCutoff = clock.UtcNow,
+            ReviewFeedbackIds = new HashSet<string>(StringComparer.Ordinal),
+        };
+        var interruptedContent = CanonicalCommentMarkdown.Parse(canonical.Body) with
+        {
+            ImplementationResult = "Retained revision result.",
+            State = CanonicalStateSerializer.ToDocument(interruptedState, "github/octo/widgets#1"),
+        };
+        await provider.UpdateIssueCommentAsync(
+            Repository,
+            1,
+            canonical.Id,
+            CanonicalCommentMarkdown.Render(interruptedContent),
+            CancellationToken.None);
+        provider.MergeRequestComments[(Repository.Id, 1)] =
+        [
+            new ProviderComment(
+                9,
+                "bob",
+                "Feedback that predates the cutoff but was never handled.",
+                clock.UtcNow.AddHours(-1),
+                clock.UtcNow.AddHours(-1),
+                new AttachmentSource("merge-request-comment", "9"),
+                false),
+        ];
+
+        var omp = new FakeOmpClient();
+        var outcome = await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, interruptedState, omp, CancellationToken.None, publishRetainedResult: true);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WaitingReason.NewFeedbackDuringRevision, outcome.State.WaitingReason);
+        Assert.Empty(omp.RunRequests);
+        Assert.Equal(0, git.PushCallCount);
+        var paused = CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body);
+        Assert.Equal(clock.UtcNow, paused.State.ReviewFeedbackCutoff);
+        Assert.Empty(paused.State.ReviewFeedbackIds!);
+        Assert.Equal("Retained revision result.", paused.ImplementationResult);
+    }
+
+    [Fact]
     public async Task RunAsyncPausesForMaterialDeviationFromConflictResolutionBeforeLfsOrPush()
     {
         var state = await SeedReviewStateAsync();
@@ -333,14 +383,15 @@ public sealed class RevisionWorkflowTests : IDisposable
     }
 
     [Fact]
-    public async Task RunAsyncKeepsRevisionCheckpointAndUsesDistinctReasonWhenNewFeedbackArrives()
+    public async Task RunAsyncPausesForHumanCopiedCanonicalLocatorArrivingDuringRevision()
     {
         var state = await SeedReviewStateAsync();
         var omp = new FakeOmpClient();
+        var copiedLocator = $"Please account for this copied marker:\n{CanonicalCommentMarkdown.StateLocatorMarker}";
         omp.EnqueueRun(
             onStart: () => provider.MergeRequestComments[(Repository.Id, 1)] =
             [
-                new ProviderComment(9, "bob", "Please account for this new feedback.", clock.UtcNow.AddMinutes(1), clock.UtcNow.AddMinutes(1),
+                new ProviderComment(9, "bob", copiedLocator, clock.UtcNow.AddMinutes(1), clock.UtcNow.AddMinutes(1),
                     new AttachmentSource("merge-request-comment", "9"), false),
             ],
             new OmpCompletedEvent(

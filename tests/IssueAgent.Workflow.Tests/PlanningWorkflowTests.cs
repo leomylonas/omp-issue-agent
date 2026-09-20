@@ -85,6 +85,25 @@ public sealed class PlanningWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunInitialPlanningAsyncUsesCanonicalCommentAuthorForSuggestedBranchCheckpoints()
+    {
+        provider.CurrentIdentity = new ProviderIdentity("anonymous-bot", string.Empty);
+        provider.AddIssue(Repository, 1, "Replace the legacy authentication transport with a resilient OAuth device authorization flow", "Description");
+        var omp = new FakeOmpClient()
+            .EnqueueSessionId("session-1")
+            .EnqueueRun(new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"planText":"Plan.","decisions":[],"suggestedSlug":"custom"}"""));
+        var config = CreateConfig() with { CanonicalCommentAuthor = "anonymous-bot" };
+
+        var outcome = await CreateWorkflow().RunInitialPlanningAsync(config, 1, omp, CancellationToken.None);
+
+        Assert.Equal("agent/issue-1-custom", outcome.State.Branch);
+        Assert.Equal(0, provider.GetCurrentIdentityCallCount);
+    }
+
+    [Fact]
     public async Task RunInitialPlanningAsyncRecoversSuggestedBranchRenameAfterProviderCheckpointFailure()
     {
         const string title = "Replace the legacy authentication transport with a resilient OAuth device authorization flow";
@@ -342,6 +361,26 @@ public sealed class PlanningWorkflowTests : IDisposable
         Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
         var comment = Assert.Single(provider.IssueComments[(Repository.Id, 1)], c => CanonicalCommentMarkdown.IsCanonicalComment(c.Body));
         Assert.Contains("Updated plan covering the empty-title case.", comment.Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunInitialPlanningAsyncReconcilesHumanCopiedCanonicalLocatorDuringPlanning()
+    {
+        provider.AddIssue(Repository, 1, "Bug", "Original description");
+        var copiedLocator = $"Please investigate this state marker:\n{CanonicalCommentMarkdown.StateLocatorMarker}";
+        var omp = new FakeOmpClient().EnqueueSessionId("session-1");
+        omp.EnqueueRun(
+            onStart: () => provider.AddComment(Repository, 1, "alice", copiedLocator, clock.UtcNow.AddMinutes(1)),
+            new OmpCompletedEvent("session-1", clock.UtcNow, """{"planText":"Initial plan","decisions":[]}"""));
+        omp.EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"planText":"Updated plan covering the copied marker.","decisions":[]}"""));
+
+        await CreateWorkflow().RunInitialPlanningAsync(CreateConfig(), 1, omp, CancellationToken.None);
+
+        Assert.Equal(2, omp.RunRequests.Count);
+        Assert.Contains(copiedLocator, omp.RunRequests[1].Prompt, StringComparison.Ordinal);
     }
 
     [Fact]
