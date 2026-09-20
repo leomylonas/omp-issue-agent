@@ -195,8 +195,10 @@ public sealed class OmpProcessClient(
 
     private async Task RequestAbortAsync(bool suppressErrors, CancellationToken cancellationToken)
     {
-        // Abort has its own linked deadline because a timed-out run's token is already cancelled.
-        using var abortCts = CreateDeadline(cancellationToken, abortGracePeriod);
+        // An abort control must never inherit the normal OMP command timeout: shutdown and explicit
+        // cancellation need a short, independent grace while still honoring the caller's deadline.
+        using var abortCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        abortCts.CancelAfter(abortGracePeriod);
         try
         {
             await RequireSuccessAsync(

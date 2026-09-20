@@ -45,7 +45,7 @@ public sealed partial class WorkflowDispatcher(
         try
         {
             canonical = await CanonicalCommentLocator
-                .FindAsync(provider, repository, issueNumber, cancellationToken)
+                .FindAsync(provider, repository, issueNumber, cancellationToken, effectiveProvider.Source.IdentityOverride)
                 .ConfigureAwait(false);
         }
         catch (CanonicalCommentCorruptException exception)
@@ -146,7 +146,7 @@ public sealed partial class WorkflowDispatcher(
         try
         {
             if (!replaceCorruptCanonical &&
-                await CanonicalCommentLocator.FindAsync(runtime.Provider, runtime.Repository, issueNumber, cancellationToken).ConfigureAwait(false) is not null)
+                await CanonicalCommentLocator.FindAsync(runtime.Provider, runtime.Repository, issueNumber, cancellationToken, runtime.Config.CanonicalCommentAuthor).ConfigureAwait(false) is not null)
             {
                 return;
             }
@@ -231,7 +231,7 @@ public sealed partial class WorkflowDispatcher(
         try
         {
             canonical = await CanonicalCommentLocator.FindAsync(
-                runtime.Provider, runtime.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+                runtime.Provider, runtime.Repository, issueNumber, cancellationToken, runtime.Config.CanonicalCommentAuthor).ConfigureAwait(false);
         }
         catch (CanonicalCommentCorruptException exception)
         {
@@ -705,7 +705,8 @@ public sealed partial class WorkflowDispatcher(
 
     private async Task<Runtime?> PrepareRuntimeAsync(string providerName, RepositoryOptions repositoryOptions, CancellationToken cancellationToken)
     {
-        var resolved = effectiveConfiguration.GetProvider(providerName).Repositories
+        var effectiveProvider = effectiveConfiguration.GetProvider(providerName);
+        var resolved = effectiveProvider.Repositories
             .Single(repository => repository.Id == repositoryOptions.Id);
         var provider = providers.Get(providerName);
         var repository = new RepositoryRef(resolved.Id, resolved.OwnerOrNamespace, resolved.Name);
@@ -760,7 +761,8 @@ public sealed partial class WorkflowDispatcher(
             resolved.CloseIssueOnMerge,
             resolved.OmpRoles.GetValueOrDefault("revision", "task"),
             resolved.OmpRoles.GetValueOrDefault("conflictResolution", "task"),
-            resolved.IgnoreBotComments);
+            resolved.IgnoreBotComments,
+            effectiveProvider.Source.IdentityOverride);
         var workflowMode = resolved.WorkflowMode == ConfiguredWorkflowMode.PlanOnly ? WorkflowMode.PlanOnly : WorkflowMode.Full;
         return new Runtime(provider, repository, dependencies, config, workflowMode, resolved.OmpTimeout, resolved.OmpExecutionSecrets.Values, new TagList { { LogContextFields.Provider, providerName }, { LogContextFields.Repository, repository.Id } });
     }

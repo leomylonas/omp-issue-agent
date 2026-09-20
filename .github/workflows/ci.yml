@@ -76,6 +76,7 @@ jobs:
       - name: Validate Helm templates and Kubernetes manifests
         run: |
           helm template issue-agent deploy/helm/issue-agent \
+            --namespace issue-agent-monitoring \
             --set omp.authBroker.enabled=true \
             --set omp.authBroker.image.repository=ghcr.io/leomylonas/omp-issue-agent \
             --set omp.authBroker.image.tag=0.1.0 \
@@ -83,6 +84,15 @@ jobs:
             --set prometheusRule.enabled=true \
             --set serviceMonitor.enabled=true \
             --set grafana.dashboard.enabled=true >/tmp/issue-agent-broker.yaml
+          docker run --rm --interactive mikefarah/yq:4.47.2 \
+            -e 'select(.kind == "ServiceMonitor") | (.spec.namespaceSelector.matchNames == ["issue-agent-monitoring"])' \
+            < /tmp/issue-agent-broker.yaml
+          docker run --rm --interactive mikefarah/yq:4.47.2 \
+            -e 'select(.kind == "ServiceMonitor") | (.spec.targetLabels | contains(["app.kubernetes.io/namespace"]))' \
+            < /tmp/issue-agent-broker.yaml
+          docker run --rm --interactive mikefarah/yq:4.47.2 \
+            -e 'select(.kind == "PrometheusRule") | select([.spec.groups[].rules[].expr | contains("app_kubernetes_io_namespace=\"issue-agent-monitoring\"")] | all)' \
+            < /tmp/issue-agent-broker.yaml
           docker run --rm --interactive ghcr.io/yannh/kubeconform:v0.7.0 \
             -strict \
             -schema-location default \

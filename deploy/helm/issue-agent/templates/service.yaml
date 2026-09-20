@@ -4,6 +4,7 @@ metadata:
   name: {{ include "issue-agent.fullname" . }}
   labels:
     app.kubernetes.io/component: issue-agent
+    app.kubernetes.io/namespace: {{ .Release.Namespace | quote }}
     {{- include "issue-agent.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}

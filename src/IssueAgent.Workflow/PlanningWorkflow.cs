@@ -169,7 +169,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             UpdatedAt = deps.Clock.UtcNow,
         };
 
-        var canonicalComment = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var canonicalComment = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken, config.CanonicalCommentAuthor).ConfigureAwait(false);
         if (canonicalComment is null)
         {
             return await FailAsync(
@@ -451,7 +451,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             InterruptedPhase = workingState.Phase,
             UpdatedAt = deps.Clock.UtcNow,
         };
-        var canonical = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var canonical = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken, config.CanonicalCommentAuthor).ConfigureAwait(false);
         if (canonical is not null)
         {
             try
@@ -481,7 +481,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
     private async Task UpsertCanonicalCommentAsync(WorkflowRepositoryConfig config, long issueNumber, CanonicalCommentContent content, CancellationToken cancellationToken)
     {
         var body = CanonicalCommentMarkdown.Render(content);
-        var existing = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var existing = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken, config.CanonicalCommentAuthor).ConfigureAwait(false);
         if (existing is null)
         {
             await deps.Provider.CreateIssueCommentAsync(config.Repository, issueNumber, body, cancellationToken).ConfigureAwait(false);

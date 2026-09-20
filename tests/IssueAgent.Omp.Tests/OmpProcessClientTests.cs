@@ -172,23 +172,44 @@ public sealed class OmpProcessClientTests
     }
 
     [Fact]
-    public async Task ConfiguredTimeoutBoundsSessionResumeAndAbortControls()
+    public async Task ConfiguredTimeoutBoundsSessionResumeControl()
     {
         var sessionFile = Path.Combine(Path.GetTempPath(), "persisted", "session.jsonl");
-        await using var resumeClient = StartClient(
+        await using var client = StartClient(
             configuredTimeout: TimeSpan.FromMilliseconds(50),
             hangCommands: "switch_session");
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => resumeClient.ResumeSessionAsync("existing-session", sessionFile, CancellationToken.None).AsTask());
+            () => client.ResumeSessionAsync("existing-session", sessionFile, CancellationToken.None).AsTask());
+    }
 
-        await using var abortClient = StartClient(
-            configuredTimeout: TimeSpan.FromMilliseconds(50),
+    [Fact]
+    public async Task CancelAsyncUsesAbortGraceInsteadOfLongConfiguredTimeout()
+    {
+        await using var client = StartClient(
+            abortGracePeriod: TimeSpan.FromMilliseconds(50),
+            configuredTimeout: TimeSpan.FromSeconds(1),
             hangCommands: "abort");
-        var session = await abortClient.CreateSessionAsync("plan", CancellationToken.None);
+        var session = await client.CreateSessionAsync("plan", CancellationToken.None);
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => abortClient.CancelAsync(session.SessionId, CancellationToken.None).AsTask());
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            client.CancelAsync(session.SessionId, CancellationToken.None).AsTask()
+                .WaitAsync(TimeSpan.FromMilliseconds(250), TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task CancelAsyncHonorsCallerCancellationBeforeAbortGrace()
+    {
+        await using var client = StartClient(
+            abortGracePeriod: TimeSpan.FromSeconds(1),
+            configuredTimeout: TimeSpan.FromSeconds(2),
+            hangCommands: "abort");
+        var session = await client.CreateSessionAsync("plan", CancellationToken.None);
+        using var callerCancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            client.CancelAsync(session.SessionId, callerCancellation.Token).AsTask()
+                .WaitAsync(TimeSpan.FromMilliseconds(250), TestContext.Current.CancellationToken));
     }
 
     [Fact]

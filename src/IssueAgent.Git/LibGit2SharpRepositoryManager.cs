@@ -629,9 +629,13 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
             }
 
             var expectedCommit = head.Tree[change.Path]!.Target.Id.Sha;
+            var previousCommit = baseTree[change.Path]?.TargetType == TreeEntryTargetType.GitLink
+                ? baseTree[change.Path]!.Target.Id.Sha
+                : null;
             await PublishSubmoduleRecursivelyAsync(
                 submodulePath,
                 expectedCommit,
+                previousCommit,
                 branchName,
                 submoduleAuthenticationResolver,
                 new HashSet<string>(StringComparer.Ordinal),
@@ -642,6 +646,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
     private static async Task PublishSubmoduleRecursivelyAsync(
         string repositoryPath,
         string expectedCommit,
+        string? previousCommit,
         string branchName,
         Func<string, GitAuthentication?> authenticationResolver,
         ISet<string> visitedRepositoryPaths,
@@ -668,17 +673,15 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         var authentication = host is null
             ? GitAuthentication.Anonymous(TlsTrust.System)
             : authenticationResolver(host) ?? GitAuthentication.Anonymous(TlsTrust.System);
+        var previousTree = previousCommit is null
+            ? null
+            : repository.Lookup<Commit>(previousCommit)?.Tree
+                ?? throw new InvalidOperationException(
+                    $"Previous submodule commit '{previousCommit}' for '{repositoryPath}' is unavailable for safe publication.");
 
         foreach (var submodule in repository.Submodules)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var submodulePath = GetSafeSubmodulePath(repositoryPath, repositoryPath, submodule.Path);
-            if (!Directory.Exists(submodulePath))
-            {
-                throw new InvalidOperationException(
-                    $"Nested submodule '{submodule.Path}' of changed submodule '{repositoryPath}' is not initialized and cannot be published safely.");
-            }
-
             var gitlink = head.Tree[submodule.Path];
             if (gitlink?.TargetType != TreeEntryTargetType.GitLink)
             {
@@ -686,9 +689,26 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
                     $"Nested submodule '{submodule.Path}' of changed submodule '{repositoryPath}' has no committed gitlink.");
             }
 
+            var previousGitlink = previousTree?[submodule.Path];
+            if (previousGitlink?.TargetType == TreeEntryTargetType.GitLink &&
+                string.Equals(previousGitlink.Target.Id.Sha, gitlink.Target.Id.Sha, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var submodulePath = GetSafeSubmodulePath(repositoryPath, repositoryPath, submodule.Path);
+            if (!Directory.Exists(submodulePath))
+            {
+                throw new InvalidOperationException(
+                    $"Nested submodule '{submodule.Path}' of changed submodule '{repositoryPath}' is not initialized and cannot be published safely.");
+            }
+
             await PublishSubmoduleRecursivelyAsync(
                 submodulePath,
                 gitlink.Target.Id.Sha,
+                previousGitlink?.TargetType == TreeEntryTargetType.GitLink
+                    ? previousGitlink.Target.Id.Sha
+                    : null,
                 branchName,
                 authenticationResolver,
                 visitedRepositoryPaths,

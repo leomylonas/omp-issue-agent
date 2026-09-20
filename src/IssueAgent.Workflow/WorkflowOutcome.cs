@@ -17,30 +17,38 @@ public enum WorkflowOutcomeStatus
 public sealed record WorkflowOutcome(WorkflowOutcomeStatus Status, WorkflowState State, string? Message = null);
 
 /// <summary>Locates the single canonical IssueAgent comment on an issue by its hidden locator
-/// marker (specification §17). Durable state is accepted only from the authenticated provider
-/// identity; an untrusted user can reproduce the marker but cannot control workflow state.</summary>
+/// marker (specification §17). Durable state is accepted only from the configured provider
+/// identity when one is supplied; otherwise it is accepted only from the authenticated provider
+/// identity. An untrusted user can reproduce the marker but cannot control workflow state.</summary>
 public static class CanonicalCommentLocator
 {
-    public static async Task<ProviderComment?> FindAsync(IGitProvider provider, RepositoryRef repository, long issueNumber, CancellationToken cancellationToken)
+    public static async Task<ProviderComment?> FindAsync(
+        IGitProvider provider,
+        RepositoryRef repository,
+        long issueNumber,
+        CancellationToken cancellationToken,
+        string? configuredIdentity = null)
     {
-        var authenticatedIdentity = await provider.GetCurrentIdentityAsync(cancellationToken).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(authenticatedIdentity.Login))
+        var authoritativeIdentity = string.IsNullOrWhiteSpace(configuredIdentity)
+            ? (await provider.GetCurrentIdentityAsync(cancellationToken).ConfigureAwait(false)).Login
+            : configuredIdentity.Trim();
+        if (string.IsNullOrWhiteSpace(authoritativeIdentity))
         {
-            throw new CanonicalCommentCorruptException("Authenticated provider identity has no login; canonical workflow state cannot be trusted.");
+            throw new CanonicalCommentCorruptException("Authoritative provider identity has no login; canonical workflow state cannot be trusted.");
         }
 
         ProviderComment? canonicalComment = null;
         await foreach (var comment in provider.GetIssueCommentsAsync(repository, issueNumber, cancellationToken).ConfigureAwait(false))
         {
             if (!CanonicalCommentMarkdown.IsCanonicalComment(comment.Body) ||
-                !string.Equals(comment.AuthorLogin, authenticatedIdentity.Login, StringComparison.OrdinalIgnoreCase))
+                !string.Equals(comment.AuthorLogin, authoritativeIdentity, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
 
             if (canonicalComment is not null)
             {
-                throw new CanonicalCommentCorruptException("Multiple comments from the authenticated provider identity contain the canonical state locator marker.");
+                throw new CanonicalCommentCorruptException("Multiple comments from the authoritative provider identity contain the canonical state locator marker.");
             }
 
             canonicalComment = comment;

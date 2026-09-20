@@ -79,7 +79,8 @@ public sealed record WorkflowRepositoryConfig(
     bool CloseIssueOnMerge = true,
     string RevisionRole = "task",
     string ConflictResolutionRole = "task",
-    bool IgnoreBotComments = true)
+    bool IgnoreBotComments = true,
+    string? CanonicalCommentAuthor = null)
 {
     public string ApplyInstructions(string prompt)
     {

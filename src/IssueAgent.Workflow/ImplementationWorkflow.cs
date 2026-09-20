@@ -38,7 +38,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, restoredState, "plan-only mode: implementation command rejected.");
         }
 
-        var canonicalComment = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var canonicalComment = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken, config.CanonicalCommentAuthor).ConfigureAwait(false);
         if (canonicalComment is null)
         {
             return await EscalateWithoutCanonicalCommentAsync(
@@ -712,7 +712,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             InterruptedPhase = workingState.Phase,
             UpdatedAt = deps.Clock.UtcNow,
         };
-        var canonical = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var canonical = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken, config.CanonicalCommentAuthor).ConfigureAwait(false);
         if (canonical is not null)
         {
             try
@@ -740,7 +740,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
     private async Task UpsertCanonicalCommentAsync(WorkflowRepositoryConfig config, long issueNumber, CanonicalCommentContent content, CancellationToken cancellationToken)
     {
         var body = CanonicalCommentMarkdown.Render(content);
-        var existing = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var existing = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken, config.CanonicalCommentAuthor).ConfigureAwait(false);
         if (existing is null)
         {
             await deps.Provider.CreateIssueCommentAsync(config.Repository, issueNumber, body, cancellationToken).ConfigureAwait(false);

@@ -31,6 +31,7 @@ public sealed class FakeGitProvider : IGitProvider
 
     public string DefaultBranch { get; set; } = "main";
     public ProviderIdentity CurrentIdentity { get; set; } = new("issue-agent", "IssueAgent");
+    public int GetCurrentIdentityCallCount { get; private set; }
 
 
     public void AddIssue(RepositoryRef repository, long number, string title, string description, IReadOnlySet<string>? labels = null, DateTimeOffset? updatedAt = null)
@@ -58,7 +59,11 @@ public sealed class FakeGitProvider : IGitProvider
             isBot));
     }
 
-    public ValueTask<ProviderIdentity> GetCurrentIdentityAsync(CancellationToken cancellationToken) => ValueTask.FromResult(CurrentIdentity);
+    public ValueTask<ProviderIdentity> GetCurrentIdentityAsync(CancellationToken cancellationToken)
+    {
+        GetCurrentIdentityCallCount++;
+        return ValueTask.FromResult(CurrentIdentity);
+    }
 
     public ValueTask<string> GetDefaultBranchAsync(RepositoryRef repository, CancellationToken cancellationToken) => ValueTask.FromResult(DefaultBranch);
 

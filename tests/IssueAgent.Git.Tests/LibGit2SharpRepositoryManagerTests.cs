@@ -882,6 +882,53 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task PublishChangedSubmodulesAsyncSkipsUnchangedNestedGitlinks()
+    {
+        var publicDependencyRemotePath = Track(TempGitFixtures.CreateBareRemoteRepository(out _));
+        var parentSourcePath = Track(TempGitFixtures.CreateTempDirectory());
+        Repository.Init(parentSourcePath);
+        RunGitCli(parentSourcePath, "-c", "protocol.file.allow=always", "submodule", "add", publicDependencyRemotePath, "dependencies/public");
+        RunGitCli(parentSourcePath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-am", "Add public dependency");
+
+        var parentRemotePath = Track(TempGitFixtures.CreateTempDirectory());
+        Directory.Delete(parentRemotePath);
+        Repository.Clone(parentSourcePath, parentRemotePath, new CloneOptions { IsBare = true });
+
+        var rootRepositoryPath = Track(TempGitFixtures.CreateTempDirectory());
+        Repository.Init(rootRepositoryPath);
+        RunGitCli(rootRepositoryPath, "-c", "protocol.file.allow=always", "submodule", "add", parentRemotePath, "dependencies/parent");
+        RunGitCli(rootRepositoryPath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-am", "Add parent submodule");
+        var baseCommit = new Repository(rootRepositoryPath).Head.Tip.Sha;
+
+        await manager.EnsureBareRepositoryAsync("skip-unchanged-nested-submodule", rootRepositoryPath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
+        await manager.CreateWorktreeAsync("skip-unchanged-nested-submodule", "skip-unchanged-nested-submodule-wt", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
+        await manager.UpdateSubmodulesAsync("skip-unchanged-nested-submodule", worktreePath, _ => null, CancellationToken.None);
+
+        var parentPath = Path.Combine(worktreePath, "dependencies", "parent");
+        File.WriteAllText(Path.Combine(parentPath, "published.txt"), "parent publication");
+        RunGitCli(parentPath, "add", "published.txt");
+        RunGitCli(parentPath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Update parent");
+        var parentCommit = new Repository(parentPath).Head.Tip.Sha;
+        RunGitCli(worktreePath, "add", "dependencies/parent");
+        RunGitCli(worktreePath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Update parent gitlink");
+
+        await manager.PublishChangedSubmodulesAsync(
+            "skip-unchanged-nested-submodule",
+            worktreePath,
+            baseCommit,
+            "agent/issue-1",
+            TempGitFixtures.AnonymousAuthentication(),
+            _ => null,
+            CancellationToken.None);
+
+        using var parentRemote = new Repository(parentRemotePath);
+        using var publicDependencyRemote = new Repository(publicDependencyRemotePath);
+        Assert.Equal(parentCommit, parentRemote.Branches["agent/issue-1"]!.Tip.Sha);
+        Assert.Null(publicDependencyRemote.Branches["agent/issue-1"]);
+    }
+
+    [Fact]
     public async Task PublishChangedSubmodulesAsyncRejectsAnUninitializedChangedGitlink()
     {
         var childRemotePath = Track(TempGitFixtures.CreateBareRemoteRepository(out _));

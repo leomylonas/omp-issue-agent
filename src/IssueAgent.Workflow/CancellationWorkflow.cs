@@ -87,7 +87,7 @@ public sealed class CancellationWorkflow(WorkflowDependencies deps)
             State = CanonicalStateSerializer.ToDocument(terminalState, existingContent.State.PullOrMergeRequest),
         };
         var body = CanonicalCommentMarkdown.Render(content);
-        var existing = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var existing = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken, config.CanonicalCommentAuthor).ConfigureAwait(false);
         if (existing is null)
         {
             await deps.Provider.CreateIssueCommentAsync(config.Repository, issueNumber, body, cancellationToken).ConfigureAwait(false);
