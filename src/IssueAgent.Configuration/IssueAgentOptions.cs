@@ -48,6 +48,11 @@ public sealed record OmpOptions
     public IReadOnlyDictionary<string, string> ConnectionSettings { get; init; } =
         new Dictionary<string, string>(StringComparer.Ordinal);
 
+    /// <summary>Non-secret execution variables supplied to every OMP process unless a repository
+    /// setting overrides them.</summary>
+    public IReadOnlyDictionary<string, string> ExecutionVariables { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
     public IReadOnlyDictionary<string, SecretSource> ExecutionSecrets { get; init; } =
         new Dictionary<string, SecretSource>(StringComparer.Ordinal);
 
@@ -316,6 +321,13 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
             failures.Add($"{path} OmpTimeout must be greater than zero.");
         }
         var git = settings.Git;
+        foreach (var (name, source) in settings.OmpExecutionSecrets)
+        {
+            if (!source.IsExactlyOneSource())
+            {
+                failures.Add($"{path} OMP execution secret '{name}' must configure exactly one of env or file.");
+            }
+        }
         ValidateTlsTrust(git?.Tls, $"{path} Git TLS", failures, requireMode: false);
         foreach (var (name, secret) in new[]
         {

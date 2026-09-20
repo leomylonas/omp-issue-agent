@@ -76,6 +76,40 @@ public sealed class IssueAgentOptionsValidatorTests
     }
 
     [Fact]
+    public void ValidateRejectsRepositoryOmpExecutionSecretWithMultipleSources()
+    {
+        var options = CreateOptions() with
+        {
+            Providers =
+            [
+                CreateProvider() with
+                {
+                    Repositories =
+                    [
+                        new RepositoryOptions
+                        {
+                            Id = "github/example/repository",
+                            Name = "example/repository",
+                            Settings = new RepositorySettingsOptions
+                            {
+                                OmpExecutionSecrets = new Dictionary<string, SecretSource>
+                                {
+                                    ["SECRET"] = new() { Env = "SECRET", File = "/run/secrets/secret" },
+                                },
+                            },
+                        },
+                    ],
+                },
+            ],
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("OMP execution secret 'SECRET' must configure exactly one", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ValidateRejectsSshWithoutExplicitHostVerification()
     {
         var options = CreateOptions() with

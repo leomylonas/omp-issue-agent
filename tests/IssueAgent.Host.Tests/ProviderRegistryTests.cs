@@ -68,6 +68,24 @@ public sealed class ProviderRegistryTests
                 ["ca-a.pem", "ca-b.pem"], ["sha256:tls-a", "sha256:tls-b"])));
     }
 
+    [Fact]
+    public void ProviderTlsTrustTreatsPinnedFingerprintCollectionsAsSets()
+    {
+        var equivalent = CreateRegistry(
+            Repository("repository-a", "https://git.example.test/team/a.git", "shared-token",
+                tlsFingerprints: ["sha256:tls-a", "sha256:tls-b"], tlsMode: ConfiguredTlsTrustMode.Pinned),
+            Repository("repository-b", "https://git.example.test/team/b.git", "shared-token",
+                tlsFingerprints: ["sha256:tls-b", "sha256:tls-a"], tlsMode: ConfiguredTlsTrustMode.Pinned));
+
+        Assert.NotNull(equivalent.Get("github"));
+
+        Assert.Throws<InvalidOperationException>(() => CreateRegistry(
+            Repository("repository-a", "https://git.example.test/team/a.git", "shared-token",
+                tlsFingerprints: ["sha256:tls-a", "sha256:tls-b"], tlsMode: ConfiguredTlsTrustMode.Pinned),
+            Repository("repository-b", "https://git.example.test/team/b.git", "shared-token",
+                tlsFingerprints: ["sha256:tls-a", "sha256:tls-c"], tlsMode: ConfiguredTlsTrustMode.Pinned)));
+    }
+
     private static ProviderRegistry CreateRegistry(params EffectiveRepositoryConfiguration[] repositories)
     {
         var source = new ProviderOptions
@@ -95,7 +113,8 @@ public sealed class ProviderRegistryTests
         string token,
         IReadOnlyList<string>? additionalCaCertificatePaths = null,
         IReadOnlyList<string>? tlsFingerprints = null,
-        IReadOnlyList<string>? sshFingerprints = null) => new(
+        IReadOnlyList<string>? sshFingerprints = null,
+        ConfiguredTlsTrustMode? tlsMode = null) => new(
         new RepositoryOptions { Id = id, Name = id, CloneUrl = cloneUrl },
         "github",
         ProviderKind.GitHub,
@@ -119,7 +138,7 @@ public sealed class ProviderRegistryTests
             null,
             null,
             null,
-            additionalCaCertificatePaths is null ? ConfiguredTlsTrustMode.System : ConfiguredTlsTrustMode.SystemPlusAdditionalCa,
+            tlsMode ?? (additionalCaCertificatePaths is null ? ConfiguredTlsTrustMode.System : ConfiguredTlsTrustMode.SystemPlusAdditionalCa),
             additionalCaCertificatePaths ?? [],
             tlsFingerprints ?? [],
             sshFingerprints is null ? null : ConfiguredSshHostVerificationMode.Pinned,

@@ -227,6 +227,22 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         {
             await deps.Git.UploadLfsObjectsAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
         }
+
+        // LFS upload can take long enough for review feedback to arrive. Re-observe immediately
+        // before pushing so a revision never publishes work produced without that feedback.
+        var feedbackBeforePush = await CaptureFeedbackSnapshotAsync(config, config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
+        if (!feedbackBeforePush.Entries.SetEquals(feedbackBeforeRevision.Entries))
+        {
+            return await PauseForNewFeedbackAsync(
+                config,
+                issueNumber,
+                workingState,
+                publicationCheckpoint,
+                resultMarkdown,
+                "New review feedback arrived during LFS upload. The retained worktree was preserved; review the feedback and request another revision.",
+                cancellationToken).ConfigureAwait(false);
+        }
+
         await deps.Git.PushAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
 
         var publishedState = workingState with
@@ -239,8 +255,8 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             // This is the actual end of the feedback observation used for the publication gate.
             // Advancing it to a later write time could silently skip feedback that arrives while
             // publishing the branch.
-            ReviewFeedbackCutoff = feedbackAfterRevision.Cutoff,
-            ReviewFeedbackIds = feedbackAfterRevision.Ids,
+            ReviewFeedbackCutoff = feedbackBeforePush.Cutoff,
+            ReviewFeedbackIds = feedbackBeforePush.Ids,
         };
 
         var content = new CanonicalCommentContent(

@@ -109,6 +109,63 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
     }
 
     [Fact]
+    public void ApplyAuthenticationAppliesAdditionalCaTrustToAnonymousHttpsLfs()
+    {
+        var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example/octo/widgets.git");
+        var certificatePath = WriteAdditionalCertificate(X509ContentType.Cert, "anonymous-additional-ca.pem");
+        var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
+
+        InvokeApplyAuthentication(
+            startInfo,
+            GitAuthentication.Anonymous(new TlsTrust
+            {
+                Mode = TlsTrustMode.SystemPlusAdditionalCa,
+                AdditionalCaCertificatePaths = [certificatePath],
+            }),
+            Track());
+
+        var bundlePath = Assert.IsType<string>(startInfo.Environment["GIT_SSL_CAINFO"]);
+        Assert.NotEqual(certificatePath, bundlePath);
+        Assert.Contains(File.ReadAllText(certificatePath), File.ReadAllText(bundlePath), StringComparison.Ordinal);
+        Assert.False(startInfo.Environment.ContainsKey("GIT_ASKPASS"));
+    }
+
+    [Fact]
+    public void ApplyAuthenticationAppliesNoneTrustToAnonymousHttpsLfs()
+    {
+        var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example/octo/widgets.git");
+        var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
+
+        InvokeApplyAuthentication(
+            startInfo,
+            GitAuthentication.Anonymous(new TlsTrust { Mode = TlsTrustMode.None }),
+            Track());
+
+        Assert.Equal("true", startInfo.Environment["GIT_SSL_NO_VERIFY"]);
+    }
+
+    [Fact]
+    public void ApplyAuthenticationFailsClosedForAnonymousHttpsLfsWithPinnedTls()
+    {
+        var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example/octo/widgets.git");
+        var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
+
+        var failure = Assert.Throws<InvalidOperationException>(() =>
+            InvokeApplyAuthentication(
+                startInfo,
+                GitAuthentication.Anonymous(new TlsTrust
+                {
+                    Mode = TlsTrustMode.Pinned,
+                    Fingerprints = ["sha256/fingerprint"],
+                }),
+                Track()));
+
+        Assert.Contains("cannot enforce certificate fingerprints", failure.Message, StringComparison.Ordinal);
+        Assert.False(startInfo.Environment.ContainsKey("GIT_SSL_NO_VERIFY"));
+        Assert.False(startInfo.Environment.ContainsKey("GIT_ASKPASS"));
+    }
+
+    [Fact]
     public void ApplyAuthenticationPreservesEveryCertificateInAdditionalPemChain()
     {
         var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example/octo/widgets.git");

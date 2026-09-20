@@ -47,6 +47,10 @@ public sealed record RepositorySettingsOptions
     public GitIdentityOptions? GitIdentity { get; init; }
     public TimeSpan? OmpTimeout { get; init; }
     public IReadOnlyDictionary<string, string> OmpRoles { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
+    public IReadOnlyDictionary<string, string> OmpExecutionVariables { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+    public IReadOnlyDictionary<string, SecretSource> OmpExecutionSecrets { get; init; } =
+        new Dictionary<string, SecretSource>(StringComparer.Ordinal);
 }
 
 public sealed record GitIdentityOptions
@@ -125,6 +129,11 @@ public sealed record EffectiveRepositoryConfiguration(
     /// <summary>True when the Git author email should come from the authenticated provider user.</summary>
     public bool UsesProviderIdentityForEmail { get; init; }
     public bool CloseIssueOnMerge { get; init; } = true;
+    /// <summary>Resolved OMP execution environment values scoped to this repository.</summary>
+    public IReadOnlyDictionary<string, string> OmpExecutionVariables { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+    public IReadOnlyDictionary<string, string> OmpExecutionSecrets { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
 }
 
 public sealed record EffectiveGitConfiguration(
@@ -213,6 +222,14 @@ public static class EffectiveConfigurationResolver
             ?? throw new InvalidOperationException($"Repository '{repository.Id}' requires an owner/namespace.");
         var settings = Merge(root.Defaults, provider.Defaults, repository.Settings);
         var git = ResolveGit(settings.Git, providerToken, environmentReader, fileReader);
+        var executionVariables = new Dictionary<string, string>(root.Omp.ExecutionVariables, StringComparer.Ordinal);
+        foreach (var pair in settings.OmpExecutionVariables) executionVariables[pair.Key] = pair.Value;
+        var executionSecretSources = new Dictionary<string, SecretSource>(root.Omp.ExecutionSecrets, StringComparer.Ordinal);
+        foreach (var pair in settings.OmpExecutionSecrets) executionSecretSources[pair.Key] = pair.Value;
+        var executionSecrets = executionSecretSources.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value.Resolve(environmentReader, fileReader),
+            StringComparer.Ordinal);
         var cloneUrl = repository.CloneUrl ?? DeriveCloneUrl(provider.Kind, provider.BaseUri, owner, repositoryName, git);
         var targetBranch = repository.TargetBranch;
         var startDate = repository.StartDate ?? root.StartDate;
@@ -241,6 +258,8 @@ public static class EffectiveConfigurationResolver
             settings.OmpTimeout ?? root.Omp.Timeout,
             roles)
         {
+            OmpExecutionVariables = executionVariables,
+            OmpExecutionSecrets = executionSecrets,
             UsesProviderIdentityForName = settings.GitIdentity?.Name is null && string.IsNullOrWhiteSpace(provider.IdentityOverride),
             // An anonymous provider with an explicit identity override cannot resolve provider
             // metadata (notably email) without making an authenticated /user request.
@@ -261,6 +280,8 @@ public static class EffectiveConfigurationResolver
         TimeSpan? ompTimeout = null;
         var instructions = new List<string>();
         var roles = new Dictionary<string, string>(StringComparer.Ordinal);
+        var executionVariables = new Dictionary<string, string>(StringComparer.Ordinal);
+        var executionSecrets = new Dictionary<string, SecretSource>(StringComparer.Ordinal);
         foreach (var level in levels)
         {
             ignoreBots = level.IgnoreBotComments ?? ignoreBots;
@@ -274,6 +295,8 @@ public static class EffectiveConfigurationResolver
             ompTimeout = level.OmpTimeout ?? ompTimeout;
             instructions.AddRange(level.SupplementalInstructions.Where(value => !string.IsNullOrWhiteSpace(value)));
             foreach (var pair in level.OmpRoles) roles[pair.Key] = pair.Value;
+            foreach (var pair in level.OmpExecutionVariables) executionVariables[pair.Key] = pair.Value;
+            foreach (var pair in level.OmpExecutionSecrets) executionSecrets[pair.Key] = pair.Value;
         }
         return new RepositorySettingsOptions
         {
@@ -288,6 +311,8 @@ public static class EffectiveConfigurationResolver
             GitIdentity = gitIdentity,
             OmpTimeout = ompTimeout,
             OmpRoles = roles,
+            OmpExecutionVariables = executionVariables,
+            OmpExecutionSecrets = executionSecrets,
         };
     }
 

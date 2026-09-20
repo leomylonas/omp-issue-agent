@@ -53,6 +53,11 @@ public sealed class PlanningWorkflowTests : IDisposable
         Assert.Equal(WorkflowNotificationKind.PlanReady, notification.Kind);
 
         Assert.Single(git.CreatedWorktrees);
+        var reset = Assert.Single(git.ResetWorktrees);
+        Assert.Equal(Repository.Id, reset.RepositoryId);
+        Assert.Equal(outcome.State.BaseCommit, reset.Commit);
+        Assert.Equal(Path.Combine(workspaceRoot, outcome.State.WorkflowId.ToString(), "worktree"), reset.WorktreePath);
+
         Assert.Contains("Keep public APIs source-compatible.", Assert.Single(omp.RunRequests).Prompt, StringComparison.Ordinal);
         Assert.Equal(["repository-planner"], omp.SelectedRoles);
     }
@@ -194,6 +199,11 @@ public sealed class PlanningWorkflowTests : IDisposable
 
         Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
         Assert.Equal(2, outcome.State.PlanRevision);
+        var reset = Assert.Single(git.ResetWorktrees);
+        Assert.Equal(Repository.Id, reset.RepositoryId);
+        Assert.Equal(initialState.BaseCommit, reset.Commit);
+        Assert.Equal(Path.Combine(workspaceRoot, initialState.WorkflowId.ToString(), "worktree"), reset.WorktreePath);
+
         Assert.Single(provider.CreatedComments);
         Assert.Equal(2, provider.UpdatedComments.Count);
         var updated = provider.UpdatedComments[^1];

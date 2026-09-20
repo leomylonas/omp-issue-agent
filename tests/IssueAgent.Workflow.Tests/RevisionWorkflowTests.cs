@@ -152,7 +152,7 @@ public sealed class RevisionWorkflowTests : IDisposable
             .RunAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
 
         Assert.Equal(
-            DateTimeOffset.Parse("2024-06-01T00:02:00Z", System.Globalization.CultureInfo.InvariantCulture),
+            DateTimeOffset.Parse("2024-06-01T00:03:00Z", System.Globalization.CultureInfo.InvariantCulture),
             CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body).State.ReviewFeedbackCutoff);
     }
 
@@ -290,6 +290,36 @@ public sealed class RevisionWorkflowTests : IDisposable
         Assert.Equal(WaitingReason.NewFeedbackDuringRevision, outcome.State.WaitingReason);
         Assert.Contains("Revision.", CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body).ImplementationResult, StringComparison.Ordinal);
         Assert.Equal(0, git.PushCallCount);
+    }
+
+    [Fact]
+    public async Task RunAsyncPausesWhenReviewFeedbackArrivesDuringLfsUpload()
+    {
+        var state = await SeedReviewStateAsync();
+        git.LfsRequired = true;
+        git.OnLfsUpload = () => provider.MergeRequestComments[(Repository.Id, 1)] =
+        [
+            new ProviderComment(
+                9,
+                "bob",
+                "Please account for this new feedback.",
+                clock.UtcNow.AddMinutes(1),
+                clock.UtcNow.AddMinutes(1),
+                new AttachmentSource("merge-request-comment", "9"),
+                false),
+        ];
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"summary":"Revision.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowPhase.Revising, outcome.State.Phase);
+        Assert.Equal(WaitingReason.NewFeedbackDuringRevision, outcome.State.WaitingReason);
+        Assert.Equal(0, git.PushCallCount);
+        Assert.Contains("Revision.", CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body).ImplementationResult, StringComparison.Ordinal);
     }
 
     [Fact]

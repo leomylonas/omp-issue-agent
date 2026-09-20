@@ -48,11 +48,13 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
         return ValueTask.CompletedTask;
     }
 
-    public int ResetWorktreeCallCount { get; private set; }
+    public List<(string RepositoryId, string WorktreePath, string Commit)> ResetWorktrees { get; } = [];
+
+    public int ResetWorktreeCallCount => ResetWorktrees.Count;
 
     public ValueTask ResetWorktreeAsync(string repositoryId, string worktreePath, string commit, CancellationToken cancellationToken)
     {
-        ResetWorktreeCallCount++;
+        ResetWorktrees.Add((repositoryId, worktreePath, commit));
         return ValueTask.CompletedTask;
     }
 

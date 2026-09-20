@@ -280,6 +280,15 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         string issueDescription,
         CancellationToken cancellationToken)
     {
+        // OMP's planning contract is read-only. Discard any accidental planning-time edits or
+        // commits before the plan becomes approvable, so implementation always starts at its
+        // recorded base commit.
+        await deps.Git.ResetWorktreeAsync(
+            config.Repository.Id,
+            WorktreePath(config, workingState.WorkflowId),
+            workingState.BaseCommit,
+            cancellationToken).ConfigureAwait(false);
+
         var publishedState = workingState with
         {
             Phase = WorkflowPhase.Planned,

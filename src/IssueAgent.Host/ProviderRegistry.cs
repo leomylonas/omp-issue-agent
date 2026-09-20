@@ -158,7 +158,7 @@ public sealed class ProviderRegistry
     private static bool Equivalent(TlsTrust left, TlsTrust right) =>
         left.Mode == right.Mode &&
         EquivalentSet(left.AdditionalCaCertificatePaths, right.AdditionalCaCertificatePaths, StringComparer.Ordinal) &&
-        left.Fingerprints.SequenceEqual(right.Fingerprints, StringComparer.OrdinalIgnoreCase);
+        EquivalentSet(left.Fingerprints, right.Fingerprints, StringComparer.OrdinalIgnoreCase);
 
     private static bool EquivalentSet(IReadOnlyList<string> left, IReadOnlyList<string> right, IEqualityComparer<string> comparer) =>
         left.ToHashSet(comparer).SetEquals(right);

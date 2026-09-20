@@ -149,19 +149,23 @@ public static class GitLfsRunner
         string isolatedHome,
         CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(canonicalRemoteUrl);
+        // LFS transfers to an HTTPS canonical remote can be anonymous. TLS policy is a transport
+        // boundary, not an authentication concern, so apply it before selecting credentials.
+        var canonicalHttpsRemote = TryGetHttpsUri(canonicalRemoteUrl);
+        if (canonicalHttpsRemote is not null)
+        {
+            ApplyHttpsTlsTrust(startInfo, authentication.TlsTrust, isolatedHome);
+        }
+
         switch (authentication.Mode)
         {
             case GitAuthenticationMode.ProviderToken or GitAuthenticationMode.Token:
-                var canonicalRemote = TryGetHttpsUri(canonicalRemoteUrl);
-                if (canonicalRemote is null)
+                if (canonicalHttpsRemote is null)
                 {
                     // The authenticated LFS endpoint is explicitly derived from the configured,
                     // canonical clone URL below. Never consult mutable worktree config for it.
                     break;
                 }
-
-                ApplyHttpsTlsTrust(startInfo, authentication.TlsTrust, isolatedHome);
 
                 var askPassPath = Path.Combine(isolatedHome, "askpass.sh");
                 File.WriteAllText(
@@ -180,8 +184,13 @@ public static class GitLfsRunner
             case GitAuthenticationMode.Ssh:
                 var trust = authentication.SshTrust ?? throw new InvalidOperationException("SSH transport requires an explicit host-verification policy; none was configured.");
                 // Hybrid LFS authentication obtains credentials over SSH and then transfers the
-                // objects over HTTPS. Apply the same HTTPS CA policy before git-lfs starts.
-                ApplyHttpsTlsTrust(startInfo, authentication.TlsTrust, isolatedHome);
+                // objects over HTTPS. An SSH canonical remote did not take the HTTPS path above,
+                // so apply the same HTTPS CA policy before git-lfs starts.
+                if (canonicalHttpsRemote is null)
+                {
+                    ApplyHttpsTlsTrust(startInfo, authentication.TlsTrust, isolatedHome);
+                }
+
                 var remoteUrl = canonicalRemoteUrl;
                 startInfo.Environment["GIT_SSH_COMMAND"] = await GitSshTransport.BuildSshCommandForLfsAsync(authentication, trust, remoteUrl, isolatedHome, cancellationToken).ConfigureAwait(false);
                 break;

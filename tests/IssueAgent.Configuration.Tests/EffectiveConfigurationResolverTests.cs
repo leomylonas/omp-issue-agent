@@ -333,6 +333,64 @@ public sealed class EffectiveConfigurationResolverTests
         Assert.Equal(ConfiguredSshHostVerificationMode.Pinned, effective.Git.SshHostVerificationMode);
     }
 
+    [Fact]
+    public void ResolveInheritsAndScopesRepositoryOmpExecutionValues()
+    {
+        var options = CreateOptions() with
+        {
+            Omp = CreateOptions().Omp with
+            {
+                ExecutionVariables = new Dictionary<string, string> { ["GLOBAL_FLAG"] = "global", ["OVERRIDE"] = "global" },
+                ExecutionSecrets = new Dictionary<string, SecretSource> { ["GLOBAL_SECRET"] = new() { Env = "GLOBAL_SECRET" } },
+            },
+            Defaults = new RepositorySettingsOptions
+            {
+                OmpExecutionVariables = new Dictionary<string, string> { ["DEFAULT_FLAG"] = "default", ["OVERRIDE"] = "default" },
+                OmpExecutionSecrets = new Dictionary<string, SecretSource> { ["DEFAULT_SECRET"] = new() { Env = "DEFAULT_SECRET" } },
+            },
+            Providers =
+            [
+                CreateProvider() with
+                {
+                    Defaults = new RepositorySettingsOptions
+                    {
+                        OmpExecutionVariables = new Dictionary<string, string> { ["PROVIDER_FLAG"] = "provider", ["OVERRIDE"] = "provider" },
+                        OmpExecutionSecrets = new Dictionary<string, SecretSource> { ["PROVIDER_SECRET"] = new() { Env = "PROVIDER_SECRET" } },
+                    },
+                    Repositories =
+                    [
+                        new RepositoryOptions
+                        {
+                            Id = "github/octo/first",
+                            Name = "octo/first",
+                            Settings = new RepositorySettingsOptions
+                            {
+                                OmpExecutionVariables = new Dictionary<string, string> { ["REPOSITORY_FLAG"] = "repository", ["OVERRIDE"] = "repository" },
+                                OmpExecutionSecrets = new Dictionary<string, SecretSource> { ["REPOSITORY_SECRET"] = new() { Env = "REPOSITORY_SECRET" } },
+                            },
+                        },
+                        new RepositoryOptions { Id = "github/octo/second", Name = "octo/second" },
+                    ],
+                },
+            ],
+        };
+
+        var resolved = EffectiveConfigurationResolver.Resolve(options, name => $"{name}-value", _ => throw new InvalidOperationException());
+        var repositories = Assert.Single(resolved.Providers).Repositories;
+        var first = repositories.Single(repository => repository.Id.EndsWith("first", StringComparison.Ordinal));
+        var second = repositories.Single(repository => repository.Id.EndsWith("second", StringComparison.Ordinal));
+
+        Assert.Equal("repository", first.OmpExecutionVariables["OVERRIDE"]);
+        Assert.Equal("global", first.OmpExecutionVariables["GLOBAL_FLAG"]);
+        Assert.Equal("default", first.OmpExecutionVariables["DEFAULT_FLAG"]);
+        Assert.Equal("provider", first.OmpExecutionVariables["PROVIDER_FLAG"]);
+        Assert.Equal("repository", first.OmpExecutionVariables["REPOSITORY_FLAG"]);
+        Assert.Equal("REPOSITORY_SECRET-value", first.OmpExecutionSecrets["REPOSITORY_SECRET"]);
+        Assert.Equal("GLOBAL_SECRET-value", first.OmpExecutionSecrets["GLOBAL_SECRET"]);
+        Assert.DoesNotContain("REPOSITORY_SECRET", second.OmpExecutionSecrets.Keys);
+        Assert.Equal("PROVIDER_SECRET-value", second.OmpExecutionSecrets["PROVIDER_SECRET"]);
+    }
+
     private static IssueAgentOptions CreateOptions() => new()
     {
         Workspace = new WorkspaceOptions { RootPath = "/data" },

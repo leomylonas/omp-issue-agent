@@ -639,7 +639,8 @@ public sealed partial class WorkflowDispatcher(
             ["--mode", "rpc", "--session-dir", Path.Combine(options.Value.Workspace.RootPath, "omp")],
             ompEnvironment.Create(
                 ReadAmbientEnvironment(),
-                gitIdentity),
+                gitIdentity,
+                resolved),
             resolved.OmpRoles.GetValueOrDefault("planning", "plan"),
             resolved.OmpRoles.GetValueOrDefault("implementation", "task"),
             resolved.SupplementalInstructions,
@@ -650,7 +651,7 @@ public sealed partial class WorkflowDispatcher(
             resolved.OmpRoles.GetValueOrDefault("conflictResolution", "task"),
             resolved.IgnoreBotComments);
         var workflowMode = resolved.WorkflowMode == ConfiguredWorkflowMode.PlanOnly ? WorkflowMode.PlanOnly : WorkflowMode.Full;
-        return new Runtime(provider, repository, dependencies, config, workflowMode, resolved.OmpTimeout, new TagList { { LogContextFields.Provider, providerName }, { LogContextFields.Repository, repository.Id } });
+        return new Runtime(provider, repository, dependencies, config, workflowMode, resolved.OmpTimeout, resolved.OmpExecutionSecrets.Values, new TagList { { LogContextFields.Provider, providerName }, { LogContextFields.Repository, repository.Id } });
     }
 
     private IOmpClient StartOmp(Runtime runtime, long issueNumber, string workingDirectory)
@@ -665,7 +666,7 @@ public sealed partial class WorkflowDispatcher(
             client,
             metrics,
             ompLogger,
-            effectiveConfiguration.Omp.ExecutionSecrets.Values);
+            runtime.OmpExecutionSecrets);
         return activeOmpSessions.Track(
             new WorkflowWorkKey(runtime.Provider.Name, runtime.Repository.Id, issueNumber),
             observableClient);
@@ -673,7 +674,15 @@ public sealed partial class WorkflowDispatcher(
 
     private static Dictionary<string, string?> ReadAmbientEnvironment() => Environment.GetEnvironmentVariables().Cast<DictionaryEntry>().Where(entry => entry.Key is string).ToDictionary(entry => (string)entry.Key, entry => entry.Value as string, StringComparer.Ordinal);
 
-    private sealed record Runtime(IGitProvider Provider, RepositoryRef Repository, WorkflowDependencies Dependencies, WorkflowRepositoryConfig Config, WorkflowMode WorkflowMode, TimeSpan? OmpTimeout, TagList Tags);
+    private sealed record Runtime(
+        IGitProvider Provider,
+        RepositoryRef Repository,
+        WorkflowDependencies Dependencies,
+        WorkflowRepositoryConfig Config,
+        WorkflowMode WorkflowMode,
+        TimeSpan? OmpTimeout,
+        IEnumerable<string> OmpExecutionSecrets,
+        TagList Tags);
 
 
     [LoggerMessage(EventId = 21, Level = LogLevel.Error, Message = "Canonical state is corrupt for {Provider}/{Repository} issue {IssueNumber}")]
