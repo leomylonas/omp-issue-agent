@@ -23,6 +23,8 @@ public sealed class FakeOmpClient : IOmpClient
     public List<string> CancelledSessionIds { get; } = [];
 
     public bool Disposed { get; private set; }
+    public Action? OnCreateSession { get; set; }
+
 
     /// <summary>Queues the session id returned by the next <see cref="CreateSessionAsync"/> call.
     /// If the queue is empty when called, a new <see cref="Guid"/>-based id is generated.</summary>
@@ -55,6 +57,7 @@ public sealed class FakeOmpClient : IOmpClient
     public ValueTask<OmpSession> CreateSessionAsync(string role, CancellationToken cancellationToken)
     {
         CreatedRoles.Add(role);
+        OnCreateSession?.Invoke();
         var sessionId = sessionIdsToCreate.Count > 0 ? sessionIdsToCreate.Dequeue() : Guid.NewGuid().ToString("N");
         return ValueTask.FromResult(new OmpSession(sessionId, role, $"/data/omp/{sessionId}.jsonl"));
     }

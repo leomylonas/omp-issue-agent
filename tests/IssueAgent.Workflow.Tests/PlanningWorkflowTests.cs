@@ -61,6 +61,28 @@ public sealed class PlanningWorkflowTests : IDisposable
         Assert.Contains("Keep public APIs source-compatible.", Assert.Single(omp.RunRequests).Prompt, StringComparison.Ordinal);
         Assert.Equal(["repository-planner"], omp.SelectedRoles);
     }
+    [Fact]
+    public async Task RunInitialPlanningAsyncCreatesRetainedWorktreeBeforeStartingOmpSession()
+    {
+        provider.AddIssue(Repository, 1, "Bug", "Description");
+        var sessionStartedAfterWorktree = false;
+        var omp = new FakeOmpClient
+        {
+            OnCreateSession = () =>
+            {
+                var createdWorktree = Assert.Single(git.CreatedWorktrees);
+                Assert.True(Directory.Exists(createdWorktree.WorktreePath));
+                sessionStartedAfterWorktree = true;
+            },
+        };
+        omp.EnqueueSessionId("session-1")
+            .EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """{"planText":"Plan.","decisions":[]}"""));
+
+        await CreateWorkflow().RunInitialPlanningAsync(CreateConfig(), 1, omp, CancellationToken.None);
+
+        Assert.True(sessionStartedAfterWorktree);
+    }
+
 
     [Fact]
     public async Task RunInitialPlanningAsyncCheckpointsWorkflowBeforeCreatingRetainedWorktree()

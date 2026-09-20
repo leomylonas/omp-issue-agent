@@ -47,6 +47,27 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             .ConfigureAwait(false);
         return initialState;
     }
+    /// <summary>Creates or validates the retained worktree required as OMP's startup directory
+    /// for initial planning. The checkpoint is durable before this side effect, so a process
+    /// failure can safely retry the same operation during bootstrap recovery.</summary>
+    public async Task<string> EnsureInitialPlanningWorktreeAsync(
+        WorkflowRepositoryConfig config,
+        WorkflowState initialCheckpoint,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(initialCheckpoint);
+        var worktreePath = WorktreePath(config, initialCheckpoint.WorkflowId);
+        await deps.Git.CreateWorktreeAsync(
+            config.Repository.Id,
+            initialCheckpoint.WorkflowId.ToString(),
+            worktreePath,
+            initialCheckpoint.Branch,
+            initialCheckpoint.BaseCommit,
+            cancellationToken).ConfigureAwait(false);
+        return worktreePath;
+    }
+
 
     /// <summary>Runs initial planning from its durable identity checkpoint.</summary>
     public async Task<WorkflowOutcome> RunInitialPlanningAsync(
@@ -63,6 +84,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             ?? await CreateInitialCheckpointAsync(config, issueNumber, cancellationToken, suppliedWorkflowId).ConfigureAwait(false);
         Activity.Current?.SetTag("WorkflowId", initialState.WorkflowId.ToString());
 
+        var worktreePath = await EnsureInitialPlanningWorktreeAsync(config, initialState, cancellationToken).ConfigureAwait(false);
         if (initialState.OmpSessionFile is null)
         {
             var session = await omp.CreateSessionAsync(config.PlanningRole, cancellationToken).ConfigureAwait(false);
@@ -82,14 +104,9 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             await omp.ResumeSessionAsync(initialState.OmpSessionId, initialState.OmpSessionFile, cancellationToken).ConfigureAwait(false);
         }
 
-        var workflowId = initialState.WorkflowId;
-        var worktreePath = WorktreePath(config, workflowId);
-        await deps.Git.CreateWorktreeAsync(
-            config.Repository.Id, workflowId.ToString(), worktreePath, initialState.Branch, initialState.BaseCommit, cancellationToken)
-            .ConfigureAwait(false);
         await PrepareWorktreeContentAsync(config, worktreePath, cancellationToken).ConfigureAwait(false);
         var planningInput = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
-        var attachmentsPath = AttachmentsPath(config, workflowId);
+        var attachmentsPath = AttachmentsPath(config, initialState.WorkflowId);
         var context = await deps.ContextBuilder
             .BuildAsync(config.Repository, issueNumber, initialState, currentPlan: null, mergeRequest: null, attachmentsPath, cancellationToken)
             .ConfigureAwait(false);

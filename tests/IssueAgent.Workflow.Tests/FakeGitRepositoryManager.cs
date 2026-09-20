@@ -9,7 +9,7 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
 {
     public string BranchCommitToReturn { get; set; } = "abc123";
 
-    public List<(string WorktreeId, string BranchName, string BaseCommit)> CreatedWorktrees { get; } = [];
+    public List<(string WorktreeId, string WorktreePath, string BranchName, string BaseCommit)> CreatedWorktrees { get; } = [];
 
     public Action? OnCreateWorktree { get; set; }
 
@@ -44,7 +44,7 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
     {
         OnCreateWorktree?.Invoke();
         Directory.CreateDirectory(worktreePath);
-        CreatedWorktrees.Add((worktreeId, branchName, baseCommit));
+        CreatedWorktrees.Add((worktreeId, worktreePath, branchName, baseCommit));
         return ValueTask.CompletedTask;
     }
 

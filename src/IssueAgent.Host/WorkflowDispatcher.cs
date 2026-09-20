@@ -107,7 +107,7 @@ public sealed partial class WorkflowDispatcher(
 
         return new WorkflowCandidateClassification(
             WorkflowCandidateKind.ExistingWorkflow,
-            WorkflowWorkPriority.Reconciliation,
+            GetUncommandedExistingWorkflowPriority(canonical),
             Command: null);
     }
 
@@ -169,7 +169,10 @@ public sealed partial class WorkflowDispatcher(
         var initialCheckpoint = await planning
             .CreateInitialCheckpointAsync(runtime.Config, issueNumber, cancellationToken)
             .ConfigureAwait(false);
-        await using var omp = StartOmp(runtime, issueNumber, runtime.Config.WorkflowsStoragePath);
+        var worktreePath = await planning
+            .EnsureInitialPlanningWorktreeAsync(runtime.Config, initialCheckpoint, cancellationToken)
+            .ConfigureAwait(false);
+        await using var omp = StartOmp(runtime, issueNumber, worktreePath);
         var stopwatch = Stopwatch.StartNew();
         metrics.PlanCount.Add(1, runtime.Tags);
         try
@@ -315,8 +318,12 @@ public sealed partial class WorkflowDispatcher(
             }
 
             Directory.CreateDirectory(runtime.Config.WorkflowsStoragePath);
-            await using var initialPlanningOmp = StartOmp(runtime, issueNumber, runtime.Config.WorkflowsStoragePath);
-            await new PlanningWorkflow(runtime.Dependencies)
+            var planning = new PlanningWorkflow(runtime.Dependencies);
+            var worktreePath = await planning
+                .EnsureInitialPlanningWorktreeAsync(runtime.Config, state, cancellationToken)
+                .ConfigureAwait(false);
+            await using var initialPlanningOmp = StartOmp(runtime, issueNumber, worktreePath);
+            await planning
                 .RunInitialPlanningAsync(
                     runtime.Config,
                     issueNumber,
@@ -521,6 +528,13 @@ public sealed partial class WorkflowDispatcher(
         initialCheckpoint = null!;
         return false;
     }
+    // PollingScheduler executes reconciliation inline, but this recovery creates a new OMP
+    // session and therefore must be admitted through the bounded agent worker pool.
+    internal static WorkflowWorkPriority GetUncommandedExistingWorkflowPriority(ProviderComment canonicalComment) =>
+        TryGetInitialPlanningCheckpoint(canonicalComment, out _)
+            ? WorkflowWorkPriority.NewPlanning
+            : WorkflowWorkPriority.Reconciliation;
+
     private static bool IsInitialPlanningBootstrapCheckpoint(WorkflowState state) =>
         state.Phase == WorkflowPhase.Planning &&
         state.OperationalState == WorkflowOperationalState.Working &&

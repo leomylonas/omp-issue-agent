@@ -258,7 +258,7 @@ public sealed class WorkflowCommandRoutingTests
     }
 
     [Fact]
-    public void RecoverableInitialPlanningCheckpointIsRoutedForBootstrapReuse()
+    public void SessionlessInitialPlanningCheckpointIsClassifiedForBoundedAgentExecution()
     {
         var checkpoint = CreateState(WorkflowPhase.Planning, WorkflowOperationalState.Working) with
         {
@@ -279,6 +279,27 @@ public sealed class WorkflowCommandRoutingTests
 
         Assert.True(recognized);
         Assert.Equal(checkpoint, recovered);
+        Assert.Equal(
+            WorkflowWorkPriority.NewPlanning,
+            WorkflowDispatcher.GetUncommandedExistingWorkflowPriority(canonical));
+    }
+
+    [Fact]
+    public void SessionBackedPlanningCheckpointRemainsReconciliationWork()
+    {
+        var state = CreateState(WorkflowPhase.Planning, WorkflowOperationalState.Working);
+        var canonical = new ProviderComment(
+            1,
+            "issue-agent",
+            CanonicalCommentMarkdown.Render(Content(state)),
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            new AttachmentSource("issue-comment", "1"),
+            IsBot: true);
+
+        Assert.Equal(
+            WorkflowWorkPriority.Reconciliation,
+            WorkflowDispatcher.GetUncommandedExistingWorkflowPriority(canonical));
     }
 
     private static WorkflowState ReviewState() => CreateState(WorkflowPhase.Review, WorkflowOperationalState.Waiting) with
