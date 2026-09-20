@@ -74,10 +74,10 @@ builder.Services.AddSingleton<IssueAgent.Workflow.IWorkflowNotifier>(services =>
     }
     if (configuration.Notifications.Slack is { } slack)
     {
-        var webhook = slack.WebhookUrl.Resolve(Environment.GetEnvironmentVariable, File.ReadAllText);
+        var webhook = ParseSlackWebhookUrl(slack.WebhookUrl.Resolve(Environment.GetEnvironmentVariable, File.ReadAllText));
         sinks.Add(new IssueAgent.Notifications.SlackNotificationSink(
             new HttpClient(IssueAgent.Git.TlsHttpHandlerFactory.Create(notificationsTlsTrust)),
-            new Uri(webhook, UriKind.Absolute)));
+            webhook));
     }
     var routing = new Dictionary<IssueAgent.Workflow.WorkflowNotificationKind, IReadOnlySet<string>>();
     foreach (var (eventName, sinkNames) in configuration.Notifications.Routing)
@@ -158,6 +158,18 @@ await application.RunAsync();
 
 public partial class Program
 {
+    internal static Uri ParseSlackWebhookUrl(string value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var webhook) ||
+            !webhook.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+            webhook.UserInfo.Length > 0)
+        {
+            throw new InvalidOperationException("IssueAgent:Notifications:Slack:WebhookUrl must be an HTTPS URL without user information.");
+        }
+
+        return webhook;
+    }
+
     [LoggerMessage(EventId = 1, Level = LogLevel.Warning,
         Message = "Notification sink {SinkName} exhausted retries with {ExceptionType}")]
     private static partial void LogNotificationSinkFailure(Microsoft.Extensions.Logging.ILogger logger, string sinkName, string exceptionType);

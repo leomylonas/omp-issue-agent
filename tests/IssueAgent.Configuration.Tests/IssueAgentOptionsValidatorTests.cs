@@ -361,6 +361,59 @@ public sealed class IssueAgentOptionsValidatorTests
     }
 
     [Fact]
+    public void ValidateRejectsUnknownRoutingEventsAndSinksThatAreNotEnabled()
+    {
+        var options = CreateOptions() with
+        {
+            Notifications = new NotificationsOptions
+            {
+                Telegram = new TelegramOptions
+                {
+                    BotToken = new SecretSource { Env = "TELEGRAM_TOKEN" },
+                    ChatId = "123",
+                },
+                Routing = new Dictionary<string, IReadOnlySet<string>>
+                {
+                    ["UnknownEvent"] = new HashSet<string> { "telegram" },
+                    ["PlanReady"] = new HashSet<string> { "slack" },
+                },
+            },
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("Routing event 'UnknownEvent' is not supported", StringComparison.Ordinal));
+        Assert.Contains(result.Failures!, failure => failure.Contains("Routing:PlanReady names sink 'slack', which is not enabled", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ValidateAcceptsRoutingToEnabledSinksForKnownEvents()
+    {
+        var options = CreateOptions() with
+        {
+            Notifications = new NotificationsOptions
+            {
+                Telegram = new TelegramOptions
+                {
+                    BotToken = new SecretSource { Env = "TELEGRAM_TOKEN" },
+                    ChatId = "123",
+                },
+                Slack = new SlackOptions
+                {
+                    WebhookUrl = new SecretSource { Env = "SLACK_WEBHOOK_URL" },
+                },
+                Routing = new Dictionary<string, IReadOnlySet<string>>
+                {
+                    ["PlanReady"] = new HashSet<string> { "telegram", "slack" },
+                },
+            },
+        };
+
+        Assert.False(validator.Validate(null, options).Failed);
+    }
+
+    [Fact]
     public void ValidateRejectsCloneUrlQueryAndFragment()
     {
         var options = CreateOptions() with

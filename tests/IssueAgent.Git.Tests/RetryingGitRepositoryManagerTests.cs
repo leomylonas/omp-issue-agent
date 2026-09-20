@@ -21,7 +21,7 @@ public sealed class RetryingGitRepositoryManagerTests
         await manager.EnsureBareRepositoryAsync("repo", "https://example.test/repo.git", authentication, CancellationToken.None);
         await manager.FetchAsync("repo", authentication, CancellationToken.None);
         await manager.UpdateSubmodulesAsync("repo", "/tmp/worktree", _ => authentication, CancellationToken.None);
-        await manager.MaterializeLfsContentAsync("repo", "/tmp/worktree", authentication, CancellationToken.None);
+        await manager.MaterializeLfsContentAsync("repo", "/tmp/worktree", authentication, _ => authentication, CancellationToken.None);
         await manager.UploadLfsObjectsAsync("repo", "/tmp/worktree", "agent/issue-1", authentication, CancellationToken.None);
 
         Assert.Equal(2, inner.Calls["clone"]);
@@ -86,7 +86,7 @@ public sealed class RetryingGitRepositoryManagerTests
         public ValueTask RemoveWorktreeAsync(string repositoryId, string worktreeId, string worktreePath, CancellationToken cancellationToken) => ValueTask.CompletedTask;
         public ValueTask RemoveLocalBranchAsync(string repositoryId, string branchName, CancellationToken cancellationToken) => ValueTask.CompletedTask;
         public bool WorktreeRequiresLfs(string worktreePath) => false;
-        public ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication auth, CancellationToken cancellationToken) => Attempt("lfs-pull");
+        public ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication auth, Func<string, GitAuthentication?> submoduleAuthenticationResolver, CancellationToken cancellationToken) => Attempt("lfs-pull");
         public ValueTask UploadLfsObjectsAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication auth, CancellationToken cancellationToken) => Attempt("lfs-push");
 
         private ValueTask Attempt(string operation)

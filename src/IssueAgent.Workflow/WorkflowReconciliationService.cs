@@ -173,8 +173,16 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
             await dependencies.Git.IsAncestorAsync(config.Repository.Id, localHead, remoteHead, cancellationToken).ConfigureAwait(false);
         if (!worktreeDirty && localHeadIsAncestorOfRemote)
         {
-            // A human may have committed directly to the published branch. Incorporate a safe
-            // fast-forward into the retained worktree before revision/continue.
+            // A human may have committed directly to the published branch. Record that accepted
+            // head before changing the retained worktree; an implementation started after
+            // reconciliation must reset to this accepted checkpoint, not the superseded base.
+            state = state with { BaseCommit = remoteHead!, UpdatedAt = dependencies.Clock.UtcNow };
+            content = content with
+            {
+                State = CanonicalStateSerializer.ToDocument(state, content.State.PullOrMergeRequest),
+            };
+            await PersistCanonicalStateAsync(
+                config, issueNumber, canonicalComment, content, state, cancellationToken).ConfigureAwait(false);
             await dependencies.Git.ResetWorktreeAsync(config.Repository.Id, worktreePath, remoteHead!, cancellationToken).ConfigureAwait(false);
             localHead = remoteHead;
             localHeadIsAncestorOfRemote = false;

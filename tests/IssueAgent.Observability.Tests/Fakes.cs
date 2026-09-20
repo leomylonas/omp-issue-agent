@@ -49,7 +49,7 @@ internal sealed class FakeGitRepositoryManager : IGitRepositoryManager
 
     public bool WorktreeRequiresLfs(string worktreePath) => false;
 
-    public ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    public ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, Func<string, GitAuthentication?> submoduleAuthenticationResolver, CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
     public ValueTask UploadLfsObjectsAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken) =>
         throw new InvalidOperationException("Simulated LFS upload failure.");

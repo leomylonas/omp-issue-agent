@@ -193,8 +193,20 @@ public sealed record SecretSource
 /// <summary>Fail-fast semantic validation for root options that do not require network access.</summary>
 public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOptions>
 {
+    private static readonly HashSet<string> SupportedNotificationEvents = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "PlanReady",
+        "ImplementationReady",
+        "HumanActionRequired",
+        "PlanFailed",
+        "ImplementationFailed",
+        "RevisionFailed",
+        "Cancelled",
+    };
+
     public ValidateOptionsResult Validate(string? name, IssueAgentOptions options)
     {
+
         ArgumentNullException.ThrowIfNull(options);
         var failures = new List<string>();
 
@@ -284,6 +296,36 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
         if (options.Notifications.Slack is { } slack && !slack.WebhookUrl.IsExactlyOneSource())
         {
             failures.Add("IssueAgent:Notifications:Slack:WebhookUrl must configure exactly one secret source.");
+        }
+        var enabledNotificationSinks = new HashSet<string>(StringComparer.Ordinal);
+        if (options.Notifications.Telegram is not null)
+        {
+            enabledNotificationSinks.Add("telegram");
+        }
+        if (options.Notifications.Slack is not null)
+        {
+            enabledNotificationSinks.Add("slack");
+        }
+        foreach (var (eventName, sinkNames) in options.Notifications.Routing)
+        {
+            if (!SupportedNotificationEvents.Contains(eventName))
+            {
+                failures.Add($"IssueAgent:Notifications:Routing event '{eventName}' is not supported.");
+            }
+
+            if (sinkNames is null)
+            {
+                failures.Add($"IssueAgent:Notifications:Routing:{eventName} must name notification sinks.");
+                continue;
+            }
+
+            foreach (var sinkName in sinkNames)
+            {
+                if (!enabledNotificationSinks.Contains(sinkName))
+                {
+                    failures.Add($"IssueAgent:Notifications:Routing:{eventName} names sink '{sinkName}', which is not enabled.");
+                }
+            }
         }
 
 

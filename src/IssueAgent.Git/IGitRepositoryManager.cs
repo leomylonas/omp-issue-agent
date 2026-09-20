@@ -95,9 +95,11 @@ public interface IGitRepositoryManager
     /// <summary>True when the worktree's committed <c>.gitattributes</c> declares an LFS filter.</summary>
     bool WorktreeRequiresLfs(string worktreePath);
 
-    /// <summary>Replaces LFS pointer files in the worktree with real content. Throws
-    /// <see cref="GitLfsUnavailableException"/> if <c>git-lfs</c> is not available.</summary>
-    ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, CancellationToken cancellationToken);
+    /// <summary>Recursively replaces LFS pointer files in the worktree and its initialized
+    /// submodules with real content, resolving each submodule's credentials by its own origin host.
+    /// Throws <see cref="GitLfsUnavailableException"/> if any repository requires LFS but
+    /// <c>git-lfs</c> is not available.</summary>
+    ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, Func<string, GitAuthentication?> submoduleAuthenticationResolver, CancellationToken cancellationToken);
 
     /// <summary>Uploads LFS objects referenced by <paramref name="branchName"/> that the remote does
     /// not already have. Must be called, and must succeed, before <see cref="PushAsync"/> publishes

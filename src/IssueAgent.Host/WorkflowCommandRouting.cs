@@ -30,7 +30,7 @@ public static class WorkflowCommandRouting
             .ToArray() ?? [];
         WorkflowCommand? mergeRequestCommand = mergeRequestCommands.Length == 1 ? mergeRequestCommands[0] : null;
 
-        if (issue.HasConflictingCommands || mergeRequestCommands.Length > 1)
+        if (issue.HasConflictingCommands || mergeRequest?.HasConflictingCommands == true)
         {
             return new WorkflowCommandResolution(null, WorkflowCommandSource.None, IsAmbiguous: true);
         }

@@ -52,6 +52,8 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
     }
 
     public List<(string RepositoryId, string WorktreePath, string ExpectedCurrentBranch, string NewBranchName)> RenamedWorktreeBranches { get; } = [];
+    public int RenameWorktreeFailuresRemaining { get; set; }
+
 
     public ValueTask RenameWorktreeBranchAsync(
         string repositoryId,
@@ -60,6 +62,12 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
         string newBranchName,
         CancellationToken cancellationToken)
     {
+        if (RenameWorktreeFailuresRemaining > 0)
+        {
+            RenameWorktreeFailuresRemaining--;
+            throw new InvalidOperationException("Configured worktree branch rename failure.");
+        }
+
         RenamedWorktreeBranches.Add((repositoryId, worktreePath, expectedCurrentBranch, newBranchName));
         var currentBranch = WorktreeBranches.GetValueOrDefault(worktreePath, expectedCurrentBranch);
         if (string.Equals(currentBranch, newBranchName, StringComparison.Ordinal))
@@ -139,9 +147,12 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
 
     public bool WorktreeRequiresLfs(string worktreePath) => LfsRequired;
 
-    public ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, CancellationToken cancellationToken)
+    public ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, Func<string, GitAuthentication?> submoduleAuthenticationResolver, CancellationToken cancellationToken)
     {
-        LfsMaterializedWorktrees.Add(worktreePath);
+        if (LfsRequired)
+        {
+            LfsMaterializedWorktrees.Add(worktreePath);
+        }
         return ValueTask.CompletedTask;
     }
 

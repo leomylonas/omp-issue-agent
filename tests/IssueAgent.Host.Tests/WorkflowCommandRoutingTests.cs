@@ -39,16 +39,16 @@ public sealed class WorkflowCommandRoutingTests
     }
 
     [Fact]
-    public void ResolveFiltersUnsupportedMergeRequestCommandsBeforeCheckingAmbiguity()
+    public void ResolveTreatsAllConflictingMergeRequestCommandsAsAmbiguous()
     {
         var issue = LabelProtocol.Analyze([]);
         var mergeRequest = LabelProtocol.Analyze([WorkflowCommandLabels.Replan, WorkflowCommandLabels.Revise]);
 
         var result = WorkflowCommandRouting.Resolve(issue, mergeRequest);
 
-        Assert.False(result.IsAmbiguous);
-        Assert.Equal(WorkflowCommand.Revise, result.Command);
-        Assert.Equal(WorkflowCommandSource.MergeRequest, result.Sources);
+        Assert.True(result.IsAmbiguous);
+        Assert.Null(result.Command);
+        Assert.Equal(WorkflowCommandSource.None, result.Sources);
     }
 
     [Fact]
@@ -394,7 +394,7 @@ public sealed class WorkflowCommandRoutingTests
         public ValueTask RemoveWorktreeAsync(string repositoryId, string worktreeId, string worktreePath, CancellationToken cancellationToken) => throw new NotSupportedException();
         public ValueTask RemoveLocalBranchAsync(string repositoryId, string branchName, CancellationToken cancellationToken) => throw new NotSupportedException();
         public bool WorktreeRequiresLfs(string worktreePath) => throw new NotSupportedException();
-        public ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, Func<string, GitAuthentication?> submoduleAuthenticationResolver, CancellationToken cancellationToken) => throw new NotSupportedException();
         public ValueTask UploadLfsObjectsAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 

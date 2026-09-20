@@ -88,8 +88,8 @@ public sealed class ObservableGitRepositoryManager(IGitRepositoryManager inner, 
 
     public bool WorktreeRequiresLfs(string worktreePath) => inner.WorktreeRequiresLfs(worktreePath);
 
-    public async ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, CancellationToken cancellationToken) =>
-        await RunLfsAsync("materialize", repositoryId, () => inner.MaterializeLfsContentAsync(repositoryId, worktreePath, authentication, cancellationToken).AsTask(), cancellationToken).ConfigureAwait(false);
+    public async ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, Func<string, GitAuthentication?> submoduleAuthenticationResolver, CancellationToken cancellationToken) =>
+        await RunLfsAsync("materialize", repositoryId, () => inner.MaterializeLfsContentAsync(repositoryId, worktreePath, authentication, submoduleAuthenticationResolver, cancellationToken).AsTask(), cancellationToken).ConfigureAwait(false);
 
     public async ValueTask UploadLfsObjectsAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken) =>
         await RunLfsAsync("upload", repositoryId, () => inner.UploadLfsObjectsAsync(repositoryId, worktreePath, branchName, authentication, cancellationToken).AsTask(), cancellationToken).ConfigureAwait(false);

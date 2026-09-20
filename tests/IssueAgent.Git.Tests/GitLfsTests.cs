@@ -41,7 +41,7 @@ public sealed class GitLfsTests : IDisposable
         var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
         await manager.CreateWorktreeAsync("lfs-repo-3", "wt-1", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
 
-        await manager.MaterializeLfsContentAsync("lfs-repo-3", worktreePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        await manager.MaterializeLfsContentAsync("lfs-repo-3", worktreePath, TempGitFixtures.AnonymousAuthentication(), _ => null, CancellationToken.None);
 
         var hooksDir = Path.Combine(reposRoot, "lfs-repo-3", "issueagent-disabled-hooks");
         Assert.True(Directory.Exists(hooksDir));
@@ -62,10 +62,33 @@ public sealed class GitLfsTests : IDisposable
         var pointerContent = File.ReadAllText(assetPath);
         Assert.Contains("git-lfs", pointerContent, StringComparison.Ordinal);
 
-        await manager.MaterializeLfsContentAsync("lfs-repo-1", worktreePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        await manager.MaterializeLfsContentAsync("lfs-repo-1", worktreePath, TempGitFixtures.AnonymousAuthentication(), _ => null, CancellationToken.None);
 
         var materializedBytes = File.ReadAllBytes(assetPath);
         Assert.Equal(expectedContent, materializedBytes);
+    }
+
+    [Fact]
+    public async Task MaterializeLfsContentAsyncRecursivelyMaterializesInitializedSubmoduleContent()
+    {
+        var submoduleRemotePath = Track(CreateBareRemoteRepositoryWithLfsAsset(out _, out var expectedContent));
+        var parentRepositoryPath = Track(TempGitFixtures.CreateTempDirectory());
+        Repository.Init(parentRepositoryPath);
+        RunGitCli(parentRepositoryPath, "-c", "protocol.file.allow=always", "submodule", "add", submoduleRemotePath, "dependencies/assets");
+        RunGitCli(parentRepositoryPath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-am", "Add LFS submodule");
+
+        var baseCommit = new Repository(parentRepositoryPath).Head.Tip.Sha;
+        await manager.EnsureBareRepositoryAsync("lfs-submodule-repo", parentRepositoryPath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
+        await manager.CreateWorktreeAsync("lfs-submodule-repo", "wt-submodule", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
+        await manager.UpdateSubmodulesAsync("lfs-submodule-repo", worktreePath, _ => null, CancellationToken.None);
+
+        var assetPath = Path.Combine(worktreePath, "dependencies", "assets", "asset.bin");
+        Assert.Contains("git-lfs", File.ReadAllText(assetPath), StringComparison.Ordinal);
+
+        await manager.MaterializeLfsContentAsync("lfs-submodule-repo", worktreePath, TempGitFixtures.AnonymousAuthentication(), _ => null, CancellationToken.None);
+
+        Assert.Equal(expectedContent, File.ReadAllBytes(assetPath));
     }
 
     [Fact]
@@ -75,7 +98,7 @@ public sealed class GitLfsTests : IDisposable
         await manager.EnsureBareRepositoryAsync("lfs-repo-2", bareRemotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
         var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
         await manager.CreateWorktreeAsync("lfs-repo-2", "wt-1", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
-        await manager.MaterializeLfsContentAsync("lfs-repo-2", worktreePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        await manager.MaterializeLfsContentAsync("lfs-repo-2", worktreePath, TempGitFixtures.AnonymousAuthentication(), _ => null, CancellationToken.None);
 
         var newAssetBytes = new byte[2048];
         Random.Shared.NextBytes(newAssetBytes);

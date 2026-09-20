@@ -27,6 +27,7 @@ public sealed record CanonicalStateDocument
     public required string Branch { get; init; }
     public required string TargetBranch { get; init; }
     public required string BaseCommit { get; init; }
+    public string? PendingBranch { get; init; }
     public string? PullOrMergeRequest { get; init; }
     public required DateTimeOffset UpdatedAt { get; init; }
     public DateTimeOffset? ReviewFeedbackCutoff { get; init; }
@@ -82,6 +83,7 @@ public static partial class CanonicalStateSerializer
         OmpSessionFile = state.OmpSessionFile,
         InterruptedPhase = state.InterruptedPhase is { } interruptedPhase ? ToKebabCase(interruptedPhase.ToString()) : null,
         Branch = state.Branch,
+        PendingBranch = state.PendingBranch,
         TargetBranch = state.TargetBranch,
         BaseCommit = state.BaseCommit,
         PullOrMergeRequest = pullOrMergeRequest,
@@ -122,7 +124,8 @@ public static partial class CanonicalStateSerializer
             document.OmpSessionFile,
             document.InterruptedPhase is { } interruptedPhase ? ParseEnum<WorkflowPhase>(interruptedPhase, "interruptedPhase") : null,
             document.ReviewFeedbackCutoff,
-            document.ReviewFeedbackIds is null ? null : new HashSet<string>(document.ReviewFeedbackIds, StringComparer.Ordinal));
+            document.ReviewFeedbackIds is null ? null : new HashSet<string>(document.ReviewFeedbackIds, StringComparer.Ordinal),
+            document.PendingBranch is null ? null : ValidateBranchName(document.PendingBranch, "pendingBranch"));
     }
 
     [GeneratedRegex(@"^[A-Za-z0-9]([A-Za-z0-9._/-]*[A-Za-z0-9])?$")]

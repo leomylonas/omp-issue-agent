@@ -107,9 +107,9 @@ public sealed class PlanningWorkflowTests : IDisposable
                 provider.IssueComments[(Repository.Id, 1)],
                 comment => CanonicalCommentMarkdown.IsCanonicalComment(comment.Body)).Body).State);
         Assert.Equal(BranchNaming.DeriveBranchName(1, title), durableCheckpoint.Branch);
+        Assert.Null(durableCheckpoint.PendingBranch);
         var worktreePath = Path.Combine(workspaceRoot, durableCheckpoint.WorkflowId.ToString(), "worktree");
-        Assert.Equal(expectedBranch, git.WorktreeBranches[worktreePath]);
-
+        Assert.Equal(BranchNaming.DeriveBranchName(1, title), git.WorktreeBranches[worktreePath]);
         var recoveryAttempt = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
             "session-1",
             clock.UtcNow,
@@ -124,7 +124,43 @@ public sealed class PlanningWorkflowTests : IDisposable
         Assert.Equal(expectedBranch, outcome.State.Branch);
         Assert.Equal(expectedBranch, CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body).State.Branch);
         Assert.Equal(["session-1"], recoveryAttempt.ResumedSessionIds);
-        Assert.Equal(2, git.RenamedWorktreeBranches.Count);
+        Assert.Single(git.RenamedWorktreeBranches);
+    }
+
+    [Fact]
+    public async Task RunInitialPlanningAsyncRecoversPendingSuggestedBranchAfterRenameFailure()
+    {
+        const string title = "Replace the legacy authentication transport with a resilient OAuth device authorization flow";
+        const string expectedBranch = "agent/issue-1-oauth-device-flow";
+        provider.AddIssue(Repository, 1, title, "Description");
+        git.RenameWorktreeFailuresRemaining = 1;
+        var firstAttempt = new FakeOmpClient()
+            .EnqueueSessionId("session-1")
+            .EnqueueRun(new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"planText":"Replace the transport.","decisions":[],"suggestedSlug":"OAuth device / flow!!!"}"""));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            CreateWorkflow().RunInitialPlanningAsync(CreateConfig(), 1, firstAttempt, CancellationToken.None));
+
+        var durableCheckpoint = CanonicalStateSerializer.ToWorkflowState(CanonicalCommentMarkdown.Parse(
+            Assert.Single(provider.IssueComments[(Repository.Id, 1)]).Body).State);
+        Assert.Equal(BranchNaming.DeriveBranchName(1, title), durableCheckpoint.Branch);
+        Assert.Equal(expectedBranch, durableCheckpoint.PendingBranch);
+        var worktreePath = Path.Combine(workspaceRoot, durableCheckpoint.WorkflowId.ToString(), "worktree");
+        Assert.Equal(BranchNaming.DeriveBranchName(1, title), git.WorktreeBranches[worktreePath]);
+
+        var recoveryAttempt = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"planText":"Replace the transport.","decisions":[],"suggestedSlug":"different retry suggestion"}"""));
+        var outcome = await CreateWorkflow().RunInitialPlanningAsync(
+            CreateConfig(), 1, recoveryAttempt, CancellationToken.None, initialCheckpoint: durableCheckpoint);
+
+        Assert.Equal(expectedBranch, outcome.State.Branch);
+        Assert.Null(outcome.State.PendingBranch);
+        Assert.Equal(expectedBranch, git.WorktreeBranches[worktreePath]);
     }
 
     [Fact]
@@ -162,7 +198,7 @@ public sealed class PlanningWorkflowTests : IDisposable
             initialCheckpoint: durableCheckpoint);
 
         Assert.Equal(expectedBranch, outcome.State.Branch);
-        Assert.Equal(2, git.RenamedWorktreeBranches.Count);
+        Assert.Single(git.RenamedWorktreeBranches);
         Assert.Equal(["session-1"], recoveryAttempt.ResumedSessionIds);
     }
     [Fact]

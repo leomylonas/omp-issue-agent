@@ -327,8 +327,19 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         string issueDescription,
         CancellationToken cancellationToken)
     {
-        if (BranchNaming.TryDeriveSuggestedBranchName(issueNumber, issueTitle, planningResult.SuggestedSlug) is { } suggestedBranch)
+        var suggestedBranch = workingState.PendingBranch
+            ?? BranchNaming.TryDeriveSuggestedBranchName(issueNumber, issueTitle, planningResult.SuggestedSlug);
+        if (suggestedBranch is not null && !string.Equals(workingState.Branch, suggestedBranch, StringComparison.Ordinal))
         {
+            if (workingState.PendingBranch is null)
+            {
+                // The desired branch must be durable before Git changes the retained worktree.
+                // A retry can then safely distinguish a rename that has not started from one that
+                // completed before its final checkpoint.
+                workingState = workingState with { PendingBranch = suggestedBranch, UpdatedAt = deps.Clock.UtcNow };
+                await CheckpointSuggestedBranchAsync(config, issueNumber, workingState, cancellationToken).ConfigureAwait(false);
+            }
+
             await deps.Git.RenameWorktreeBranchAsync(
                 config.Repository.Id,
                 WorktreePath(config, workingState.WorkflowId),
@@ -336,31 +347,13 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
                 suggestedBranch,
                 cancellationToken).ConfigureAwait(false);
 
-            if (!string.Equals(workingState.Branch, suggestedBranch, StringComparison.Ordinal))
+            workingState = workingState with
             {
-                workingState = workingState with { Branch = suggestedBranch, UpdatedAt = deps.Clock.UtcNow };
-
-                // Renaming the checked-out branch is durable local state. Checkpoint its new name
-                // before further publication work so a provider/process failure can reconcile a
-                // retry against either the old durable branch name or the already-renamed worktree.
-                var canonical = await CanonicalCommentLocator
-                    .FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken)
-                    .ConfigureAwait(false);
-                if (canonical is null)
-                {
-                    throw new WorkflowContractException("Cannot checkpoint suggested branch: no canonical comment was found.");
-                }
-
-                var existingContent = CanonicalCommentMarkdown.Parse(canonical.Body);
-                await UpsertCanonicalCommentAsync(
-                    config,
-                    issueNumber,
-                    existingContent with
-                    {
-                        State = CanonicalStateSerializer.ToDocument(workingState, existingContent.State.PullOrMergeRequest),
-                    },
-                    cancellationToken).ConfigureAwait(false);
-            }
+                Branch = suggestedBranch,
+                PendingBranch = null,
+                UpdatedAt = deps.Clock.UtcNow,
+            };
+            await CheckpointSuggestedBranchAsync(config, issueNumber, workingState, cancellationToken).ConfigureAwait(false);
         }
 
         // OMP's planning contract is read-only. Discard any accidental planning-time edits or
@@ -396,6 +389,31 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             cancellationToken).ConfigureAwait(false);
 
         return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, publishedState, "Plan published; awaiting human approval.");
+    }
+
+    private async Task CheckpointSuggestedBranchAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState state,
+        CancellationToken cancellationToken)
+    {
+        var canonical = await CanonicalCommentLocator
+            .FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken)
+            .ConfigureAwait(false);
+        if (canonical is null)
+        {
+            throw new WorkflowContractException("Cannot checkpoint suggested branch: no canonical comment was found.");
+        }
+
+        var existingContent = CanonicalCommentMarkdown.Parse(canonical.Body);
+        await UpsertCanonicalCommentAsync(
+            config,
+            issueNumber,
+            existingContent with
+            {
+                State = CanonicalStateSerializer.ToDocument(state, existingContent.State.PullOrMergeRequest),
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Durably stops bootstrap recovery after the idempotent retained-worktree setup
@@ -508,10 +526,12 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
     {
         var submoduleAuthenticationResolver = config.SubmoduleAuthenticationResolver ?? (_ => null);
         await deps.Git.UpdateSubmodulesAsync(config.Repository.Id, worktreePath, submoduleAuthenticationResolver, cancellationToken).ConfigureAwait(false);
-        if (deps.Git.WorktreeRequiresLfs(worktreePath))
-        {
-            await deps.Git.MaterializeLfsContentAsync(config.Repository.Id, worktreePath, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
-        }
+        await deps.Git.MaterializeLfsContentAsync(
+            config.Repository.Id,
+            worktreePath,
+            config.GitAuthentication,
+            submoduleAuthenticationResolver,
+            cancellationToken).ConfigureAwait(false);
     }
 
     private static string WorktreePath(WorkflowRepositoryConfig config, WorkflowId workflowId) =>

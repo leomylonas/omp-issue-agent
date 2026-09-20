@@ -528,13 +528,76 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
 
     public bool WorktreeRequiresLfs(string worktreePath) => GitLfsRunner.RepositoryRequiresLfs(worktreePath);
 
-    public async ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, CancellationToken cancellationToken)
+    public async ValueTask MaterializeLfsContentAsync(
+        string repositoryId,
+        string worktreePath,
+        GitAuthentication authentication,
+        Func<string, GitAuthentication?> submoduleAuthenticationResolver,
+        CancellationToken cancellationToken)
     {
-        await GitLfsRunner.MaterializeContentAsync(
+        ArgumentNullException.ThrowIfNull(submoduleAuthenticationResolver);
+        await MaterializeLfsContentRecursivelyAsync(
             worktreePath,
+            Path.GetFullPath(worktreePath),
             GetCanonicalOriginUrl(repositoryId),
             authentication,
+            submoduleAuthenticationResolver,
+            new HashSet<string>(StringComparer.Ordinal),
             cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task MaterializeLfsContentRecursivelyAsync(
+        string repositoryPath,
+        string rootPath,
+        string rootCanonicalRemoteUrl,
+        GitAuthentication rootAuthentication,
+        Func<string, GitAuthentication?> submoduleAuthenticationResolver,
+        ISet<string> visitedRepositoryPaths,
+        CancellationToken cancellationToken)
+    {
+        using var repo = new Repository(repositoryPath);
+        var repositoryIdentity = Path.GetFullPath(repo.Info.Path);
+        if (!visitedRepositoryPaths.Add(repositoryIdentity))
+        {
+            return;
+        }
+
+        var isRootRepository = string.Equals(Path.GetFullPath(repositoryPath), rootPath, StringComparison.Ordinal);
+        var canonicalRemoteUrl = isRootRepository
+            ? rootCanonicalRemoteUrl
+            : repo.Network.Remotes["origin"]?.Url
+                ?? throw new InvalidOperationException($"Repository '{repositoryPath}' has no origin remote for LFS materialization.");
+        var authentication = isRootRepository
+            ? rootAuthentication
+            : TryGetHost(canonicalRemoteUrl) is { } host
+                ? submoduleAuthenticationResolver(host) ?? GitAuthentication.Anonymous(TlsTrust.System)
+                : GitAuthentication.Anonymous(TlsTrust.System);
+
+        if (GitLfsRunner.RepositoryRequiresLfs(repositoryPath))
+        {
+            await GitLfsRunner.MaterializeContentAsync(
+                repositoryPath,
+                canonicalRemoteUrl,
+                authentication,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        foreach (var submodule in repo.Submodules)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var submodulePath = GetSafeSubmodulePath(rootPath, repositoryPath, submodule.Path);
+            if (Directory.Exists(submodulePath))
+            {
+                await MaterializeLfsContentRecursivelyAsync(
+                    submodulePath,
+                    rootPath,
+                    rootCanonicalRemoteUrl,
+                    rootAuthentication,
+                    submoduleAuthenticationResolver,
+                    visitedRepositoryPaths,
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
     }
 
     public async ValueTask UploadLfsObjectsAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken)

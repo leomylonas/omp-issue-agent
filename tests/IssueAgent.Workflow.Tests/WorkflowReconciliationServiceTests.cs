@@ -1,6 +1,7 @@
 using IssueAgent.Context;
 using IssueAgent.Domain;
 using IssueAgent.Git;
+using IssueAgent.Omp;
 using IssueAgent.Providers;
 
 namespace IssueAgent.Workflow.Tests;
@@ -146,6 +147,34 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
         Assert.Single(provider.UpdatedComments);
     }
 
+
+    [Fact]
+    public async Task FastForwardReconciliationPreservesAcceptedRemoteHeadWhenImplementationStarts()
+    {
+        git.BranchCommitToReturn = "abc123";
+        git.RemoteBranchCommitToReturn = "deadbeef";
+        var (_, canonical) = SeedWorkflow(WorkflowPhase.Planned, WorkflowOperationalState.Waiting, WaitingReason.PlanApproval);
+
+        var reconciled = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
+
+        Assert.Equal(ReconciliationDisposition.ResumeAllowed, reconciled.Disposition);
+        Assert.Equal("deadbeef", reconciled.State!.BaseCommit);
+        Assert.Equal(
+            "deadbeef",
+            CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body).State.BaseCommit);
+
+        git.BranchCommitToReturn = "deadbeef";
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"summary":"Implemented from the accepted head.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+        var outcome = await new ImplementationWorkflow(new WorkflowDependencies(
+            provider, git, CreateContextBuilder(), notifier, clock)).RunAsync(
+            CreateConfig(), WorkflowMode.Full, 1, reconciled.State, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
+        Assert.All(git.ResetWorktrees, reset => Assert.Equal("deadbeef", reset.Commit));
+    }
     [Fact]
     public async Task MergedRequestTransitionsDoneAndCleansOnlyLocalState()
     {
