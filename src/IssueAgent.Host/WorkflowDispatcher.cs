@@ -444,6 +444,7 @@ public sealed partial class WorkflowDispatcher(
             var preservesRetainedContinuation = state.WaitingReason is
                 WaitingReason.NewInputDuringImplementation or WaitingReason.MaterialPlanDeviation or
                 WaitingReason.NewFeedbackDuringRevision ||
+                HasResultCheckpointedImplementation(state, reconciled.Content!) ||
                 HasRetainedRevisionCheckpoint(state, reconciled.Content!);
             if (!preservesRetainedContinuation)
             {
@@ -570,7 +571,8 @@ public sealed partial class WorkflowDispatcher(
                 remoteHead ?? state.BaseCommit,
                 cancellationToken).ConfigureAwait(false);
         }
-        else if (!HasRetainedRevisionCheckpoint(state, content) &&
+        else if (!HasResultCheckpointedImplementation(state, content) &&
+                 !HasRetainedRevisionCheckpoint(state, content) &&
                  state.WaitingReason is not (WaitingReason.NewInputDuringImplementation or
                      WaitingReason.MaterialPlanDeviation or WaitingReason.NewFeedbackDuringRevision) &&
                  remoteHead is not null &&
@@ -581,6 +583,12 @@ public sealed partial class WorkflowDispatcher(
                 config.Repository.Id, worktreePath, remoteHead, cancellationToken).ConfigureAwait(false);
         }
     }
+
+    private static bool HasResultCheckpointedImplementation(WorkflowState state, CanonicalCommentContent content) =>
+        state.Phase == WorkflowPhase.Implementing &&
+        state.PublicationStage == ImplementationPublicationStage.ResultCheckpointed &&
+        state.ExpectedImplementationHead is { Length: > 0 } &&
+        content.ImplementationResult is { Length: > 0 };
 
     internal static bool TryGetInitialPlanningCheckpoint(ProviderComment canonicalComment, out WorkflowState initialCheckpoint)
     {

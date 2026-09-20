@@ -367,13 +367,14 @@ public sealed class ImplementationWorkflowTests : IDisposable
     public async Task RunAsyncDoesNotRecoverOrCreateMergeRequestFromAnOlderDeterministicBranch()
     {
         var plannedState = await SeedApprovedPlanAsync();
+        git.BranchCommitToReturn = "beadfeed";
         var interruptedState = plannedState with
         {
             Phase = WorkflowPhase.Implementing,
             OperationalState = WorkflowOperationalState.Waiting,
             WaitingReason = WaitingReason.ManualIntervention,
             ExpectedImplementationHead = "beadfeed",
-            PublicationStage = ImplementationPublicationStage.BranchPublished,
+            PublicationStage = ImplementationPublicationStage.ResultCheckpointed,
         };
         var canonical = Assert.Single(provider.IssueComments[(Repository.Id, 1)]);
         var existing = CanonicalCommentMarkdown.Parse(canonical.Body);
@@ -406,7 +407,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
     }
 
     [Fact]
-    public async Task RunAsyncDoesNotCreateMergeRequestBeforeTheBranchPublishedCheckpoint()
+    public async Task RunAsyncRecoversReviewPublicationWhenRemoteMatchesResultCheckpoint()
     {
         var plannedState = await SeedApprovedPlanAsync();
         var interruptedState = plannedState with
@@ -430,18 +431,62 @@ public sealed class ImplementationWorkflowTests : IDisposable
             }),
             CancellationToken.None);
 
+        var omp = new FakeOmpClient();
         var outcome = await CreateWorkflow().RunAsync(
             CreateConfig(),
             WorkflowMode.Full,
             1,
             interruptedState,
-            new FakeOmpClient(),
+            omp,
             CancellationToken.None);
 
-        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
-        Assert.Equal(WaitingReason.ManualIntervention, outcome.State.WaitingReason);
-        Assert.Empty(provider.MergeRequests);
-        Assert.Contains("branch-published checkpoint is missing", outcome.Message, StringComparison.Ordinal);
+        Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
+        Assert.Equal(ImplementationPublicationStage.BranchPublished, outcome.State.PublicationStage);
+        Assert.Empty(omp.RunRequests);
+        Assert.Equal(0, git.PushCallCount);
+        Assert.Single(provider.MergeRequests);
+    }
+
+    [Fact]
+    public async Task RunAsyncReplaysPublicationTailWhenResultCheckpointedHeadIsNotRemote()
+    {
+        var plannedState = await SeedApprovedPlanAsync();
+        git.RemoteBranchCommitToReturn = null;
+        var interruptedState = plannedState with
+        {
+            Phase = WorkflowPhase.Implementing,
+            OperationalState = WorkflowOperationalState.Waiting,
+            WaitingReason = WaitingReason.ManualIntervention,
+            ExpectedImplementationHead = git.BranchCommitToReturn,
+            PublicationStage = ImplementationPublicationStage.ResultCheckpointed,
+        };
+        var canonical = Assert.Single(provider.IssueComments[(Repository.Id, 1)]);
+        var existing = CanonicalCommentMarkdown.Parse(canonical.Body);
+        await provider.UpdateIssueCommentAsync(
+            Repository,
+            1,
+            canonical.Id,
+            CanonicalCommentMarkdown.Render(existing with
+            {
+                ImplementationResult = "**Durably recorded implementation summary.**",
+                State = CanonicalStateSerializer.ToDocument(interruptedState, null),
+            }),
+            CancellationToken.None);
+
+        var omp = new FakeOmpClient();
+        var outcome = await CreateWorkflow().RunAsync(
+            CreateConfig(),
+            WorkflowMode.Full,
+            1,
+            interruptedState,
+            omp,
+            CancellationToken.None);
+
+        Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
+        Assert.Empty(omp.RunRequests);
+        Assert.Equal(1, git.PushCallCount);
+        Assert.Single(provider.MergeRequests);
+        Assert.Equal(ImplementationPublicationStage.BranchPublished, outcome.State.PublicationStage);
     }
 
     [Fact]

@@ -237,6 +237,38 @@ public sealed class WorkflowCommandRoutingTests
     }
 
     [Fact]
+    public async Task ImplementationContinueRecoveryPreservesResultCheckpointedWorktree()
+    {
+        var state = ReviewState() with
+        {
+            Phase = WorkflowPhase.Implementing,
+            WaitingReason = WaitingReason.ManualIntervention,
+            ExpectedImplementationHead = "checkpointed-head",
+            PublicationStage = ImplementationPublicationStage.ResultCheckpointed,
+        };
+        var root = Path.Combine(Path.GetTempPath(), $"issue-agent-{Guid.NewGuid():N}");
+        var worktreePath = Path.Combine(root, state.WorkflowId.ToString(), "worktree");
+        Directory.CreateDirectory(worktreePath);
+        try
+        {
+            var git = new ContinueRecoveryGit { RemoteHead = "remote-rewrite" };
+
+            await WorkflowDispatcher.RecoverContinueWorkspaceAsync(
+                Dependencies(git),
+                Config(root),
+                state,
+                Content(state, implementationResult: "Durably checkpointed implementation result."),
+                CancellationToken.None);
+
+            Assert.Empty(git.ResetWorktrees);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ReviewContinueRecoveryRecreatesMissingWorkspaceAtRemoteHead()
     {
         var state = ReviewState();

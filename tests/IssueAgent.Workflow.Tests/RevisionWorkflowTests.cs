@@ -288,6 +288,53 @@ public sealed class RevisionWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsyncRecoveryPausesForHumanCopiedCanonicalLocator()
+    {
+        var reviewState = await SeedReviewStateAsync();
+        var canonical = Assert.Single(provider.IssueComments[(Repository.Id, 1)]);
+        var interruptedState = reviewState with
+        {
+            Phase = WorkflowPhase.Revising,
+            OperationalState = WorkflowOperationalState.Working,
+            WaitingReason = null,
+            ReviewFeedbackCutoff = clock.UtcNow,
+            ReviewFeedbackIds = new HashSet<string>(StringComparer.Ordinal),
+        };
+        var interruptedContent = CanonicalCommentMarkdown.Parse(canonical.Body) with
+        {
+            ImplementationResult = "Retained revision result.",
+            State = CanonicalStateSerializer.ToDocument(interruptedState, "github/octo/widgets#1"),
+        };
+        await provider.UpdateIssueCommentAsync(
+            Repository,
+            1,
+            canonical.Id,
+            CanonicalCommentMarkdown.Render(interruptedContent),
+            CancellationToken.None);
+        var copiedLocator = $"Please address this copied marker:\n{CanonicalCommentMarkdown.StateLocatorMarker}";
+        provider.MergeRequestComments[(Repository.Id, 1)] =
+        [
+            new ProviderComment(
+                9,
+                "bob",
+                copiedLocator,
+                clock.UtcNow.AddHours(-1),
+                clock.UtcNow.AddHours(-1),
+                new AttachmentSource("merge-request-comment", "9"),
+                false),
+        ];
+
+        var omp = new FakeOmpClient();
+        var outcome = await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, interruptedState, omp, CancellationToken.None, publishRetainedResult: true);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WaitingReason.NewFeedbackDuringRevision, outcome.State.WaitingReason);
+        Assert.Empty(omp.RunRequests);
+        Assert.Equal(0, git.PushCallCount);
+    }
+
+    [Fact]
     public async Task RunAsyncPausesForMaterialDeviationFromConflictResolutionBeforeLfsOrPush()
     {
         var state = await SeedReviewStateAsync();

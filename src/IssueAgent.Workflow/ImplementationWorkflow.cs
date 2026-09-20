@@ -81,6 +81,12 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                     .ConfigureAwait(false);
             }
 
+            if (currentState.PublicationStage == ImplementationPublicationStage.ResultCheckpointed)
+            {
+                return await RecoverResultCheckpointedImplementationAsync(
+                    config, issueNumber, currentState, existingContent, issue, cancellationToken).ConfigureAwait(false);
+            }
+
             var recovered = await TryRecoverPublishedImplementationAsync(config, issueNumber, currentState, existingContent, cancellationToken)
                 .ConfigureAwait(false);
             if (recovered is not null)
@@ -434,6 +440,97 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             mergeRequest,
             resultMarkdown,
             cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Resumes the idempotent publication tail after a durable result checkpoint. The
+    /// checkpointed local head must still be intact; an exact remote match proves an interrupted
+    /// push and can proceed directly to review publication, while a missing remote ref safely
+    /// replays the LFS/submodule/push tail without rerunning OMP.</summary>
+    private async Task<WorkflowOutcome> RecoverResultCheckpointedImplementationAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState currentState,
+        CanonicalCommentContent existingContent,
+        ProviderIssue issue,
+        CancellationToken cancellationToken)
+    {
+        if (existingContent.ImplementationResult is not { Length: > 0 } implementationResult ||
+            currentState.ExpectedImplementationHead is not { Length: > 0 } expectedHead)
+        {
+            return await PauseAsync(
+                config,
+                issueNumber,
+                currentState,
+                existingContent,
+                existingContent.ImplementationResult ?? string.Empty,
+                WaitingReason.CorruptState,
+                "Cannot recover implementation publication: the result checkpoint is incomplete.",
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        var worktreePath = WorktreePath(config, currentState.WorkflowId);
+        var localHead = await deps.Git.GetHeadCommitAsync(config.Repository.Id, worktreePath, cancellationToken).ConfigureAwait(false);
+        var worktreeDirty = await deps.Git.HasUncommittedChangesAsync(config.Repository.Id, worktreePath, cancellationToken).ConfigureAwait(false);
+        if (worktreeDirty || !string.Equals(localHead, expectedHead, StringComparison.Ordinal))
+        {
+            return await PauseAsync(
+                config,
+                issueNumber,
+                currentState,
+                existingContent,
+                implementationResult,
+                WaitingReason.ManualIntervention,
+                "Cannot recover implementation publication: the retained worktree no longer matches the checkpointed implementation head.",
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        await deps.Git.FetchAsync(config.Repository.Id, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+        var remoteHead = await deps.Git
+            .TryResolveRemoteBranchCommitAsync(config.Repository.Id, currentState.Branch, cancellationToken)
+            .ConfigureAwait(false);
+        if (remoteHead is not null && !string.Equals(remoteHead, expectedHead, StringComparison.Ordinal))
+        {
+            return await PauseAsync(
+                config,
+                issueNumber,
+                currentState,
+                existingContent,
+                implementationResult,
+                WaitingReason.ManualIntervention,
+                "Cannot recover implementation publication: the remote branch does not match the checkpointed implementation head.",
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        if (remoteHead is null)
+        {
+            await deps.Git.PublishChangedSubmodulesAsync(
+                config.Repository.Id,
+                worktreePath,
+                currentState.BaseCommit,
+                currentState.Branch,
+                config.GitAuthentication,
+                config.SubmoduleAuthenticationResolver ?? (_ => null),
+                cancellationToken).ConfigureAwait(false);
+            if (deps.Git.WorktreeRequiresLfs(worktreePath))
+            {
+                await deps.Git.UploadLfsObjectsAsync(
+                    config.Repository.Id, worktreePath, currentState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+            }
+
+            await deps.Git.PushAsync(
+                config.Repository.Id, worktreePath, currentState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+        }
+
+        var publishedState = currentState with { PublicationStage = ImplementationPublicationStage.BranchPublished };
+        var publishedContent = existingContent with
+        {
+            State = CanonicalStateSerializer.ToDocument(publishedState, existingContent.State.PullOrMergeRequest),
+        };
+        await UpsertCanonicalCommentAsync(config, issueNumber, publishedContent, cancellationToken).ConfigureAwait(false);
+        var mergeRequest = await FindOrCreateMergeRequestAsync(
+            config, issueNumber, issue, publishedState, implementationResult, cancellationToken).ConfigureAwait(false);
+        return await PublishReviewAsync(
+            config, issueNumber, publishedState, publishedContent, mergeRequest, implementationResult, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Recovers an interrupted implementation attempt only after the canonical

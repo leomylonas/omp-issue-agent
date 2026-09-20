@@ -396,12 +396,16 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             ? null
             : new HashSet<string>(handledFeedbackIds, StringComparer.Ordinal);
 
+        var authoritativeAuthor = await CanonicalCommentLocator
+            .ResolveAuthoritativeIdentityAsync(deps.Provider, config.CanonicalCommentAuthor, cancellationToken)
+            .ConfigureAwait(false);
+
         await foreach (var comment in deps.Provider.GetMergeRequestCommentsAsync(
                            config.Repository,
                            mergeRequestNumber,
                            cancellationToken).ConfigureAwait(false))
         {
-            if (IsHumanFeedback(config, comment) &&
+            if (IsHumanFeedback(config, comment, authoritativeAuthor) &&
                 IsNewFeedbackSinceCheckpoint(
                     new HumanComment(comment.AuthorLogin, comment.CreatedAt, comment.Body, UpdatedAt: comment.UpdatedAt, CommentId: comment.Id),
                     cutoff,
@@ -423,7 +427,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
 
             foreach (var comment in thread.Comments)
             {
-                if (IsHumanFeedback(config, comment) &&
+                if (IsHumanFeedback(config, comment, authoritativeAuthor) &&
                     IsNewFeedbackSinceCheckpoint(
                         new HumanComment(comment.AuthorLogin, comment.CreatedAt, comment.Body, thread.Id, thread.IsResolved, comment.UpdatedAt, comment.Id),
                         cutoff,
@@ -437,9 +441,13 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         return false;
     }
 
-    private static bool IsHumanFeedback(WorkflowRepositoryConfig config, ProviderComment comment) =>
+    private static bool IsHumanFeedback(
+        WorkflowRepositoryConfig config,
+        ProviderComment comment,
+        string authoritativeAuthor) =>
         (!config.IgnoreBotComments || !comment.IsBot) &&
-        !CanonicalCommentMarkdown.IsCanonicalComment(comment.Body);
+        (!CanonicalCommentMarkdown.IsCanonicalComment(comment.Body) ||
+         !CanonicalCommentMarkdown.IsAuthoritativeCanonicalComment(comment, authoritativeAuthor));
 
     private static bool IsNewFeedbackSinceCheckpoint(
         HumanComment comment,
