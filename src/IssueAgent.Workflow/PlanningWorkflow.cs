@@ -84,12 +84,9 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
 
         var workflowId = initialState.WorkflowId;
         var worktreePath = WorktreePath(config, workflowId);
-        if (!Directory.Exists(worktreePath))
-        {
-            await deps.Git.CreateWorktreeAsync(
-                config.Repository.Id, workflowId.ToString(), worktreePath, initialState.Branch, initialState.BaseCommit, cancellationToken)
-                .ConfigureAwait(false);
-        }
+        await deps.Git.CreateWorktreeAsync(
+            config.Repository.Id, workflowId.ToString(), worktreePath, initialState.Branch, initialState.BaseCommit, cancellationToken)
+            .ConfigureAwait(false);
         await PrepareWorktreeContentAsync(config, worktreePath, cancellationToken).ConfigureAwait(false);
         var planningInput = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
         var attachmentsPath = AttachmentsPath(config, workflowId);

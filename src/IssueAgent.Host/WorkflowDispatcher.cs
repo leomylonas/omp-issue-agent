@@ -228,20 +228,6 @@ public sealed partial class WorkflowDispatcher(
             return;
         }
 
-        if (TryGetInitialPlanningCheckpoint(canonical, out var initialCheckpoint))
-        {
-            Directory.CreateDirectory(runtime.Config.WorkflowsStoragePath);
-            await using var initialPlanningOmp = StartOmp(runtime, issueNumber, runtime.Config.WorkflowsStoragePath);
-            await new PlanningWorkflow(runtime.Dependencies)
-                .RunInitialPlanningAsync(
-                    runtime.Config,
-                    issueNumber,
-                    initialPlanningOmp,
-                    cancellationToken,
-                    initialCheckpoint: initialCheckpoint)
-                .ConfigureAwait(false);
-            return;
-        }
 
         var labels = await runtime.Provider.GetLabelsAsync(
             new ProviderWorkItemReference(runtime.Repository, ProviderWorkItemKind.Issue, issueNumber),
@@ -321,6 +307,26 @@ public sealed partial class WorkflowDispatcher(
 
         var command = commandResolution.Command;
         var publishRetainedRevision = false;
+        if (IsInitialPlanningBootstrapCheckpoint(state) && command is null)
+        {
+            if (reconciled.Disposition != ReconciliationDisposition.ResumeAllowed)
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(runtime.Config.WorkflowsStoragePath);
+            await using var initialPlanningOmp = StartOmp(runtime, issueNumber, runtime.Config.WorkflowsStoragePath);
+            await new PlanningWorkflow(runtime.Dependencies)
+                .RunInitialPlanningAsync(
+                    runtime.Config,
+                    issueNumber,
+                    initialPlanningOmp,
+                    cancellationToken,
+                    initialCheckpoint: state)
+                .ConfigureAwait(false);
+            return;
+        }
+
         var recoveryCommand = command is WorkflowCommand.Cancel or WorkflowCommand.Continue;
         if (reconciled.Disposition != ReconciliationDisposition.ResumeAllowed && !recoveryCommand)
         {
@@ -501,9 +507,7 @@ public sealed partial class WorkflowDispatcher(
         try
         {
             var state = CanonicalStateSerializer.ToWorkflowState(CanonicalCommentMarkdown.Parse(canonicalComment.Body).State);
-            if (state.Phase == WorkflowPhase.Planning &&
-                state.OperationalState == WorkflowOperationalState.Working &&
-                state.PlanRevision == 0)
+            if (IsInitialPlanningBootstrapCheckpoint(state))
             {
                 initialCheckpoint = state;
                 return true;
@@ -517,6 +521,13 @@ public sealed partial class WorkflowDispatcher(
         initialCheckpoint = null!;
         return false;
     }
+    private static bool IsInitialPlanningBootstrapCheckpoint(WorkflowState state) =>
+        state.Phase == WorkflowPhase.Planning &&
+        state.OperationalState == WorkflowOperationalState.Working &&
+        state.PlanRevision == 0 &&
+        string.IsNullOrEmpty(state.OmpSessionId) &&
+        state.OmpSessionFile is null;
+
 
     private static bool HasRetainedRevisionCheckpoint(WorkflowState state, CanonicalCommentContent content) =>
         state.Phase == WorkflowPhase.Revising &&

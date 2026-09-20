@@ -196,6 +196,9 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
 
             resultMarkdown = conflictResult.RenderMarkdown();
             publicationCheckpoint = publicationCheckpoint with { ImplementationResult = resultMarkdown };
+            // A crash during feedback observation, LFS upload, or push must resume the resolved
+            // conflict result rather than the superseded pre-conflict revision result.
+            await UpsertCanonicalCommentAsync(config, issueNumber, publicationCheckpoint, cancellationToken).ConfigureAwait(false);
         }
 
         var feedbackAfterRevision = await CaptureFeedbackSnapshotAsync(config, config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);

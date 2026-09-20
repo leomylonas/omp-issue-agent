@@ -84,12 +84,13 @@ public sealed class PlanningWorkflowTests : IDisposable
     }
 
     [Fact]
-    public async Task RunInitialPlanningAsyncReusesCheckpointedWorkspaceAfterRestart()
+    public async Task RunInitialPlanningAsyncValidatesCheckpointedWorktreeAfterRestart()
     {
         provider.AddIssue(Repository, 1, "Bug", "Description");
         var workflow = CreateWorkflow();
         var checkpoint = await workflow.CreateInitialCheckpointAsync(CreateConfig(), 1, CancellationToken.None);
-        Directory.CreateDirectory(Path.Combine(workspaceRoot, checkpoint.WorkflowId.ToString(), "worktree"));
+        var worktreePath = Path.Combine(workspaceRoot, checkpoint.WorkflowId.ToString(), "worktree");
+        Directory.CreateDirectory(worktreePath);
         var omp = new FakeOmpClient()
             .EnqueueSessionId("session-recovered")
             .EnqueueRun(new OmpCompletedEvent(
@@ -105,7 +106,10 @@ public sealed class PlanningWorkflowTests : IDisposable
             initialCheckpoint: checkpoint);
 
         Assert.Equal(checkpoint.WorkflowId, outcome.State.WorkflowId);
-        Assert.Empty(git.CreatedWorktrees);
+        var createdWorktree = Assert.Single(git.CreatedWorktrees);
+        Assert.Equal(checkpoint.WorkflowId.ToString(), createdWorktree.WorktreeId);
+        Assert.Equal(checkpoint.Branch, createdWorktree.BranchName);
+        Assert.Equal(checkpoint.BaseCommit, createdWorktree.BaseCommit);
         Assert.Equal("session-recovered", outcome.State.OmpSessionId);
     }
 

@@ -28,6 +28,77 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task InitialPlanningBootstrapCheckpointResumesWithoutRecreatingItsWorktree()
+    {
+        var (state, canonical) = SeedWorkflow(WorkflowPhase.Planning, WorkflowOperationalState.Working, waitingReason: null);
+        Directory.Delete(WorktreePath(state), recursive: true);
+        state = state with { PlanRevision = 0, ApprovedPlanRevision = null, OmpSessionId = string.Empty, OmpSessionFile = null };
+        canonical = canonical with
+        {
+            Body = CanonicalCommentMarkdown.Render(new CanonicalCommentContent(
+                "Planning is in progress.",
+                [],
+                null,
+                CanonicalStateSerializer.ToDocument(state, pullOrMergeRequest: null))),
+        };
+
+        var result = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
+
+        Assert.Equal(ReconciliationDisposition.ResumeAllowed, result.Disposition);
+        Assert.Equal(state, result.State);
+        Assert.False(Directory.Exists(WorktreePath(state)));
+        Assert.Empty(provider.UpdatedComments);
+    }
+    [Fact]
+    public async Task CancellationCommandIsPreservedDuringInitialPlanningBootstrapReconciliation()
+    {
+        var (state, canonical) = SeedWorkflow(WorkflowPhase.Planning, WorkflowOperationalState.Working, waitingReason: null);
+        Directory.Delete(WorktreePath(state), recursive: true);
+        state = state with { PlanRevision = 0, ApprovedPlanRevision = null, OmpSessionId = string.Empty, OmpSessionFile = null };
+        canonical = canonical with
+        {
+            Body = CanonicalCommentMarkdown.Render(new CanonicalCommentContent(
+                "Planning is in progress.",
+                [],
+                null,
+                CanonicalStateSerializer.ToDocument(state, pullOrMergeRequest: null))),
+        };
+        provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] =
+            [WorkflowLabels.PlanningPhase, WorkflowLabels.WorkingState, WorkflowCommandLabels.Cancel];
+
+        var result = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
+
+        Assert.Equal(ReconciliationDisposition.ResumeAllowed, result.Disposition);
+        Assert.Contains(WorkflowCommandLabels.Cancel, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
+        Assert.False(Directory.Exists(WorktreePath(state)));
+    }
+
+
+    [Fact]
+    public async Task AmbiguousCommandsBlockInitialPlanningBootstrapBeforeWorktreeRecovery()
+    {
+        var (state, canonical) = SeedWorkflow(WorkflowPhase.Planning, WorkflowOperationalState.Working, waitingReason: null);
+        Directory.Delete(WorktreePath(state), recursive: true);
+        state = state with { PlanRevision = 0, ApprovedPlanRevision = null, OmpSessionId = string.Empty, OmpSessionFile = null };
+        canonical = canonical with
+        {
+            Body = CanonicalCommentMarkdown.Render(new CanonicalCommentContent(
+                "Planning is in progress.",
+                [],
+                null,
+                CanonicalStateSerializer.ToDocument(state, pullOrMergeRequest: null))),
+        };
+        provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] =
+            [WorkflowLabels.PlanningPhase, WorkflowLabels.WorkingState, WorkflowCommandLabels.Cancel, WorkflowCommandLabels.Continue];
+
+        var result = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
+
+        Assert.Equal(ReconciliationDisposition.Waiting, result.Disposition);
+        Assert.Equal(WaitingReason.AmbiguousCommand, result.State!.WaitingReason);
+        Assert.False(Directory.Exists(WorktreePath(state)));
+    }
+
+    [Fact]
     public async Task PersistedWorkingStateIsPausedAndEscalatedWithoutDeletingWorktree()
     {
         var (state, canonical) = SeedWorkflow(WorkflowPhase.Implementing, WorkflowOperationalState.Working, waitingReason: null);

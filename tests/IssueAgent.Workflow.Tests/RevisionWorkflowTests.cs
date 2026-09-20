@@ -201,6 +201,43 @@ public sealed class RevisionWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsyncRecoversConflictResolutionCheckpointAfterLfsInterruptionWithoutRerunningOmp()
+    {
+        var state = await SeedReviewStateAsync();
+        git.MergeSucceeds = false;
+        git.LfsRequired = true;
+        git.OnLfsUpload = () => throw new InvalidOperationException("Simulated process stop during LFS upload.");
+        var interruptedOmp = new FakeOmpClient()
+            .EnqueueRun(new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"summary":"Revision.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""))
+            .EnqueueRun(new OmpCompletedEvent(
+                "session-1",
+                clock.UtcNow,
+                """{"summary":"Conflict resolved.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+        var workflow = new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => workflow.RunAsync(CreateConfig(), 1, state, interruptedOmp, CancellationToken.None));
+
+        var checkpoint = CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body);
+        Assert.Contains("Conflict resolved.", checkpoint.ImplementationResult, StringComparison.Ordinal);
+        var recoveredState = CanonicalStateSerializer.ToWorkflowState(checkpoint.State);
+
+        git.MergeSucceeds = true;
+        git.LfsRequired = false;
+        var resumedOmp = new FakeOmpClient();
+        var outcome = await workflow.RunAsync(
+            CreateConfig(), 1, recoveredState, resumedOmp, CancellationToken.None, publishRetainedResult: true);
+
+        Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
+        Assert.Empty(resumedOmp.RunRequests);
+        Assert.Equal(1, git.PushCallCount);
+        Assert.Contains("Conflict resolved.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RunAsyncPausesForMaterialDeviationFromConflictResolutionBeforeLfsOrPush()
     {
         var state = await SeedReviewStateAsync();

@@ -83,6 +83,41 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
             await cancellation.CleanupLocalStateAsync(config, state, cancellationToken).ConfigureAwait(false);
             return new WorkflowReconciliationResult(ReconciliationDisposition.Completed, state, content, canonicalComment, "Terminal workflow local state and labels are clean.");
         }
+        var labels = await dependencies.Provider
+            .GetLabelsAsync(new ProviderWorkItemReference(config.Repository, ProviderWorkItemKind.Issue, issueNumber), cancellationToken)
+            .ConfigureAwait(false);
+        var labelSnapshot = LabelProtocol.Analyze(labels);
+        if (IsInitialPlanningBootstrapCheckpoint(state))
+        {
+            var bootstrapDecision = ReconciliationDecider.Decide(new ReconciliationInput(
+                labelSnapshot,
+                content,
+                LocalWorktreeExists: true,
+                LocalWorktreeHeadCommit: null,
+                RemoteBranchHeadCommit: null,
+                PlanInputHashPresent: true));
+            if (bootstrapDecision.Action == ReconciliationAction.WaitForHuman &&
+                bootstrapDecision.Reason != WaitingReason.ManualIntervention)
+            {
+                return await PauseForHumanAsync(
+                    config,
+                    issueNumber,
+                    canonicalComment,
+                    content,
+                    state,
+                    bootstrapDecision.Reason!.Value,
+                    bootstrapDecision.Explanation,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            return new WorkflowReconciliationResult(
+                ReconciliationDisposition.ResumeAllowed,
+                state,
+                content,
+                canonicalComment,
+                "The initial-planning checkpoint is consistent and can safely resume.");
+        }
+
         var worktreePath = Path.Combine(config.WorkflowsStoragePath, state.WorkflowId.ToString(), "worktree");
         var worktreeExists = Directory.Exists(worktreePath);
         if (!worktreeExists)
@@ -144,10 +179,6 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
             localHead = remoteHead;
             localHeadIsAncestorOfRemote = false;
         }
-        var labels = await dependencies.Provider
-            .GetLabelsAsync(new ProviderWorkItemReference(config.Repository, ProviderWorkItemKind.Issue, issueNumber), cancellationToken)
-            .ConfigureAwait(false);
-        var labelSnapshot = LabelProtocol.Analyze(labels);
         var decision = ReconciliationDecider.Decide(new ReconciliationInput(
             labelSnapshot,
             content,
@@ -180,6 +211,13 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
             canonicalComment,
             decision.Explanation);
     }
+    private static bool IsInitialPlanningBootstrapCheckpoint(WorkflowState state) =>
+        state.Phase == WorkflowPhase.Planning &&
+        state.OperationalState == WorkflowOperationalState.Working &&
+        state.PlanRevision == 0 &&
+        string.IsNullOrEmpty(state.OmpSessionId) &&
+        state.OmpSessionFile is null;
+
 
     public async Task<WorkflowReconciliationResult> PauseForHumanAsync(
         WorkflowRepositoryConfig config,
