@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 
 using IssueAgent.Configuration;
+using IssueAgent.Omp;
 using Microsoft.Extensions.Options;
 
 namespace IssueAgent.Host;
@@ -22,6 +23,7 @@ public sealed partial class StartupValidator(
         var configuration = options.Value;
         ValidateWorkspace(configuration.Workspace.RootPath);
         ValidateOmp(configuration.Omp.ExecutablePath);
+        await ProbeOmpAsync(configuration, effectiveConfiguration.Omp, cancellationToken).ConfigureAwait(false);
 
         foreach (var providerOptions in effectiveConfiguration.Providers)
         {
@@ -115,6 +117,71 @@ public sealed partial class StartupValidator(
         {
             throw new InvalidOperationException($"Required OMP executable '{executablePath}' is not executable by the service identity.");
         }
+    }
+
+    internal static async Task ProbeOmpAsync(
+        IssueAgentOptions options,
+        EffectiveOmpConfiguration omp,
+        CancellationToken cancellationToken)
+    {
+        var connection = new Dictionary<string, string>(omp.ConnectionSettings, StringComparer.Ordinal);
+        if (!string.IsNullOrWhiteSpace(omp.AuthBrokerUrl))
+        {
+            connection["OMP_AUTH_BROKER_URL"] = omp.AuthBrokerUrl;
+        }
+
+        var probeDirectory = Path.Combine(
+            options.Workspace.RootPath,
+            "omp",
+            $"startup-probe-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(probeDirectory);
+        try
+        {
+            var environment = OmpEnvironment.Build(
+                Environment.GetEnvironmentVariables()
+                    .Cast<System.Collections.DictionaryEntry>()
+                    .ToDictionary(
+                        entry => (string)entry.Key,
+                        entry => entry.Value as string,
+                        StringComparer.Ordinal),
+                connection,
+                MergeExecutionValues(options.Omp.ExecutionVariables, omp.ExecutionSecrets));
+            await using var client = OmpProcessClientFactory.Start(
+                omp.ExecutablePath,
+                ["--mode", "rpc", "--session-dir", probeDirectory],
+                options.Workspace.RootPath,
+                environment,
+                timeout: omp.Timeout ?? TimeSpan.FromSeconds(10));
+            _ = await client.CreateSessionAsync(
+                omp.Roles.GetValueOrDefault("planning", "plan"),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new InvalidOperationException(
+                $"Required OMP executable '{omp.ExecutablePath}' failed the startup compatibility probe.",
+                exception);
+        }
+        finally
+        {
+            if (Directory.Exists(probeDirectory))
+            {
+                Directory.Delete(probeDirectory, recursive: true);
+            }
+        }
+    }
+
+    private static Dictionary<string, string> MergeExecutionValues(
+        IReadOnlyDictionary<string, string> variables,
+        IReadOnlyDictionary<string, string> secrets)
+    {
+        var values = new Dictionary<string, string>(variables, StringComparer.Ordinal);
+        foreach (var (name, value) in secrets)
+        {
+            values[name] = value;
+        }
+
+        return values;
     }
 
     internal static bool HasEffectiveExecuteAccess(string path) =>

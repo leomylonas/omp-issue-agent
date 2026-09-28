@@ -571,6 +571,7 @@ public sealed partial class GitHubProvider(
 
     private static async Task DelayForProviderInstructionAsync(TimeSpan delay, CancellationToken cancellationToken)
     {
+        PollingRateLimitScheduling.ThrowIfEnabled(delay);
         foreach (var chunk in GetProviderRetryDelayChunks(delay))
         {
             await Task.Delay(chunk, cancellationToken).ConfigureAwait(false);

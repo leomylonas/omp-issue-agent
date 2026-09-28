@@ -1,4 +1,5 @@
 using IssueAgent.Host;
+using IssueAgent.Providers;
 using Xunit;
 
 namespace IssueAgent.Host.Tests;
@@ -29,5 +30,39 @@ public sealed class PollingSchedulerTests
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    [Fact]
+    public void PollingEligibilityDefersOnlyTheRateLimitedRepositoryUntilRetryWindowEnds()
+    {
+        var time = new AdjustableTimeProvider(DateTimeOffset.Parse("2026-01-01T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture));
+        var schedule = new PollingEligibilitySchedule(time);
+
+        schedule.Defer("github/octo/widgets", TimeSpan.FromMinutes(2));
+
+        Assert.False(schedule.IsEligible("github/octo/widgets"));
+        Assert.True(schedule.IsEligible("github/octo/other"));
+        time.Advance(TimeSpan.FromMinutes(2));
+        Assert.True(schedule.IsEligible("github/octo/widgets"));
+    }
+
+    private sealed class AdjustableTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        private DateTimeOffset current = utcNow;
+
+        public override DateTimeOffset GetUtcNow() => current;
+
+        public void Advance(TimeSpan elapsed) => current += elapsed;
+    }
+
+    [Fact]
+    public void PollingRateLimitScopeDefersProviderRetryInsteadOfWaitingInPollWork()
+    {
+        using var scope = PollingRateLimitScheduling.Enter();
+
+        var exception = Assert.Throws<PollingRateLimitedException>(
+            () => PollingRateLimitScheduling.ThrowIfEnabled(TimeSpan.FromMinutes(3)));
+
+        Assert.Equal(TimeSpan.FromMinutes(3), exception.RetryAfter);
     }
 }

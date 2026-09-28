@@ -39,7 +39,13 @@ public static class ProviderRetryPolicy
                 }
 
                 var delay = GetRetryDelay(response, attempt, retryPolicy);
+                var rateLimited = IsDefinitiveRateLimitRejection(response);
                 response.Dispose();
+                if (rateLimited)
+                {
+                    PollingRateLimitScheduling.ThrowIfEnabled(delay);
+                }
+
                 await DelayAsync(delay, cancellationToken).ConfigureAwait(false);
             }
             catch (HttpRequestException) when (isIdempotent && attempt < retryPolicy.MaxAttempts)
@@ -90,7 +96,13 @@ public static class ProviderRetryPolicy
             {
                 if (IsRetryable(response, isIdempotent: true) && attempt < retryPolicy.MaxAttempts)
                 {
-                    await DelayAsync(GetRetryDelay(response, attempt, retryPolicy), cancellationToken).ConfigureAwait(false);
+                    var delay = GetRetryDelay(response, attempt, retryPolicy);
+                    if (IsDefinitiveRateLimitRejection(response))
+                    {
+                        PollingRateLimitScheduling.ThrowIfEnabled(delay);
+                    }
+
+                    await DelayAsync(delay, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 

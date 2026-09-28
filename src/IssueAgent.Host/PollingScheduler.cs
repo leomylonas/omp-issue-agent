@@ -22,6 +22,7 @@ public sealed partial class PollingScheduler(
 {
     private long discoverySequence;
     private long lastWorkspaceBytesMeasurementTicks;
+    private readonly PollingEligibilitySchedule pollingEligibility = new();
     private static readonly TimeSpan WorkspaceBytesSampleInterval = TimeSpan.FromMinutes(5);
 
     public int QueuedCount => workerPool.QueuedCount;
@@ -38,7 +39,8 @@ public sealed partial class PollingScheduler(
         }
         var repositories = effectiveConfiguration.Providers
             .SelectMany(provider => provider.Repositories
-                .Where(repository => repository.Enabled)
+                .Where(repository => repository.Enabled &&
+                    pollingEligibility.IsEligible($"{provider.Name}/{repository.Id}"))
                 .Select(repository => (Provider: provider, Repository: repository)))
             .ToArray();
         var discovered = new ConcurrentQueue<WorkflowCandidate>();
@@ -77,6 +79,7 @@ public sealed partial class PollingScheduler(
             repositoryOptions.Name);
         var tags = new TagList { { LogContextFields.Provider, provider.Name }, { LogContextFields.Repository, repository.Id } };
         metrics.PollCount.Add(1, tags);
+        using var rateLimitScheduling = PollingRateLimitScheduling.Enter();
         try
         {
             var identity = providerOptions.Source.IdentityOverride;
@@ -144,6 +147,10 @@ public sealed partial class PollingScheduler(
                 {
                     throw;
                 }
+                catch (PollingRateLimitedException)
+                {
+                    throw;
+                }
                 catch (Exception exception)
                 {
                     LogWorkflowFailure(logger, exception, provider.Name, repository.Id, issue.Number);
@@ -154,6 +161,10 @@ public sealed partial class PollingScheduler(
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (PollingRateLimitedException exception)
+        {
+            pollingEligibility.Defer($"{providerOptions.Name}/{repository.Id}", exception.RetryAfter);
         }
         catch (Exception exception)
         {

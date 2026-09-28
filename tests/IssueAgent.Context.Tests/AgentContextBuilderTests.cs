@@ -200,6 +200,47 @@ public sealed class AgentContextBuilderTests
         Assert.Equal("thread-1", reviewComment.ThreadId);
     }
 
+    [Fact]
+    public async Task BuildAsyncReusesAttachmentsAndRetainsBudgetAcrossContextRebuilds()
+    {
+        var provider = new FakeGitProvider();
+        provider.TrustedHosts.Add("github.example");
+        provider.AddIssue(Repository, 1, "Issue", "[a](https://github.example/files/a.pdf)");
+        provider.DownloadableContent["https://github.example/files/a.pdf"] = new byte[6];
+        provider.DownloadableContent["https://github.example/files/b.pdf"] = new byte[6];
+        var downloadedUrls = new List<string>();
+        provider.AttachmentDownloadOverride = (attachment, directory, maxSize) =>
+        {
+            downloadedUrls.Add(attachment.Url.ToString());
+            var bytes = provider.DownloadableContent[attachment.Url.ToString()];
+            Directory.CreateDirectory(directory);
+            var path = AttachmentFileNames.ResolveSafeDestination(directory, attachment.SuggestedFileName);
+            File.WriteAllBytes(path, bytes);
+            return new DownloadedAttachment(path, Path.GetFileName(path), bytes.Length);
+        };
+        var limits = new AttachmentLimits { MaxTotalSizeBytes = 10 };
+        var builder = new AgentContextBuilder(provider, new AttachmentPipeline(provider, limits), new AgentContextBuilderOptions
+        {
+            AttachmentLimits = limits,
+            AllowedRepositories = [Repository],
+        });
+        var state = new WorkflowState(
+            WorkflowId.New(), WorkflowPhase.Planning, WorkflowOperationalState.Working, null,
+            0, null, "omp-session", "agent/issue-1", "main", "abc123", DateTimeOffset.UtcNow);
+
+        var first = await builder.BuildAsync(Repository, 1, state, null, null, destination, CancellationToken.None);
+        provider.Issues[(Repository.Id, 1)] = provider.Issues[(Repository.Id, 1)] with
+        {
+            Description = "[a](https://github.example/files/a.pdf) [b](https://github.example/files/b.pdf)",
+        };
+        var rebuilt = await builder.BuildAsync(Repository, 1, state, null, null, destination, CancellationToken.None);
+
+        Assert.Equal(1, downloadedUrls.Count(url => url.EndsWith("/a.pdf", StringComparison.Ordinal)));
+        Assert.All(rebuilt.PrimaryIssue.Attachments.Where(attachment => attachment.SourceUrl.EndsWith("/a.pdf", StringComparison.Ordinal)), attachment => Assert.False(attachment.IsOmitted));
+        Assert.Contains(rebuilt.PrimaryIssue.Attachments, attachment => attachment.SourceUrl.EndsWith("/b.pdf", StringComparison.Ordinal) && attachment.IsOmitted);
+        Assert.Single(first.PrimaryIssue.Attachments);
+    }
+
     private static async Task<AgentContext> BuildAsync(
         FakeGitProvider provider,
         long issueNumber,

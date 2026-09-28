@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using IssueAgent.Domain;
 using IssueAgent.Providers;
 
@@ -30,6 +31,7 @@ public sealed record AgentContextBuilderOptions
 /// </summary>
 public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipeline attachmentPipeline, AgentContextBuilderOptions options)
 {
+    private readonly ConcurrentDictionary<string, RemainingBudget> attachmentBudgets = new(StringComparer.Ordinal);
     public async Task<AgentContext> BuildAsync(
         RepositoryRef repository,
         long issueNumber,
@@ -39,7 +41,9 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
         string attachmentsDestinationDirectory,
         CancellationToken cancellationToken)
     {
-        var remainingBudget = new RemainingBudget(options.AttachmentLimits.MaxTotalSizeBytes);
+        var remainingBudget = attachmentBudgets.GetOrAdd(
+            Path.GetFullPath(attachmentsDestinationDirectory),
+            _ => new RemainingBudget(options.AttachmentLimits.MaxTotalSizeBytes));
 
         var primaryIssue = await BuildIssueContextAsync(repository, issueNumber, attachmentsDestinationDirectory, remainingBudget, cancellationToken)
             .ConfigureAwait(false);

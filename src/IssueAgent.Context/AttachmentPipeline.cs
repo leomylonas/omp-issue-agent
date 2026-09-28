@@ -27,6 +27,8 @@ public sealed class AttachmentPipeline(
     AttachmentLimits limits,
     Func<string, CancellationToken, Task<IPAddress[]>>? resolveHostAddressesAsync = null)
 {
+    private readonly Dictionary<string, DownloadedAttachment> downloadedAttachments = new(StringComparer.Ordinal);
+    private readonly Lock downloadedAttachmentsLock = new();
     /// <summary>Scans <paramref name="body"/> for candidate attachment links and downloads each into
     /// <paramref name="destinationDirectory"/>, tracking cumulative usage against
     /// <paramref name="remainingBudget"/>. Returns one <see cref="AttachmentReference"/> per
@@ -44,6 +46,7 @@ public sealed class AttachmentPipeline(
 
         var results = new List<AttachmentReference>();
 
+        string CacheKey(Uri url) => Path.Combine(destinationDirectory, url.AbsoluteUri);
         foreach (var candidateUrl in MarkdownAttachmentScanner.ScanLinks(body))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -64,6 +67,16 @@ public sealed class AttachmentPipeline(
             var suggestedFileName = Path.GetFileName(url.AbsolutePath) is { Length: > 0 } name ? name : "attachment";
             var providerAttachment = new ProviderAttachment(url, suggestedFileName, SizeBytes: null, source, isTrusted);
 
+            if (TryGetCachedAttachment(CacheKey(url), out var cached))
+            {
+                results.Add(new AttachmentReference(
+                    url.ToString(),
+                    cached.SafeFileName,
+                    cached.LocalPath,
+                    DescribeProvenance(source),
+                    cached.SizeBytes));
+                continue;
+            }
             if (!remainingBudget.TryReserveAttachmentSlot(limits.MaxAttachmentCount))
             {
                 results.Add(Omitted(providerAttachment, $"Attachment count exceeds the {limits.MaxAttachmentCount}-attachment limit for this workflow context."));
@@ -113,6 +126,7 @@ public sealed class AttachmentPipeline(
                 }
 
                 remainingBudget.Consume(downloaded.SizeBytes);
+                CacheDownloadedAttachment(CacheKey(url), downloaded);
                 results.Add(new AttachmentReference(
                     url.ToString(),
                     downloaded.SafeFileName,
@@ -152,6 +166,38 @@ public sealed class AttachmentPipeline(
         }
 
         return results;
+    }
+
+    private bool TryGetCachedAttachment(string key, out DownloadedAttachment downloaded)
+    {
+        lock (downloadedAttachmentsLock)
+        {
+            if (!downloadedAttachments.TryGetValue(key, out var cached))
+            {
+                downloaded = default!;
+                return false;
+            }
+
+            downloaded = cached;
+
+            var file = new FileInfo(downloaded.LocalPath);
+            if (!file.Exists || file.Attributes.HasFlag(FileAttributes.ReparsePoint) || file.Length != downloaded.SizeBytes)
+            {
+                downloadedAttachments.Remove(key);
+                downloaded = default!;
+                return false;
+            }
+
+            return true;
+        }
+    }
+
+    private void CacheDownloadedAttachment(string key, DownloadedAttachment downloaded)
+    {
+        lock (downloadedAttachmentsLock)
+        {
+            downloadedAttachments[key] = downloaded;
+        }
     }
 
     private static AttachmentReference Omitted(ProviderAttachment attachment, string reason) => new(

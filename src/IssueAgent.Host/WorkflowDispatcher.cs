@@ -539,6 +539,15 @@ public sealed partial class WorkflowDispatcher(
             command = routedCommand;
         }
 
+        if (ShouldRejectPlanOnlyImplementation(command.Value, runtime.WorkflowMode))
+        {
+            var outcome = await new ImplementationWorkflow(runtime.Dependencies)
+                .RejectPlanOnlyAsync(runtime.Config, issueNumber, state, cancellationToken)
+                .ConfigureAwait(false);
+            RecordDurableWorkflowFailure(outcome, metrics.ImplementationErrors, runtime.Tags);
+            return;
+        }
+
         await using var omp = StartOmp(runtime, issueNumber, Path.Combine(runtime.Config.WorkflowsStoragePath, state.WorkflowId.ToString(), "worktree"));
         try
         {
@@ -756,6 +765,9 @@ public sealed partial class WorkflowDispatcher(
         initialCheckpoint = null!;
         return false;
     }
+
+    internal static bool ShouldRejectPlanOnlyImplementation(WorkflowCommand command, WorkflowMode mode) =>
+        command == WorkflowCommand.Implement && mode == WorkflowMode.PlanOnly;
 
 
     private static bool HasRetainedRevisionCheckpoint(WorkflowState state, CanonicalCommentContent content) =>
