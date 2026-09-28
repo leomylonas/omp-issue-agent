@@ -536,23 +536,38 @@ public sealed partial class GitHubProvider(
             {
                 return await execute().WaitAsync(cancellationToken).ConfigureAwait(false);
             }
-            catch (RateLimitExceededException exception) when (attempt < retryPolicy.MaxAttempts)
+            catch (RateLimitExceededException exception)
             {
-                await DelayForProviderInstructionAsync(
-                    GetRateLimitRetryAfter(exception, attempt),
-                    cancellationToken).ConfigureAwait(false);
+                var delay = GetRateLimitRetryAfter(exception, attempt);
+                PollingRateLimitScheduling.ThrowIfEnabled(delay);
+                if (attempt >= retryPolicy.MaxAttempts)
+                {
+                    throw;
+                }
+
+                await DelayForProviderInstructionAsync(delay, cancellationToken).ConfigureAwait(false);
             }
-            catch (SecondaryRateLimitExceededException exception) when (attempt < retryPolicy.MaxAttempts)
+            catch (SecondaryRateLimitExceededException exception)
             {
-                await DelayForProviderInstructionAsync(
-                    GetRetryAfter(exception) ?? GetRateLimitFallbackDelay(attempt),
-                    cancellationToken).ConfigureAwait(false);
+                var delay = GetRetryAfter(exception) ?? GetRateLimitFallbackDelay(attempt);
+                PollingRateLimitScheduling.ThrowIfEnabled(delay);
+                if (attempt >= retryPolicy.MaxAttempts)
+                {
+                    throw;
+                }
+
+                await DelayForProviderInstructionAsync(delay, cancellationToken).ConfigureAwait(false);
             }
-            catch (ApiException exception) when ((int)exception.StatusCode == (int)HttpStatusCode.TooManyRequests && attempt < retryPolicy.MaxAttempts)
+            catch (ApiException exception) when ((int)exception.StatusCode == (int)HttpStatusCode.TooManyRequests)
             {
-                await DelayForProviderInstructionAsync(
-                    GetRetryAfter(exception) ?? GetRateLimitFallbackDelay(attempt),
-                    cancellationToken).ConfigureAwait(false);
+                var delay = GetRetryAfter(exception) ?? GetRateLimitFallbackDelay(attempt);
+                PollingRateLimitScheduling.ThrowIfEnabled(delay);
+                if (attempt >= retryPolicy.MaxAttempts)
+                {
+                    throw;
+                }
+
+                await DelayForProviderInstructionAsync(delay, cancellationToken).ConfigureAwait(false);
             }
             catch (ApiException exception) when (isIdempotent && ((int)exception.StatusCode == (int)HttpStatusCode.RequestTimeout || (int)exception.StatusCode >= 500) && attempt < retryPolicy.MaxAttempts)
             {

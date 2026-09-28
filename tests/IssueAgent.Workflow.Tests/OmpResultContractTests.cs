@@ -36,6 +36,34 @@ public sealed class OmpResultContractTests
         Assert.Contains("Related issue (blocks -> blocked-by, read-only context): Dependent issue", replan, StringComparison.Ordinal);
     }
 
+
+    [Fact]
+    public void ReplanPromptIncludesLinkedReviewFeedbackAndAttachments()
+    {
+        var context = CreateContext() with
+        {
+            PullOrMergeRequest = new MergeRequestContext(
+                42,
+                "Published review",
+                [new HumanComment("reviewer", DateTimeOffset.UtcNow, "Please preserve the public API.")],
+                [new HumanComment("maintainer", DateTimeOffset.UtcNow, "Thread resolved.", "thread-1", true)],
+                [
+                    new AttachmentReference(
+                        "https://example.test/review.log",
+                        "review.log",
+                        "/tmp/review.log",
+                        "review-thread-comment:2:thread-1",
+                        42),
+                ]),
+        };
+
+        var prompt = PlanningPromptBuilder.BuildReplanPrompt(context, []);
+
+        Assert.Contains("## Linked pull/merge request #42", prompt, StringComparison.Ordinal);
+        Assert.Contains("Please preserve the public API.", prompt, StringComparison.Ordinal);
+        Assert.Contains("Thread resolved.", prompt, StringComparison.Ordinal);
+        Assert.Contains("AVAILABLE review.log (review-thread-comment:2:thread-1): /tmp/review.log", prompt, StringComparison.Ordinal);
+    }
     [Fact]
     public void ImplementationRevisionAndConflictPromptsRequireOutputOnlyExactJsonSchema()
     {

@@ -5,6 +5,8 @@ namespace IssueAgent.Providers;
 public static class PollingRateLimitScheduling
 {
     private static readonly AsyncLocal<int> Enabled = new();
+    public static bool IsEnabled => Enabled.Value > 0;
+
 
     public static IDisposable Enter()
     {

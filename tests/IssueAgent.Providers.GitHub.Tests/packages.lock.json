@@ -1295,6 +1295,7 @@
       "issueagent.git": {
         "type": "Project",
         "dependencies": {
+          "IssueAgent.Domain": "[1.0.0, )",
           "LibGit2Sharp": "[0.32.0, )"
         }
       },
@@ -1316,6 +1317,7 @@
       "issueagent.providers.tests": {
         "type": "Project",
         "dependencies": {
+          "IssueAgent.Domain": "[1.0.0, )",
           "IssueAgent.Providers": "[1.0.0, )",
           "Microsoft.NET.Test.Sdk": "[18.0.1, )",
           "xunit.runner.visualstudio": "[4.0.0, )",

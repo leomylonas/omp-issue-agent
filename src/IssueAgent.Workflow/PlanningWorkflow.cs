@@ -242,10 +242,15 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         var attachmentsPath = AttachmentsPath(config, currentState.WorkflowId);
         await PrepareWorktreeContentAsync(config, worktreePath, cancellationToken).ConfigureAwait(false);
         var currentPlan = new PlanContext(existingContent.State.PlanRevision, existingContent.PlanText, existingContent.DecisionsAndRationale);
+        var mergeRequest = currentState.Phase == WorkflowPhase.Review && HasVerifiedPublishedCheckpoint(currentState, existingContent)
+            ? await deps.Provider
+                .FindMergeRequestAsync(config.Repository, currentState.Branch, currentState.TargetBranch, cancellationToken)
+                .ConfigureAwait(false)
+            : null;
 
         var planningInput = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
         var context = await deps.ContextBuilder
-            .BuildAsync(config.Repository, issueNumber, workingState, currentPlan, mergeRequest: null, attachmentsPath, cancellationToken)
+            .BuildAsync(config.Repository, issueNumber, workingState, currentPlan, mergeRequest, attachmentsPath, cancellationToken)
             .ConfigureAwait(false);
 
         var feedback = context.PrimaryIssue.HumanComments

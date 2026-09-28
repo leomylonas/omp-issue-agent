@@ -234,4 +234,41 @@ public sealed class ProviderRetryPolicyTests
         Assert.Equal(System.Net.HttpStatusCode.ServiceUnavailable, response.StatusCode);
     }
 
+    [Fact]
+    public async Task SendAsyncDefersATerminalRateLimitWhenPollingSchedulingIsEnabled()
+    {
+        using var scope = PollingRateLimitScheduling.Enter();
+
+        var exception = await Assert.ThrowsAsync<PollingRateLimitedException>(() => ProviderRetryPolicy.SendAsync(
+            _ =>
+            {
+                var response = new HttpResponseMessage(System.Net.HttpStatusCode.TooManyRequests);
+                response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromMinutes(2));
+                return Task.FromResult(response);
+            },
+            CancellationToken.None,
+            retryPolicy: new IssueAgent.Domain.RetryPolicy { MaxAttempts = 1 }));
+
+        Assert.Equal(TimeSpan.FromMinutes(2), exception.RetryAfter);
+    }
+
+    [Fact]
+    public async Task SendAndMaterializeAsyncDefersATerminalRateLimitWhenPollingSchedulingIsEnabled()
+    {
+        using var scope = PollingRateLimitScheduling.Enter();
+
+        var exception = await Assert.ThrowsAsync<PollingRateLimitedException>(() => ProviderRetryPolicy.SendAndMaterializeAsync(
+            _ =>
+            {
+                var response = new HttpResponseMessage(System.Net.HttpStatusCode.TooManyRequests);
+                response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromMinutes(2));
+                return Task.FromResult(response);
+            },
+            (_, _) => Task.FromResult("not reached"),
+            CancellationToken.None,
+            retryPolicy: new IssueAgent.Domain.RetryPolicy { MaxAttempts = 1 }));
+
+        Assert.Equal(TimeSpan.FromMinutes(2), exception.RetryAfter);
+    }
+
 }

@@ -111,6 +111,7 @@ public static class PlanningPromptBuilder
         builder.AppendLine();
         AppendIssue(builder, context.PrimaryIssue, "Primary issue");
         AppendRelatedIssues(builder, context.RelatedIssues);
+        AppendReviewContext(builder, context.PullOrMergeRequest);
         builder.AppendLine("Do not modify repository files while planning.");
         AppendOutputContract(builder);
         return builder.ToString();
@@ -153,6 +154,42 @@ public static class PlanningPromptBuilder
                 {
                     builder.Append("- ").Append(attachment.SafeFileName).Append(" (").Append(attachment.LocalPath).AppendLine(")");
                 }
+            }
+        }
+
+        builder.AppendLine();
+    }
+
+    private static void AppendReviewContext(StringBuilder builder, MergeRequestContext? mergeRequest)
+    {
+        if (mergeRequest is null)
+        {
+            return;
+        }
+
+        builder.Append("## Linked pull/merge request #")
+            .AppendLine(mergeRequest.Number.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        builder.AppendLine(mergeRequest.Description);
+        foreach (var comment in mergeRequest.Comments.Concat(mergeRequest.ReviewThreads))
+        {
+            builder.Append("- ").Append(comment.Author)
+                .Append(" (resolved: ").Append(comment.IsResolved ? "true" : "false")
+                .Append("): ").AppendLine(comment.Body);
+        }
+
+        foreach (var attachment in mergeRequest.Attachments)
+        {
+            if (attachment.IsOmitted)
+            {
+                builder.Append("- OMITTED ").Append(attachment.SafeFileName)
+                    .Append(" (").Append(attachment.Provenance).Append("): ")
+                    .AppendLine(attachment.OmissionReason);
+            }
+            else
+            {
+                builder.Append("- AVAILABLE ").Append(attachment.SafeFileName)
+                    .Append(" (").Append(attachment.Provenance).Append("): ")
+                    .AppendLine(attachment.LocalPath);
             }
         }
 

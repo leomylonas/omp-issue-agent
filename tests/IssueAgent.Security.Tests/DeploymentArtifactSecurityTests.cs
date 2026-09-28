@@ -70,8 +70,9 @@ public sealed class DeploymentArtifactSecurityTests
         Assert.Contains("--cap-add=SETPCAP", readme, StringComparison.Ordinal);
         Assert.Contains("--cap-add=SETUID", readme, StringComparison.Ordinal);
         Assert.Contains("-v issue-agent-data:/data", readme, StringComparison.Ordinal);
-        Assert.Contains("-e IssueAgent__Omp__ExecutablePath=/usr/local/bin/omp-unprivileged", readme, StringComparison.Ordinal);
+        Assert.DoesNotContain("-e IssueAgent__Omp__ExecutablePath=", readme, StringComparison.Ordinal);
         Assert.Contains("-e PI_CONFIG_FILES=/etc/omp/config.yml", readme, StringComparison.Ordinal);
+        Assert.Contains("by default, IssueAgent invokes the unprivileged OMP", readme, StringComparison.Ordinal);
         Assert.DoesNotContain("OMP_CONFIG_DIR", readme, StringComparison.Ordinal);
         Assert.DoesNotContain("OMP_CONFIG_DIR", environment, StringComparison.Ordinal);
     }
@@ -160,6 +161,7 @@ public sealed class DeploymentArtifactSecurityTests
     public void ProductionImageInitializesFreshStateAndDropsAmbientCapabilitiesBeforeOmpExecutes()
     {
         var dockerfile = ReadRepositoryFile("Dockerfile");
+        var appsettings = ReadRepositoryFile("src/IssueAgent.Host/appsettings.json");
         var entrypoint = ReadRepositoryFile("docker/issue-agent-entrypoint.sh");
         var ompWrapper = ReadRepositoryFile("docker/omp-unprivileged.sh");
         var helmDeployment = ReadRepositoryFile("deploy/helm/issue-agent/templates/deployment.yaml");
@@ -185,6 +187,7 @@ public sealed class DeploymentArtifactSecurityTests
             entrypoint.IndexOf("umask 0002", StringComparison.Ordinal)
             < entrypoint.IndexOf("exec /usr/bin/setpriv", StringComparison.Ordinal));
         Assert.Contains("--reuid=10002 --regid=10001", ompWrapper, StringComparison.Ordinal);
+        Assert.Contains("\"executablePath\": \"/usr/local/bin/omp-unprivileged\"", appsettings, StringComparison.Ordinal);
         Assert.Contains("umask 0002", ompWrapper, StringComparison.Ordinal);
         Assert.DoesNotContain("--ambient-caps +setuid,+setgid", ompWrapper, StringComparison.Ordinal);
         Assert.Contains("--ambient-caps -setuid,-setgid", ompWrapper, StringComparison.Ordinal);

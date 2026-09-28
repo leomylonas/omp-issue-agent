@@ -217,11 +217,19 @@ public sealed class AttachmentPipeline(
                 return;
             }
 
+            var restoredTotalSize = 0L;
+            var restoredAttachmentCount = 0;
+            var restoredFileNames = new HashSet<string>(StringComparer.Ordinal);
+
             foreach (var entry in entries ?? [])
             {
                 if (!Uri.TryCreate(entry.Url, UriKind.Absolute, out var url) ||
                     !IsSafeFileName(entry.SafeFileName) ||
-                    entry.SizeBytes < 0)
+                    entry.SizeBytes < 0 ||
+                    entry.SizeBytes > limits.MaxAttachmentSizeBytes ||
+                    restoredAttachmentCount >= limits.MaxAttachmentCount ||
+                    entry.SizeBytes > limits.MaxTotalSizeBytes - restoredTotalSize ||
+                    restoredFileNames.Contains(entry.SafeFileName))
                 {
                     continue;
                 }
@@ -238,8 +246,17 @@ public sealed class AttachmentPipeline(
                     continue;
                 }
 
-                downloadedAttachments[BuildCacheKey(fullDestinationDirectory, url)] =
+                var cacheKey = BuildCacheKey(fullDestinationDirectory, url);
+                if (downloadedAttachments.ContainsKey(cacheKey))
+                {
+                    continue;
+                }
+
+                restoredFileNames.Add(entry.SafeFileName);
+                downloadedAttachments[cacheKey] =
                     new DownloadedAttachment(localPath, entry.SafeFileName, entry.SizeBytes);
+                restoredTotalSize += entry.SizeBytes;
+                restoredAttachmentCount++;
             }
         }
     }

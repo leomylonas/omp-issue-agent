@@ -387,6 +387,29 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
 
         Assert.Equal(1, fixture.Server.LogEntries.Count(entry => entry.RequestMessage!.Path == "/api/v3/repos/octo/widgets/issues/7"));
     }
+
+    [Fact]
+    public async Task GetIssueAsyncDefersATerminalRateLimitWhenPollingSchedulingIsEnabled()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7").UsingGet())
+            .RespondWith(Response.Create()
+                .WithStatusCode(429)
+                .WithHeader("Retry-After", "120")
+                .WithBody("""{"message":"API rate limit exceeded"}"""));
+        var provider = GitHubProviderFactory.Create(new GitHubProviderConfiguration(
+            "github",
+            new Uri(fixture.Server.Url! + "/"),
+            null,
+            ["github.example"],
+            Retry: new IssueAgent.Domain.RetryPolicy { MaxAttempts = 1 }));
+        using var scope = PollingRateLimitScheduling.Enter();
+
+        var exception = await Assert.ThrowsAsync<PollingRateLimitedException>(() =>
+            provider.GetIssueAsync(Repository, 7, CancellationToken.None).AsTask());
+
+        Assert.Equal(TimeSpan.FromMinutes(2), exception.RetryAfter);
+    }
     [Fact]
     public async Task GetDefaultBranchAsyncReturnsTheRepositorysConfiguredDefaultBranch()
     {

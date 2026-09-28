@@ -296,4 +296,116 @@ public sealed class AttachmentPipelineTests
         Assert.Equal(5, budget.Remaining);
         Assert.False(File.Exists(partialPath));
     }
+
+    [Fact]
+    public async Task ProcessAsyncDoesNotReturnARestoredAttachmentExceedingTheCurrentPerFileLimit()
+    {
+        const string url = "https://example.com/oversized.pdf";
+        Directory.CreateDirectory(destination);
+        File.WriteAllBytes(Path.Combine(destination, "oversized.pdf"), new byte[6]);
+        WriteManifest((url, "oversized.pdf", 6));
+        var downloads = 0;
+        provider.AttachmentDownloadOverride = (attachment, directory, _) =>
+        {
+            downloads++;
+            var path = AttachmentFileNames.ResolveSafeDestination(directory, attachment.SuggestedFileName);
+            File.WriteAllBytes(path, [1]);
+            return new DownloadedAttachment(path, Path.GetFileName(path), 1);
+        };
+        var pipeline = new AttachmentPipeline(provider, new AttachmentLimits
+        {
+            MaxAttachmentSizeBytes = 5,
+            MaxTotalSizeBytes = 10,
+            MaxAttachmentCount = 2,
+        });
+
+        var result = await pipeline.ProcessAsync(
+            $"[attachment]({url})",
+            new AttachmentSource("issue-description", "1"),
+            destination,
+            pipeline.CreateRemainingBudget(destination),
+            CancellationToken.None);
+
+        var attachment = Assert.Single(result);
+        Assert.False(attachment.IsOmitted);
+        Assert.Equal(1, attachment.SizeBytes);
+        Assert.Equal(1, downloads);
+    }
+
+    [Fact]
+    public async Task ProcessAsyncDoesNotReturnARestoredAttachmentExceedingTheCurrentTotalLimit()
+    {
+        const string firstUrl = "https://example.com/a.pdf";
+        const string secondUrl = "https://example.com/b.pdf";
+        Directory.CreateDirectory(destination);
+        File.WriteAllBytes(Path.Combine(destination, "a.pdf"), new byte[4]);
+        File.WriteAllBytes(Path.Combine(destination, "b.pdf"), new byte[4]);
+        WriteManifest((firstUrl, "a.pdf", 4), (secondUrl, "b.pdf", 4));
+        var downloads = 0;
+        provider.AttachmentDownloadOverride = (attachment, directory, _) =>
+        {
+            downloads++;
+            var path = AttachmentFileNames.ResolveSafeDestination(directory, attachment.SuggestedFileName);
+            File.WriteAllBytes(path, [1]);
+            return new DownloadedAttachment(path, Path.GetFileName(path), 1);
+        };
+        var pipeline = new AttachmentPipeline(provider, new AttachmentLimits
+        {
+            MaxAttachmentSizeBytes = 10,
+            MaxTotalSizeBytes = 6,
+            MaxAttachmentCount = 2,
+        });
+
+        var result = await pipeline.ProcessAsync(
+            $"[attachment]({secondUrl})",
+            new AttachmentSource("issue-description", "1"),
+            destination,
+            pipeline.CreateRemainingBudget(destination),
+            CancellationToken.None);
+
+        var attachment = Assert.Single(result);
+        Assert.False(attachment.IsOmitted);
+        Assert.Equal(1, attachment.SizeBytes);
+        Assert.Equal(1, downloads);
+    }
+
+    [Fact]
+    public async Task ProcessAsyncDoesNotReturnARestoredAttachmentExceedingTheCurrentCountLimit()
+    {
+        const string firstUrl = "https://example.com/a.pdf";
+        const string secondUrl = "https://example.com/b.pdf";
+        Directory.CreateDirectory(destination);
+        File.WriteAllBytes(Path.Combine(destination, "a.pdf"), [1]);
+        File.WriteAllBytes(Path.Combine(destination, "b.pdf"), [1]);
+        WriteManifest((firstUrl, "a.pdf", 1), (secondUrl, "b.pdf", 1));
+        var pipeline = new AttachmentPipeline(provider, new AttachmentLimits
+        {
+            MaxAttachmentSizeBytes = 10,
+            MaxTotalSizeBytes = 10,
+            MaxAttachmentCount = 1,
+        });
+
+        var result = await pipeline.ProcessAsync(
+            $"[attachment]({secondUrl})",
+            new AttachmentSource("issue-description", "1"),
+            destination,
+            pipeline.CreateRemainingBudget(destination),
+            CancellationToken.None);
+
+        var attachment = Assert.Single(result);
+        Assert.True(attachment.IsOmitted);
+        Assert.Contains("count exceeds", attachment.OmissionReason, StringComparison.Ordinal);
+    }
+
+    private void WriteManifest(params (string Url, string SafeFileName, long SizeBytes)[] entries)
+    {
+        File.WriteAllText(
+            Path.Combine(destination, ".issue-agent-attachment-manifest.json"),
+            System.Text.Json.JsonSerializer.Serialize(entries.Select(entry => new
+            {
+                entry.Url,
+                entry.SafeFileName,
+                entry.SizeBytes,
+            })));
+    }
 }

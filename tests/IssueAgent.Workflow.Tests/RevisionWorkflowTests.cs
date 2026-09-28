@@ -43,6 +43,7 @@ public sealed class RevisionWorkflowTests : IDisposable
 
         Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
         Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
+        Assert.Equal(git.BranchCommitToReturn, outcome.State.ExpectedImplementationHead);
         Assert.Equal(WaitingReason.ReviewRequested, outcome.State.WaitingReason);
 
         var request = Assert.Single(omp.RunRequests);

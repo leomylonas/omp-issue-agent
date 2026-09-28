@@ -312,6 +312,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             OperationalState = WorkflowOperationalState.Waiting,
             WaitingReason = WaitingReason.ReviewRequested,
             InterruptedPhase = null,
+            ExpectedImplementationHead = headCommit,
             UpdatedAt = deps.Clock.UtcNow,
             // This is the actual end of the feedback observation used for the publication gate.
             // Advancing it to a later write time could silently skip feedback that arrives while

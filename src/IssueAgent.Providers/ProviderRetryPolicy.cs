@@ -33,13 +33,25 @@ public static class ProviderRetryPolicy
             try
             {
                 var response = await send(cancellationToken).ConfigureAwait(false);
-                if (!IsRetryable(response, isIdempotent) || attempt == retryPolicy.MaxAttempts)
+                var retryable = IsRetryable(response, isIdempotent);
+                var rateLimited = IsDefinitiveRateLimitRejection(response);
+                if (!retryable)
                 {
                     return response;
                 }
 
                 var delay = GetRetryDelay(response, attempt, retryPolicy);
-                var rateLimited = IsDefinitiveRateLimitRejection(response);
+                if (attempt == retryPolicy.MaxAttempts)
+                {
+                    if (rateLimited && PollingRateLimitScheduling.IsEnabled)
+                    {
+                        response.Dispose();
+                        PollingRateLimitScheduling.ThrowIfEnabled(delay);
+                    }
+
+                    return response;
+                }
+
                 response.Dispose();
                 if (rateLimited)
                 {
@@ -94,10 +106,17 @@ public static class ProviderRetryPolicy
 
             using (response)
             {
-                if (IsRetryable(response, isIdempotent: true) && attempt < retryPolicy.MaxAttempts)
+                var retryable = IsRetryable(response, isIdempotent: true);
+                var rateLimited = IsDefinitiveRateLimitRejection(response);
+                if (retryable && attempt == retryPolicy.MaxAttempts && rateLimited)
+                {
+                    PollingRateLimitScheduling.ThrowIfEnabled(GetRetryDelay(response, attempt, retryPolicy));
+                }
+
+                if (retryable && attempt < retryPolicy.MaxAttempts)
                 {
                     var delay = GetRetryDelay(response, attempt, retryPolicy);
-                    if (IsDefinitiveRateLimitRejection(response))
+                    if (rateLimited)
                     {
                         PollingRateLimitScheduling.ThrowIfEnabled(delay);
                     }

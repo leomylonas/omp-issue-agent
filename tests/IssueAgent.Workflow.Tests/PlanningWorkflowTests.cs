@@ -492,6 +492,22 @@ public sealed class PlanningWorkflowTests : IDisposable
         provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] =
             [WorkflowLabels.ReviewPhase, WorkflowLabels.WaitingState, WorkflowCommandLabels.Replan];
         Directory.CreateDirectory(Path.Combine(workspaceRoot, reviewState.WorkflowId.ToString(), "worktree"));
+        provider.MergeRequests[42] = new ProviderMergeRequest(
+            Repository, 42, reviewState.Branch, reviewState.TargetBranch, "Bug", "Review description", true, false, false,
+            new AttachmentSource("merge-request-description", "42"));
+        provider.MergeRequestComments[(Repository.Id, 42)] =
+        [
+            new ProviderComment(1, "reviewer", "Please account for the published API.", clock.UtcNow, clock.UtcNow,
+                new AttachmentSource("merge-request-comment", "42", "1"), false),
+        ];
+        provider.ReviewThreads[(Repository.Id, 42)] =
+        [
+            new ProviderReviewThread("thread-1", true,
+            [
+                new ProviderComment(2, "maintainer", "The compatibility concern is resolved.", clock.UtcNow, clock.UtcNow,
+                    new AttachmentSource("review-thread-comment", "42", "2"), false),
+            ]),
+        ];
         var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
             "session-1", clock.UtcNow, """{"planText":"Revised plan.","decisions":[],"suggestedSlug":"replacement-branch"}"""));
 
@@ -508,6 +524,10 @@ public sealed class PlanningWorkflowTests : IDisposable
         var persisted = CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body);
         Assert.Equal("Published implementation.", persisted.ImplementationResult);
         Assert.Equal($"{Repository.Id}#42", persisted.State.PullOrMergeRequest);
+        var prompt = Assert.Single(omp.RunRequests).Prompt;
+        Assert.Contains("## Linked pull/merge request #42", prompt, StringComparison.Ordinal);
+        Assert.Contains("Please account for the published API.", prompt, StringComparison.Ordinal);
+        Assert.Contains("The compatibility concern is resolved.", prompt, StringComparison.Ordinal);
     }
     [Fact]
     public async Task RunReplanAsyncFromFailedPublishedReviewPreservesCheckpointAndMergeRequest()
