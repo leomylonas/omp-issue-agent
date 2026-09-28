@@ -179,15 +179,18 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
         var remoteHead = await dependencies.Git
             .TryResolveRemoteBranchCommitAsync(config.Repository.Id, state.Branch, cancellationToken)
             .ConfigureAwait(false);
-        var localHeadIsAncestorOfRemote = localHead is not null &&
+        var verifiedPublishedWorkflow = state.Phase is WorkflowPhase.Review or WorkflowPhase.Revising &&
+            content.State.PullOrMergeRequest is { Length: > 0 };
+        var localHeadIsAncestorOfRemote = verifiedPublishedWorkflow &&
+            localHead is not null &&
             remoteHead is not null &&
             !string.Equals(localHead, remoteHead, StringComparison.Ordinal) &&
             await dependencies.Git.IsAncestorAsync(config.Repository.Id, localHead, remoteHead, cancellationToken).ConfigureAwait(false);
         if (!worktreeDirty && localHeadIsAncestorOfRemote)
         {
-            // A human may have committed directly to the published branch. Record that accepted
-            // head before changing the retained worktree; an implementation started after
-            // reconciliation must reset to this accepted checkpoint, not the superseded base.
+            // Only a workflow with a verified published review request may adopt human commits
+            // from its remote agent branch. An unpublished workflow must not treat an unrelated
+            // remote ref as its implementation history.
             state = state with { BaseCommit = remoteHead!, UpdatedAt = dependencies.Clock.UtcNow };
             content = content with
             {
@@ -263,8 +266,9 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
 
 
     /// <summary>Records a human's decision to treat a rewritten remote branch as authoritative.
-    /// Any uncheckpointed local implementation is discarded; the approved plan remains available
-    /// for a subsequent explicit implementation command.</summary>
+    /// Unpublished work is discarded back to plan approval. A published review remains in review:
+    /// its implementation result and feedback checkpoint still describe the remote branch humans
+    /// are reviewing.</summary>
     public async Task<WorkflowState> AcceptRemoteHistoryAsync(
         WorkflowRepositoryConfig config,
         long issueNumber,
@@ -276,21 +280,22 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(acceptedRemoteHead);
 
+        var preservesReview = state.Phase == WorkflowPhase.Review;
         var acceptedState = state with
         {
-            Phase = WorkflowPhase.Planned,
+            Phase = preservesReview ? WorkflowPhase.Review : WorkflowPhase.Planned,
             OperationalState = WorkflowOperationalState.Waiting,
-            WaitingReason = WaitingReason.PlanApproval,
+            WaitingReason = preservesReview ? WaitingReason.ReviewRequested : WaitingReason.PlanApproval,
             BaseCommit = acceptedRemoteHead,
             InterruptedPhase = null,
-            ExpectedImplementationHead = null,
-            PublicationStage = null,
-            RebasedPublicationBase = null,
+            ExpectedImplementationHead = preservesReview ? state.ExpectedImplementationHead : null,
+            PublicationStage = preservesReview ? state.PublicationStage : null,
+            RebasedPublicationBase = preservesReview ? state.RebasedPublicationBase : null,
             UpdatedAt = dependencies.Clock.UtcNow,
         };
         var acceptedContent = content with
         {
-            ImplementationResult = null,
+            ImplementationResult = preservesReview ? content.ImplementationResult : null,
             State = CanonicalStateSerializer.ToDocument(acceptedState, content.State.PullOrMergeRequest),
         };
         await PersistCanonicalStateAsync(

@@ -444,6 +444,34 @@ public sealed class PlanningWorkflowTests : IDisposable
         Assert.Contains(Path.Combine(workspaceRoot, initialState.WorkflowId.ToString(), "worktree"), git.LfsMaterializedWorktrees);
     }
     [Fact]
+    public async Task RunReplanAsyncFromReviewConsumesReplanCommand()
+    {
+        provider.AddIssue(Repository, 1, "Bug", "Description");
+        var reviewState = new WorkflowState(
+            WorkflowId.New(), WorkflowPhase.Review, WorkflowOperationalState.Waiting, WaitingReason.ReviewRequested,
+            1, 1, "session-1", "agent/issue-1-bug", "main", "abc123", clock.UtcNow.AddHours(-1),
+            PlanInputHash: PlanInputHasher.Compute("Bug", "Description"),
+            ReviewFeedbackCutoff: clock.UtcNow.AddHours(-1));
+        await provider.CreateIssueCommentAsync(
+            Repository,
+            1,
+            CanonicalCommentMarkdown.Render(new CanonicalCommentContent(
+                "Original plan.", [], "Published implementation.",
+                CanonicalStateSerializer.ToDocument(reviewState, $"{Repository.Id}#1"))),
+            CancellationToken.None);
+        provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] =
+            [WorkflowLabels.ReviewPhase, WorkflowLabels.WaitingState, WorkflowCommandLabels.Replan];
+        Directory.CreateDirectory(Path.Combine(workspaceRoot, reviewState.WorkflowId.ToString(), "worktree"));
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1", clock.UtcNow, """{"planText":"Revised plan.","decisions":[]}"""));
+
+        var outcome = await CreateWorkflow().RunReplanAsync(CreateConfig(), 1, reviewState, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowPhase.Planned, outcome.State.Phase);
+        Assert.DoesNotContain(WorkflowCommandLabels.Replan, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
+    }
+
+    [Fact]
     public async Task RunReplanAsyncPersistsFailureWhenOmpResultViolatesContract()
     {
         provider.AddIssue(Repository, 1, "Bug", "Description");

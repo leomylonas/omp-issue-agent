@@ -881,6 +881,26 @@ public sealed class ImplementationWorkflowTests : IDisposable
 
         Assert.Contains("Feedback at the observation boundary.", Assert.Single(revisionOmp.RunRequests).Prompt, StringComparison.Ordinal);
     }
+    [Fact]
+    public async Task RunAsyncPersistsMissingCredentialsWhenPublicationCannotAuthenticate()
+    {
+        var state = await SeedApprovedPlanAsync();
+        git.PushException = new InvalidOperationException("Authentication failed for remote.");
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"summary":"Implemented.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await CreateWorkflow().RunAsync(CreateConfig(), WorkflowMode.Full, 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WorkflowPhase.Implementing, outcome.State.Phase);
+        Assert.Equal(WaitingReason.MissingCredentials, outcome.State.WaitingReason);
+        Assert.Equal(WorkflowNotificationKind.HumanActionRequired, Assert.Single(notifier.Notifications).Kind);
+        Assert.Contains("credentials", Assert.Single(notifier.Notifications).Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("missing-credentials", CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body).State.WaitingReason);
+    }
+
 
     private static string ImplementationInputDigest()
     {

@@ -126,10 +126,13 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
     }
 
     public int PushCallCount { get; private set; }
+    public Exception? PushException { get; set; }
+
 
     public ValueTask PushAsync(string repositoryId, string worktreePath, string branchName, GitAuthentication authentication, CancellationToken cancellationToken)
     {
         PushCallCount++;
+        if (PushException is not null) throw PushException;
         return ValueTask.CompletedTask;
     }
 

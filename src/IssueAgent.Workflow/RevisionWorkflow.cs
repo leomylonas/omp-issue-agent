@@ -255,18 +255,28 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 cancellationToken).ConfigureAwait(false);
         }
 
-        await deps.Git.PublishChangedSubmodulesAsync(
-            config.Repository.Id,
-            worktreePath,
-            latestTargetCommit,
-            workingState.Branch,
-            config.GitAuthentication,
-            config.SubmoduleAuthenticationResolver ?? (_ => null),
-            cancellationToken).ConfigureAwait(false);
-
-        if (deps.Git.WorktreeRequiresLfs(worktreePath))
+        try
         {
-            await deps.Git.UploadLfsObjectsAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+            await deps.Git.PublishChangedSubmodulesAsync(
+                config.Repository.Id,
+                worktreePath,
+                latestTargetCommit,
+                workingState.Branch,
+                config.GitAuthentication,
+                config.SubmoduleAuthenticationResolver ?? (_ => null),
+                cancellationToken).ConfigureAwait(false);
+
+            if (deps.Git.WorktreeRequiresLfs(worktreePath))
+            {
+                await deps.Git.UploadLfsObjectsAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException &&
+            GitPublicationFailureClassifier.TryClassify(exception) is { } reason)
+        {
+            return await PauseForNewFeedbackAsync(
+                config, issueNumber, workingState, publicationCheckpoint, resultMarkdown,
+                GitPublicationFailureClassifier.Explanation(reason), cancellationToken, reason).ConfigureAwait(false);
         }
 
         // LFS upload can take long enough for review feedback to arrive. Re-observe immediately
@@ -284,7 +294,17 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 cancellationToken).ConfigureAwait(false);
         }
 
-        await deps.Git.PushAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await deps.Git.PushAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException &&
+            GitPublicationFailureClassifier.TryClassify(exception) is { } reason)
+        {
+            return await PauseForNewFeedbackAsync(
+                config, issueNumber, workingState, publicationCheckpoint, resultMarkdown,
+                GitPublicationFailureClassifier.Explanation(reason), cancellationToken, reason).ConfigureAwait(false);
+        }
 
         var publishedState = workingState with
         {

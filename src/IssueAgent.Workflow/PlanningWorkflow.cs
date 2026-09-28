@@ -227,7 +227,9 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             issueNumber,
             WorkflowPhase.Planning,
             WorkflowOperationalState.Working,
-            currentState.Phase == WorkflowPhase.Planned ? [WorkflowCommand.Replan] : [WorkflowCommand.Continue],
+            currentState.Phase is WorkflowPhase.Planned or WorkflowPhase.Review
+                ? [WorkflowCommand.Replan]
+                : [WorkflowCommand.Continue],
             cancellationToken).ConfigureAwait(false);
 
         var worktreePath = WorktreePath(config, currentState.WorkflowId);

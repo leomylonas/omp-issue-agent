@@ -54,6 +54,20 @@ public sealed class WorkflowCommandRoutingTests
     }
 
     [Fact]
+    public void PlanOnlyImplementIsRejectedBeforeAnOmpSessionIsStarted()
+    {
+        Assert.True(WorkflowDispatcher.ShouldRejectPlanOnlyImplementation(
+            WorkflowCommand.Implement,
+            WorkflowMode.PlanOnly));
+        Assert.False(WorkflowDispatcher.ShouldRejectPlanOnlyImplementation(
+            WorkflowCommand.Implement,
+            WorkflowMode.Full));
+        Assert.False(WorkflowDispatcher.ShouldRejectPlanOnlyImplementation(
+            WorkflowCommand.Replan,
+            WorkflowMode.PlanOnly));
+    }
+
+    [Fact]
     public void CanonicalCommentIdentityOverrideIsIgnoredWhenProviderCredentialsExist()
     {
         var configuration = new EffectiveProviderConfiguration(
@@ -228,6 +242,7 @@ public sealed class WorkflowCommandRoutingTests
     [InlineData(WorkflowPhase.Review, WorkflowCommand.Implement, false)]
     [InlineData(WorkflowPhase.Planned, WorkflowCommand.Revise, false)]
     [InlineData(WorkflowPhase.Planned, WorkflowCommand.Implement, true)]
+    [InlineData(WorkflowPhase.Review, WorkflowCommand.Replan, true)]
     [InlineData(WorkflowPhase.Review, WorkflowCommand.Revise, true)]
     public void IsPhaseCompatibleRejectsCommandsForOtherWorkflowMilestones(
         WorkflowPhase phase,

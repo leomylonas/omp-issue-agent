@@ -270,13 +270,53 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
         Assert.Contains(WorkflowLabels.PlannedPhase, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
         Assert.Contains(WorkflowLabels.WaitingState, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
     }
+    [Fact]
+    public async Task AcceptRemoteHistoryPreservesPublishedReviewState()
+    {
+        var (state, canonical) = SeedWorkflow(
+            WorkflowPhase.Review,
+            WorkflowOperationalState.Waiting,
+            WaitingReason.RemoteHistoryRewrite);
+        state = state with
+        {
+            ReviewFeedbackCutoff = clock.UtcNow.AddHours(-1),
+            ReviewFeedbackVersions = new HashSet<string> { "comment:1:version" },
+        };
+        var content = CanonicalCommentMarkdown.Parse(canonical.Body) with
+        {
+            ImplementationResult = "Published implementation result.",
+            State = CanonicalStateSerializer.ToDocument(state, $"{Repository.Id}#7"),
+        };
+
+        var accepted = await CreateService().AcceptRemoteHistoryAsync(
+            CreateConfig(), 1, canonical, content, state, "accepted-remote-head", CancellationToken.None);
+
+        var persisted = CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body);
+        Assert.Equal(WorkflowPhase.Review, accepted.Phase);
+        Assert.Equal(WaitingReason.ReviewRequested, accepted.WaitingReason);
+        Assert.Equal("Published implementation result.", persisted.ImplementationResult);
+        Assert.Equal("accepted-remote-head", persisted.State.BaseCommit);
+        Assert.Equal(state.ReviewFeedbackCutoff, persisted.State.ReviewFeedbackCutoff);
+        Assert.Equal(state.ReviewFeedbackVersions!.Order(), persisted.State.ReviewFeedbackVersions!);
+        Assert.Contains(WorkflowLabels.ReviewPhase, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
+    }
+
 
     [Fact]
-    public async Task FastForwardReconciliationPreservesAcceptedRemoteHeadWhenImplementationStarts()
+    public async Task FastForwardReconciliationAdoptsVerifiedPublishedWorkflow()
     {
         git.BranchCommitToReturn = "abc123";
         git.RemoteBranchCommitToReturn = "deadbeef";
-        var (_, canonical) = SeedWorkflow(WorkflowPhase.Planned, WorkflowOperationalState.Waiting, WaitingReason.PlanApproval);
+        var (state, canonical) = SeedWorkflow(WorkflowPhase.Review, WorkflowOperationalState.Waiting, WaitingReason.ReviewRequested);
+        state = state with { ReviewFeedbackCutoff = clock.UtcNow.AddHours(-1) };
+        canonical = canonical with
+        {
+            Body = CanonicalCommentMarkdown.Render(CanonicalCommentMarkdown.Parse(canonical.Body) with
+            {
+                State = CanonicalStateSerializer.ToDocument(state, $"{Repository.Id}#7"),
+            }),
+        };
+        provider.IssueComments[(Repository.Id, 1)][0] = canonical;
 
         var reconciled = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
 
@@ -285,18 +325,21 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
         Assert.Equal(
             "deadbeef",
             CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body).State.BaseCommit);
+        Assert.Equal([(Repository.Id, WorktreePath(reconciled.State!), "deadbeef")], git.ResetWorktrees);
+    }
 
-        git.BranchCommitToReturn = "deadbeef";
-        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
-            "session-1",
-            clock.UtcNow,
-            """{"summary":"Implemented from the accepted head.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
-        var outcome = await new ImplementationWorkflow(new WorkflowDependencies(
-            provider, git, CreateContextBuilder(), notifier, clock)).RunAsync(
-            CreateConfig(), WorkflowMode.Full, 1, reconciled.State, omp, CancellationToken.None);
+    [Fact]
+    public async Task FastForwardReconciliationDoesNotAdoptUnpublishedWorkflow()
+    {
+        git.BranchCommitToReturn = "abc123";
+        git.RemoteBranchCommitToReturn = "deadbeef";
+        var (_, canonical) = SeedWorkflow(WorkflowPhase.Planned, WorkflowOperationalState.Waiting, WaitingReason.PlanApproval);
 
-        Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
-        Assert.All(git.ResetWorktrees, reset => Assert.Equal("deadbeef", reset.Commit));
+        var reconciled = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
+
+        Assert.Equal(ReconciliationDisposition.Waiting, reconciled.Disposition);
+        Assert.Equal(WaitingReason.RemoteHistoryRewrite, reconciled.State!.WaitingReason);
+        Assert.Empty(git.ResetWorktrees);
     }
     [Fact]
     public async Task MergedRequestTransitionsDoneAndCleansOnlyLocalState()

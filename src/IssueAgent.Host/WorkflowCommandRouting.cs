@@ -89,7 +89,7 @@ public static class WorkflowCommandRouting
 
         return command switch
         {
-            WorkflowCommand.Replan => state.Phase == WorkflowPhase.Planned,
+            WorkflowCommand.Replan => state.Phase is WorkflowPhase.Planned or WorkflowPhase.Review,
             WorkflowCommand.Implement => state.Phase == WorkflowPhase.Planned,
             WorkflowCommand.Revise => state.Phase == WorkflowPhase.Review,
             WorkflowCommand.Continue => ContinueRoute(state, state) is not null,

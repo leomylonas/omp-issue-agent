@@ -713,6 +713,27 @@ public sealed class RevisionWorkflowTests : IDisposable
         Assert.Equal(1, git.PushCallCount);
         Assert.Contains("Needs architecture change.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
     }
+    [Fact]
+    public async Task RunAsyncPersistsProtectedBranchWhenRevisionPublicationIsRejected()
+    {
+        var state = await SeedReviewStateAsync();
+        git.PushException = new InvalidOperationException("Push rejected: protected branch hook declined.");
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"summary":"Addressed review concern.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WorkflowPhase.Revising, outcome.State.Phase);
+        Assert.Equal(WaitingReason.ProtectedBranch, outcome.State.WaitingReason);
+        Assert.Equal(WorkflowNotificationKind.HumanActionRequired, Assert.Single(notifier.Notifications).Kind);
+        Assert.Contains("branch protection", Assert.Single(notifier.Notifications).Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("protected-branch", CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body).State.WaitingReason);
+    }
+
 
     private async Task<WorkflowState> SeedReviewStateAsync()
     {

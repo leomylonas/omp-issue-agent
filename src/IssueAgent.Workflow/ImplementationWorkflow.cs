@@ -28,18 +28,35 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(config);
+
+        return mode == WorkflowMode.PlanOnly
+            ? await RejectPlanOnlyAsync(config, issueNumber, currentState, cancellationToken).ConfigureAwait(false)
+            : await RunFullAsync(config, issueNumber, currentState, omp, cancellationToken).ConfigureAwait(false);
+    }
+    public async Task<WorkflowOutcome> RejectPlanOnlyAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState currentState,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+
+        var restoredState = currentState with { WaitingReason = WaitingReason.PlanApproval, UpdatedAt = deps.Clock.UtcNow };
+        await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Planned, WorkflowOperationalState.Waiting, [WorkflowCommand.Implement], cancellationToken).ConfigureAwait(false);
+        await NotifyAsync(config, issueNumber, restoredState, WorkflowNotificationKind.HumanActionRequired,
+            "This deployment is configured plan-only; implementation was not started. Approve manually or reconfigure to full mode.", cancellationToken)
+            .ConfigureAwait(false);
+        return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, restoredState, "plan-only mode: implementation command rejected.");
+    }
+
+    private async Task<WorkflowOutcome> RunFullAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState currentState,
+        IOmpClient omp,
+        CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(omp);
-
-        if (mode == WorkflowMode.PlanOnly)
-        {
-            var restoredState = currentState with { WaitingReason = WaitingReason.PlanApproval, UpdatedAt = deps.Clock.UtcNow };
-            await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Planned, WorkflowOperationalState.Waiting, [WorkflowCommand.Implement], cancellationToken).ConfigureAwait(false);
-            await NotifyAsync(config, issueNumber, restoredState, WorkflowNotificationKind.HumanActionRequired,
-                "This deployment is configured plan-only; implementation was not started. Approve manually or reconfigure to full mode.", cancellationToken)
-                .ConfigureAwait(false);
-            return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, restoredState, "plan-only mode: implementation command rejected.");
-        }
-
         var canonicalComment = await CanonicalCommentLocator.FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken, config.CanonicalCommentAuthor).ConfigureAwait(false);
         if (canonicalComment is null)
         {
@@ -383,18 +400,28 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         };
         await UpsertCanonicalCommentAsync(config, issueNumber, checkpointContent, cancellationToken).ConfigureAwait(false);
 
-        await deps.Git.PublishChangedSubmodulesAsync(
-            config.Repository.Id,
-            worktreePath,
-            latestTargetCommit,
-            workingState.Branch,
-            config.GitAuthentication,
-            config.SubmoduleAuthenticationResolver ?? (_ => null),
-            cancellationToken).ConfigureAwait(false);
-
-        if (deps.Git.WorktreeRequiresLfs(worktreePath))
+        try
         {
-            await deps.Git.UploadLfsObjectsAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+            await deps.Git.PublishChangedSubmodulesAsync(
+                config.Repository.Id,
+                worktreePath,
+                latestTargetCommit,
+                workingState.Branch,
+                config.GitAuthentication,
+                config.SubmoduleAuthenticationResolver ?? (_ => null),
+                cancellationToken).ConfigureAwait(false);
+
+            if (deps.Git.WorktreeRequiresLfs(worktreePath))
+            {
+                await deps.Git.UploadLfsObjectsAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException &&
+            GitPublicationFailureClassifier.TryClassify(exception) is { } reason)
+        {
+            return await PauseAsync(
+                config, issueNumber, workingState, checkpointContent, resultMarkdown, reason,
+                GitPublicationFailureClassifier.Explanation(reason), cancellationToken).ConfigureAwait(false);
         }
 
         // LFS upload can take long enough for human input to arrive. Do not push a branch based on
@@ -419,7 +446,17 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                 cancellationToken).ConfigureAwait(false);
         }
 
-        await deps.Git.PushAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await deps.Git.PushAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException &&
+            GitPublicationFailureClassifier.TryClassify(exception) is { } reason)
+        {
+            return await PauseAsync(
+                config, issueNumber, workingState, checkpointContent, resultMarkdown, reason,
+                GitPublicationFailureClassifier.Explanation(reason), cancellationToken).ConfigureAwait(false);
+        }
 
         // Only this persisted stage authorizes recovery to create a PR/MR. If this checkpoint is
         // absent after a crash, retain the result for human recovery rather than guessing whether
@@ -524,18 +561,28 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             // Recovery replays privileged publication work without rerunning OMP. Capture its own
             // baseline because human input may arrive after the original attempt was checkpointed.
             var inputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
-            await deps.Git.PublishChangedSubmodulesAsync(
-                config.Repository.Id,
-                worktreePath,
-                rebasedPublicationBase,
-                currentState.Branch,
-                config.GitAuthentication,
-                config.SubmoduleAuthenticationResolver ?? (_ => null),
-                cancellationToken).ConfigureAwait(false);
-            if (deps.Git.WorktreeRequiresLfs(worktreePath))
+            try
             {
-                await deps.Git.UploadLfsObjectsAsync(
-                    config.Repository.Id, worktreePath, currentState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+                await deps.Git.PublishChangedSubmodulesAsync(
+                    config.Repository.Id,
+                    worktreePath,
+                    rebasedPublicationBase,
+                    currentState.Branch,
+                    config.GitAuthentication,
+                    config.SubmoduleAuthenticationResolver ?? (_ => null),
+                    cancellationToken).ConfigureAwait(false);
+                if (deps.Git.WorktreeRequiresLfs(worktreePath))
+                {
+                    await deps.Git.UploadLfsObjectsAsync(
+                        config.Repository.Id, worktreePath, currentState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException &&
+                GitPublicationFailureClassifier.TryClassify(exception) is { } reason)
+            {
+                return await PauseAsync(
+                    config, issueNumber, currentState, existingContent, implementationResult, reason,
+                    GitPublicationFailureClassifier.Explanation(reason), cancellationToken).ConfigureAwait(false);
             }
 
             // Submodule publication and LFS upload can both take long enough for new human input
@@ -560,8 +607,18 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                     cancellationToken).ConfigureAwait(false);
             }
 
-            await deps.Git.PushAsync(
-                config.Repository.Id, worktreePath, currentState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await deps.Git.PushAsync(
+                    config.Repository.Id, worktreePath, currentState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException &&
+                GitPublicationFailureClassifier.TryClassify(exception) is { } reason)
+            {
+                return await PauseAsync(
+                    config, issueNumber, currentState, existingContent, implementationResult, reason,
+                    GitPublicationFailureClassifier.Explanation(reason), cancellationToken).ConfigureAwait(false);
+            }
         }
 
         var publishedState = currentState with { PublicationStage = ImplementationPublicationStage.BranchPublished };
