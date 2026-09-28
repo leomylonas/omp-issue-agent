@@ -114,6 +114,17 @@ public sealed class CanonicalCommentMarkdownTests
     }
 
     [Fact]
+    public void ParseClassifiesMissingRequiredStateFieldAsCorruption()
+    {
+        var body = CanonicalCommentMarkdown.Render(CreateContent("Plan.", [], null))
+            .Replace("workflowId:", "missingWorkflowId:", StringComparison.Ordinal);
+
+        var exception = Assert.Throws<CanonicalCommentCorruptException>(() => CanonicalCommentMarkdown.Parse(body));
+
+        Assert.Contains("missing required field 'workflowId'", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ParseUsesGeneratedStateDetailsInsteadOfYamlExampleInPlan()
     {
         var content = CreateContent(

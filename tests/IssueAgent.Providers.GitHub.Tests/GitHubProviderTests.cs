@@ -553,6 +553,20 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
+    public async Task GetMergeRequestCommentsAsyncUsesMergeRequestAttachmentProvenance()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/9/comments").UsingGet())
+            .RespondWith(JsonResponse("""
+                [{"id":501,"user":{"login":"alice"},"body":"review comment","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z"}]
+                """));
+
+        var comment = Assert.Single(await CollectAsync(fixture.Provider.GetMergeRequestCommentsAsync(Repository, 9, CancellationToken.None)));
+
+        Assert.Equal(new AttachmentSource("merge-request-comment", "9", "501"), comment.Source);
+    }
+
+    [Fact]
     public async Task GetIssueCommentsAsyncCancelsInFlightPaginatedRead()
     {
         fixture.Server
@@ -714,6 +728,10 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
         var thread = Assert.Single(await CollectAsync(fixture.Provider.GetReviewThreadsAsync(Repository, 9, CancellationToken.None)));
 
         Assert.Equal([501L, 502L], thread.Comments.Select(comment => comment.Id).ToArray());
+        Assert.All(thread.Comments, comment =>
+            Assert.Equal(
+                new AttachmentSource("merge-request-review-comment", "9", "thread-1"),
+                comment.Source));
         Assert.Equal(2, fixture.Server.LogEntries.Count(entry => entry.RequestMessage!.Path == "/api/graphql"));
     }
 

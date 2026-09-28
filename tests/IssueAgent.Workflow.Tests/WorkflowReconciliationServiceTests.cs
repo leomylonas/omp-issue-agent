@@ -29,6 +29,58 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ReconcilesPublishedRequestByStoredIdentityRatherThanMutableBranch()
+    {
+        var (state, canonical) = SeedWorkflow(WorkflowPhase.Review, WorkflowOperationalState.Waiting, WaitingReason.ReviewRequested);
+        state = state with { ReviewFeedbackCutoff = clock.UtcNow };
+        canonical = canonical with
+        {
+            Body = CanonicalCommentMarkdown.Render(CanonicalCommentMarkdown.Parse(canonical.Body) with
+            {
+                State = CanonicalStateSerializer.ToDocument(state, $"{Repository.Id}#7"),
+            }),
+        };
+        provider.IssueComments[(Repository.Id, 1)][0] = canonical;
+        provider.MergeRequests[7] = new ProviderMergeRequest(
+            Repository, 7, "renamed-agent-branch", "renamed-target", "Fix",
+            $"<!-- issue-agent:workflow:{state.WorkflowId} -->",
+            IsDraft: true, IsMerged: false, IsClosed: false,
+            new AttachmentSource("merge-request-description", "7"));
+
+        var result = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
+
+        Assert.Equal(ReconciliationDisposition.ResumeAllowed, result.Disposition);
+        Assert.Equal(state.WorkflowId, result.State!.WorkflowId);
+    }
+
+
+    [Fact]
+    public async Task AdoptsMarkerMatchedRequestBeforeItsCanonicalLinkCheckpoint()
+    {
+        var (state, canonical) = SeedWorkflow(WorkflowPhase.Implementing, WorkflowOperationalState.Waiting, WaitingReason.ManualIntervention);
+        state = state with
+        {
+            ExpectedImplementationHead = "abc123",
+            PublicationStage = ImplementationPublicationStage.BranchPublished,
+        };
+        var content = CanonicalCommentMarkdown.Parse(canonical.Body) with
+        {
+            ImplementationResult = "Published implementation.",
+            State = CanonicalStateSerializer.ToDocument(state, pullOrMergeRequest: null),
+        };
+        canonical = canonical with { Body = CanonicalCommentMarkdown.Render(content) };
+        provider.MergeRequests[9] = new ProviderMergeRequest(
+            Repository, 9, state.Branch, state.TargetBranch, "Fix",
+            $"<!-- issue-agent:workflow:{state.WorkflowId} -->",
+            IsDraft: true, IsMerged: false, IsClosed: false,
+            new AttachmentSource("merge-request-description", "9"));
+
+        _ = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
+
+        var persisted = CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body);
+        Assert.Equal($"{Repository.Id}#9", persisted.State.PullOrMergeRequest);
+    }
+    [Fact]
     public async Task InitialPlanningBootstrapCheckpointResumesWithoutRecreatingItsWorktree()
     {
         var (state, canonical) = SeedWorkflow(WorkflowPhase.Planning, WorkflowOperationalState.Working, waitingReason: null);
@@ -255,6 +307,7 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
             ReviewFeedbackCutoff = clock.UtcNow.AddHours(-1),
             ReviewFeedbackVersions = new HashSet<string>(),
         };
+        AddPublishedMergeRequest(state);
         var content = CanonicalCommentMarkdown.Parse(canonical.Body) with
         {
             ImplementationResult = "Locally committed revision.",
@@ -288,6 +341,7 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
             ReviewFeedbackCutoff = clock.UtcNow.AddHours(-1),
             ReviewFeedbackVersions = new HashSet<string>(),
         };
+        AddPublishedMergeRequest(state);
         canonical = canonical with
         {
             Body = CanonicalCommentMarkdown.Render(CanonicalCommentMarkdown.Parse(canonical.Body) with
@@ -326,6 +380,7 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
             ReviewFeedbackCutoff = clock.UtcNow.AddHours(-1),
             ReviewFeedbackVersions = new HashSet<string>(),
         };
+        AddPublishedMergeRequest(state);
         canonical = canonical with
         {
             Body = CanonicalCommentMarkdown.Render(CanonicalCommentMarkdown.Parse(canonical.Body) with
@@ -458,6 +513,7 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
             ExpectedImplementationHead = "feedface",
             PublicationStage = ImplementationPublicationStage.BranchPublished,
         };
+        AddPublishedMergeRequest(state);
         canonical = canonical with
         {
             Body = CanonicalCommentMarkdown.Render(CanonicalCommentMarkdown.Parse(canonical.Body) with
@@ -548,17 +604,17 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
     public async Task TerminalRequestWithMismatchedStoredIdentityPausesWithoutCleaningLocalState()
     {
         var (state, canonical) = SeedWorkflow(WorkflowPhase.Review, WorkflowOperationalState.Waiting, WaitingReason.ReviewRequested);
-        provider.MergeRequests[8] = new ProviderMergeRequest(
+        provider.MergeRequests[7] = new ProviderMergeRequest(
             Repository,
-            8,
+            7,
             state.Branch,
             state.TargetBranch,
             "Unrelated fix",
-            $"<!-- issue-agent:workflow:{state.WorkflowId} -->",
+            $"<!-- issue-agent:workflow:{WorkflowId.New()} -->",
             IsDraft: false,
             IsMerged: true,
             IsClosed: true,
-            new AttachmentSource("merge-request-description", "8"));
+            new AttachmentSource("merge-request-description", "7"));
 
         var result = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
 
@@ -710,7 +766,20 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
             null,
             CanonicalStateSerializer.ToDocument(state, phase == WorkflowPhase.Review ? $"{Repository.Id}#7" : null));
         provider.AddComment(Repository, 1, "issue-agent", CanonicalCommentMarkdown.Render(content), clock.UtcNow, isBot: true);
+        if (phase == WorkflowPhase.Review)
+        {
+            AddPublishedMergeRequest(state);
+        }
         return (state, provider.IssueComments[(Repository.Id, 1)].Single());
+    }
+
+    private void AddPublishedMergeRequest(WorkflowState state)
+    {
+        provider.MergeRequests[7] = new ProviderMergeRequest(
+            Repository, 7, state.Branch, state.TargetBranch, "Fix",
+            $"<!-- issue-agent:workflow:{state.WorkflowId} -->",
+            IsDraft: true, IsMerged: false, IsClosed: false,
+            new AttachmentSource("merge-request-description", "7"));
     }
 
     private WorkflowReconciliationService CreateService() => new(

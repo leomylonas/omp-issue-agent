@@ -108,7 +108,10 @@ public sealed partial class GitHubGraphQlClient(HttpClient httpClient, RetryPoli
                             c.Body,
                             c.CreatedAt,
                             c.UpdatedAt,
-                            new AttachmentSource("pull-request-review-comment", node.Id, node.Id),
+                            new AttachmentSource(
+                                "merge-request-review-comment",
+                                number.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                                node.Id),
                             IsBotLogin(c.Author?.Login)))
                         .ToList());
             }

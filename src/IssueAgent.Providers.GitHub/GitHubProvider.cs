@@ -311,7 +311,13 @@ public sealed partial class GitHubProvider(
     {
         await foreach (var comment in GetIssueCommentsAsync(repository, number, cancellationToken).ConfigureAwait(false))
         {
-            yield return comment;
+            yield return comment with
+            {
+                Source = new AttachmentSource(
+                    "merge-request-comment",
+                    number.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    comment.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+            };
         }
     }
 

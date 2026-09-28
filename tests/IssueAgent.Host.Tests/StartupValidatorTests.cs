@@ -27,6 +27,61 @@ public sealed class StartupValidatorTests
     }
 
     [Fact]
+    public void ValidateWorkspaceProbesEveryRequiredWritableDirectoryAndCleansUpProbeFiles()
+    {
+        var workspace = Path.Combine(Path.GetTempPath(), $"issue-agent-workspace-{Guid.NewGuid():N}");
+        try
+        {
+            StartupValidator.ValidateWorkspace(workspace);
+
+            Assert.All(
+                new[] { workspace, Path.Combine(workspace, "repos"), Path.Combine(workspace, "workflows"), Path.Combine(workspace, "omp") },
+                path => Assert.Empty(Directory.EnumerateFiles(path, ".issue-agent-write-probe-*")));
+        }
+        finally
+        {
+            if (Directory.Exists(workspace))
+            {
+                Directory.Delete(workspace, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void ValidateWorkspaceRejectsARequiredDirectoryThatCannotBeWritten()
+    {
+        if (!OperatingSystem.IsLinux() || string.Equals(Environment.UserName, "root", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var workspace = Path.Combine(Path.GetTempPath(), $"issue-agent-workspace-{Guid.NewGuid():N}");
+        var repos = Path.Combine(workspace, "repos");
+        try
+        {
+            StartupValidator.ValidateWorkspace(workspace);
+            File.SetUnixFileMode(repos, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+
+            var exception = Assert.Throws<InvalidOperationException>(() => StartupValidator.ValidateWorkspace(workspace));
+
+            Assert.Contains(repos, exception.Message, StringComparison.Ordinal);
+            Assert.Contains("not writable", exception.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(repos))
+            {
+                File.SetUnixFileMode(repos, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+
+            if (Directory.Exists(workspace))
+            {
+                Directory.Delete(workspace, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void HasEffectiveExecuteAccessRejectsRootOwnedMode0700PathForNonRootService()
     {
         if (!OperatingSystem.IsLinux() || string.Equals(Environment.UserName, "root", StringComparison.Ordinal))

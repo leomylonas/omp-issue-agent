@@ -41,10 +41,10 @@ public sealed class MarkdownAttachmentScannerTests
 
     [Theory]
     [InlineData("https://example.com/report.pdf", true)]
-    [InlineData("https://example.com/report.PDF", true)]
+    [InlineData("https://example.com/source.custom-format", true)]
     [InlineData("https://example.com/page", false)]
     [InlineData("https://example.com/report.pdf/comment/1", false)]
-    public void IsDirectFileLinkMatchesKnownExtensionsOnly(string url, bool expected)
+    public void IsDirectFileLinkMatchesAnyFilenameExtension(string url, bool expected)
     {
         Assert.Equal(expected, MarkdownAttachmentScanner.IsDirectFileLink(new Uri(url)));
     }

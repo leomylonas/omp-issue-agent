@@ -71,7 +71,6 @@ public sealed partial class GitSshTransport
         try
         {
             var sshCommand = await BuildSshCommandAsync(authentication, trust, remoteUrl, isolatedHome, cancellationToken).ConfigureAwait(false);
-
             var startInfo = new ProcessStartInfo("git")
             {
                 WorkingDirectory = workingDirectory ?? Environment.CurrentDirectory,
@@ -91,6 +90,7 @@ public sealed partial class GitSshTransport
             startInfo.Environment["XDG_CONFIG_HOME"] = isolatedHome;
             startInfo.Environment["GIT_SSH_COMMAND"] = sshCommand;
             startInfo.Environment["GIT_TERMINAL_PROMPT"] = "0";
+            ConfigurePassphraseAskPass(startInfo, authentication, isolatedHome);
 
             var result = await RunProcessAsync(startInfo, cancellationToken).ConfigureAwait(false);
             if (result.ExitCode != 0)
@@ -113,10 +113,9 @@ public sealed partial class GitSshTransport
         File.WriteAllText(keyPath, authentication.SshPrivateKey ?? throw new InvalidOperationException("SSH authentication requires a private key."));
         MakeKeyFilePrivate(keyPath);
 
-        if (!string.IsNullOrEmpty(authentication.SshPrivateKeyPassphrase))
-        {
-            throw new NotSupportedException("Passphrase-protected SSH keys require an ssh-agent; configure an unencrypted key or pre-load an agent.");
-        }
+        // The passphrase remains only in the child environment and its askpass helper is scoped to
+        // this isolated HOME. OpenSSH is forced to invoke it, so no terminal or ambient agent can
+        // receive the secret.
 
         var options = new StringBuilder("ssh -i ").Append(Quote(keyPath)).Append(" -o IdentitiesOnly=yes");
         if (!string.IsNullOrWhiteSpace(authentication.SshUsername))
@@ -144,6 +143,29 @@ public sealed partial class GitSshTransport
         }
 
         return options.ToString();
+    }
+
+    internal static void ConfigurePassphraseAskPass(ProcessStartInfo? startInfo, GitAuthentication authentication, string isolatedHome)
+    {
+        if (string.IsNullOrEmpty(authentication.SshPrivateKeyPassphrase))
+        {
+            return;
+        }
+
+        var askPassPath = Path.Combine(isolatedHome, "ssh-askpass.sh");
+        File.WriteAllText(askPassPath, "#!/bin/sh\nprintf '%s\\n' \"$ISSUEAGENT_SSH_KEY_PASSPHRASE\"\n");
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(askPassPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        if (startInfo is not null)
+        {
+            startInfo.Environment["SSH_ASKPASS"] = askPassPath;
+            startInfo.Environment["SSH_ASKPASS_REQUIRE"] = "force";
+            startInfo.Environment["DISPLAY"] = "issueagent";
+            startInfo.Environment["ISSUEAGENT_SSH_KEY_PASSPHRASE"] = authentication.SshPrivateKeyPassphrase;
+        }
     }
 
     /// <summary>Parses the host and port from either <c>ssh://[user@]host[:port]/path</c> or SCP-like

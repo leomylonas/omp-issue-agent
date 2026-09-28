@@ -477,7 +477,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         await UpsertCanonicalCommentAsync(config, issueNumber, checkpointContent, cancellationToken).ConfigureAwait(false);
 
         var mergeRequest = await FindOrCreateMergeRequestAsync(
-            config, issueNumber, issue, publishedBranchState, resultMarkdown, cancellationToken).ConfigureAwait(false);
+            config, issueNumber, issue, publishedBranchState, checkpointContent.State.PullOrMergeRequest, resultMarkdown, cancellationToken).ConfigureAwait(false);
 
         return await PublishReviewAsync(
             config,
@@ -636,7 +636,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         };
         await UpsertCanonicalCommentAsync(config, issueNumber, publishedContent, cancellationToken).ConfigureAwait(false);
         var mergeRequest = await FindOrCreateMergeRequestAsync(
-            config, issueNumber, issue, publishedState, implementationResult, cancellationToken).ConfigureAwait(false);
+            config, issueNumber, issue, publishedState, publishedContent.State.PullOrMergeRequest, implementationResult, cancellationToken).ConfigureAwait(false);
         return await PublishReviewAsync(
             config, issueNumber, publishedState, publishedContent, mergeRequest, implementationResult, cancellationToken).ConfigureAwait(false);
     }
@@ -689,7 +689,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
 
         var issue = await deps.Provider.GetIssueAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
         var mergeRequest = await FindOrCreateMergeRequestAsync(
-            config, issueNumber, issue, currentState, implementationResult, cancellationToken).ConfigureAwait(false);
+            config, issueNumber, issue, currentState, existingContent.State.PullOrMergeRequest, implementationResult, cancellationToken).ConfigureAwait(false);
         return await PublishReviewAsync(
             config,
             issueNumber,
@@ -742,7 +742,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         };
         var content = checkpointContent with
         {
-            ImplementationResult = implementationResult,
+            ImplementationResult = $"{implementationResult.TrimEnd()}\n\n## Linked pull/merge request #{mergeRequest.Number}",
             State = CanonicalStateSerializer.ToDocument(
                 publishedState,
                 $"{config.Repository.Id}#{mergeRequest.Number}"),
@@ -766,16 +766,18 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         long issueNumber,
         ProviderIssue issue,
         WorkflowState state,
+        string? durableMergeRequestIdentity,
         string implementationResult,
         CancellationToken cancellationToken)
     {
-        var existing = await deps.Provider.FindMergeRequestAsync(config.Repository, state.Branch, state.TargetBranch, cancellationToken).ConfigureAwait(false);
+        var existing = await FindMergeRequestAsync(
+            config, state, durableMergeRequestIdentity, cancellationToken).ConfigureAwait(false);
         if (existing is not null)
         {
             if (!HasWorkflowMarker(existing, state))
             {
                 throw new WorkflowContractException(
-                    "An existing merge request for this branch is not marked as belonging to this workflow.");
+                    "The stored or branch-matched merge request is not marked as belonging to this workflow.");
             }
 
             return existing;
@@ -796,8 +798,8 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         var created = await deps.Provider.CreateDraftMergeRequestAsync(
             new CreateMergeRequestRequest(config.Repository, state.Branch, state.TargetBranch, issue.Title, body, IsDraft: true, issueNumber),
             cancellationToken).ConfigureAwait(false);
-        var adopted = await deps.Provider.FindMergeRequestAsync(
-            config.Repository, state.Branch, state.TargetBranch, cancellationToken).ConfigureAwait(false);
+        var adopted = await FindMergeRequestAsync(
+            config, state, durableMergeRequestIdentity: null, cancellationToken: cancellationToken).ConfigureAwait(false);
         if (adopted is null || !HasWorkflowMarker(adopted, state))
         {
             throw new WorkflowContractException(
@@ -805,6 +807,31 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         }
 
         return adopted;
+    }
+
+    private async Task<ProviderMergeRequest?> FindMergeRequestAsync(
+        WorkflowRepositoryConfig config,
+        WorkflowState state,
+        string? durableMergeRequestIdentity,
+        CancellationToken cancellationToken)
+    {
+        if (durableMergeRequestIdentity is not null)
+        {
+            var expectedIdentity = $"{config.Repository.Id}#";
+            if (!durableMergeRequestIdentity.StartsWith(expectedIdentity, StringComparison.Ordinal) ||
+                !long.TryParse(durableMergeRequestIdentity[expectedIdentity.Length..], out var number) ||
+                number <= 0)
+            {
+                throw new WorkflowContractException("The stored pull/merge-request identity is invalid.");
+            }
+
+            return await deps.Provider.GetMergeRequestAsync(config.Repository, number, cancellationToken).ConfigureAwait(false);
+        }
+
+        // Before the canonical publication checkpoint records the request number, a marker is the
+        // only durable proof that a branch-matched request belongs to this workflow.
+        return await deps.Provider.FindMergeRequestAsync(
+            config.Repository, state.Branch, state.TargetBranch, cancellationToken).ConfigureAwait(false);
     }
 
     private static bool HasWorkflowMarker(ProviderMergeRequest mergeRequest, WorkflowState state) =>

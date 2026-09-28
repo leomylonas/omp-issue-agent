@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using IssueAgent.Context;
 using IssueAgent.Domain;
 using IssueAgent.Git;
@@ -17,11 +18,14 @@ public sealed class EndToEndLifecycleTests : IDisposable
     public async Task AssignmentThroughRepeatedConversationAndMergeCompletesWithoutDuplicateResources(string repositoryId)
     {
         var repository = new RepositoryRef(repositoryId, "octo", "widgets");
+        var remoteRepository = CreateBareRemoteRepository();
         var provider = new FakeGitProvider();
-        var git = new FakeGitRepositoryManager { RemoteBranchCommitToReturn = null };
+        var git = new LibGit2SharpRepositoryManager(Path.Combine(workspaceRoot, "repos"));
         var notifier = new RecordingNotifier();
         var dependencies = new WorkflowDependencies(provider, git, CreateContextBuilder(provider), notifier, clock);
-        var config = CreateConfig(repository);
+        var config = CreateConfig(repository, remoteRepository);
+        await git.EnsureBareRepositoryAsync(repository.Id, remoteRepository, config.GitAuthentication, CancellationToken.None);
+        await git.FetchAsync(repository.Id, config.GitAuthentication, CancellationToken.None);
         provider.AddIssue(repository, 1, "Guard empty titles", "Saving an empty title fails.");
 
         var planningOmp = new FakeOmpClient()
@@ -53,7 +57,6 @@ public sealed class EndToEndLifecycleTests : IDisposable
             .RunAsync(config, 1, implementation.State, revisionOmp, CancellationToken.None);
 
         provider.MergeRequests[1] = provider.MergeRequests[1] with { IsDraft = false, IsMerged = true, IsClosed = true };
-        git.RemoteBranchCommitToReturn = git.BranchCommitToReturn;
         var canonical = Assert.Single(provider.IssueComments[(repository.Id, 1)], comment => comment.Body.Contains(CanonicalCommentMarkdown.StateLocatorMarker, StringComparison.Ordinal));
         var completed = await new WorkflowReconciliationService(dependencies)
             .ReconcileAsync(config, 1, canonical, CancellationToken.None);
@@ -64,6 +67,7 @@ public sealed class EndToEndLifecycleTests : IDisposable
         Assert.Equal(WorkflowPhase.Review, revised.State.Phase);
         Assert.Single(provider.IssueComments[(repository.Id, 1)], comment => comment.Body.Contains(CanonicalCommentMarkdown.StateLocatorMarker, StringComparison.Ordinal));
         Assert.Single(provider.MergeRequests);
+        Assert.Contains(implementation.State.Branch, RunGit(workspaceRoot, "ls-remote", remoteRepository, implementation.State.Branch), StringComparison.Ordinal);
         Assert.All(
             planningOmp.RunRequests.Concat(replanOmp.RunRequests).Concat(implementationOmp.RunRequests).Concat(revisionOmp.RunRequests),
             request => Assert.Equal("session-1", request.SessionId));
@@ -74,9 +78,9 @@ public sealed class EndToEndLifecycleTests : IDisposable
         new AttachmentPipeline(provider, new AttachmentLimits()),
         new AgentContextBuilderOptions());
 
-    private WorkflowRepositoryConfig CreateConfig(RepositoryRef repository) => new(
+    private WorkflowRepositoryConfig CreateConfig(RepositoryRef repository, string remoteRepository) => new(
         repository,
-        Path.Combine(workspaceRoot, "repo"),
+        remoteRepository,
         workspaceRoot,
         "main",
         GitAuthentication.Anonymous(TlsTrust.System),
@@ -86,6 +90,50 @@ public sealed class EndToEndLifecycleTests : IDisposable
         new Dictionary<string, string>(),
         "plan",
         "task");
+
+    private string CreateBareRemoteRepository()
+    {
+        Directory.CreateDirectory(workspaceRoot);
+        var remoteRepository = Path.Combine(workspaceRoot, "remote.git");
+        var seedRepository = Path.Combine(workspaceRoot, "seed");
+        RunGit(workspaceRoot, "init", "--bare", remoteRepository);
+        RunGit(workspaceRoot, "clone", remoteRepository, seedRepository);
+        RunGit(seedRepository, "config", "user.name", "IssueAgent Test");
+        RunGit(seedRepository, "config", "user.email", "issue-agent-test@example.com");
+        File.WriteAllText(Path.Combine(seedRepository, "README.md"), "# Test repository\n");
+        RunGit(seedRepository, "add", "README.md");
+        RunGit(seedRepository, "commit", "-m", "Initial commit");
+        RunGit(seedRepository, "branch", "-M", "main");
+        RunGit(seedRepository, "push", "--set-upstream", "origin", "main");
+        Directory.Delete(seedRepository, recursive: true);
+        return remoteRepository;
+    }
+
+    private static string RunGit(string workingDirectory, params string[] arguments)
+    {
+        var startInfo = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        foreach (var argument in arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        using var process = Process.Start(startInfo)!;
+        var standardOutput = process.StandardOutput.ReadToEnd();
+        var standardError = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"git {string.Join(' ', arguments)} failed: {standardError}");
+        }
+
+        return standardOutput;
+    }
 
     public void Dispose()
     {

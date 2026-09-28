@@ -559,7 +559,7 @@ public sealed class IssueAgentOptionsValidatorTests
     }
 
     [Fact]
-    public void ValidateRejectsUnsupportedSshPassphrasesAndMissingModeCredentials()
+    public void ValidateAcceptsSshPassphraseSecretAndStillRejectsMissingTokenCredential()
     {
         var options = CreateOptions() with
         {
@@ -577,7 +577,7 @@ public sealed class IssueAgentOptionsValidatorTests
         var result = validator.Validate(null, options);
 
         Assert.True(result.Failed);
-        Assert.Contains(result.Failures!, failure => failure.Contains("passphrases are not supported", StringComparison.Ordinal));
+        Assert.DoesNotContain(result.Failures!, failure => failure.Contains("passphrases are not supported", StringComparison.Ordinal));
         Assert.Contains(result.Failures!, failure => failure.Contains("Git Token authentication requires", StringComparison.Ordinal));
     }
 

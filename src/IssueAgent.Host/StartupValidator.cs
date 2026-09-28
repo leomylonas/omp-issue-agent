@@ -65,7 +65,7 @@ public sealed partial class StartupValidator(
         Message = "Repository startup validation failed for {Provider}/{Repository} with {ExceptionType}")]
     private static partial void LogRepositoryValidationWarning(ILogger logger, string provider, string repository, string exceptionType);
 
-    private static void ValidateWorkspace(string rootPath)
+    internal static void ValidateWorkspace(string rootPath)
     {
         if (string.IsNullOrWhiteSpace(rootPath))
         {
@@ -73,6 +73,7 @@ public sealed partial class StartupValidator(
         }
 
         Directory.CreateDirectory(rootPath);
+        ProbeDirectoryWriteability(rootPath);
         foreach (var child in new[] { "repos", "workflows", "omp" })
         {
             var path = Path.Combine(rootPath, child);
@@ -81,13 +82,50 @@ public sealed partial class StartupValidator(
             {
                 MakeDirectoryWritableByOmp(path);
             }
-            if (!Directory.Exists(path))
-            {
-                throw new InvalidOperationException($"IssueAgent workspace path '{path}' is unusable.");
-            }
+
+            ProbeDirectoryWriteability(path);
         }
     }
 
+    internal static void ProbeDirectoryWriteability(string path)
+    {
+        var probePath = Path.Combine(path, $".issue-agent-write-probe-{Guid.NewGuid():N}");
+        try
+        {
+            using (var stream = new FileStream(
+                       probePath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None,
+                       bufferSize: 1,
+                       options: FileOptions.WriteThrough))
+            {
+                stream.WriteByte(0);
+            }
+
+            File.Delete(probePath);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidOperationException($"IssueAgent workspace path '{path}' is not writable.", exception);
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(probePath))
+                {
+                    File.Delete(probePath);
+                }
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+    }
 
     private static void MakeDirectoryWritableByOmp(string path)
     {

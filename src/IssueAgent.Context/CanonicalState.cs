@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using IssueAgent.Domain;
 using YamlDotNet.Core;
 using YamlDotNet.Core.Events;
+using YamlDotNet.RepresentationModel;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
@@ -194,12 +195,44 @@ public static partial class CanonicalStateSerializer
     {
         try
         {
+            ValidateRequiredFields(yaml);
             return Deserializer.Deserialize<CanonicalStateDocument>(yaml)
                 ?? throw new CanonicalStateException("Canonical state YAML deserialized to an empty document.");
         }
-        catch (YamlDotNet.Core.YamlException ex)
+        catch (YamlException ex)
         {
             throw new CanonicalStateException($"Canonical state YAML is malformed: {ex.Message}", ex);
+        }
+    }
+
+    private static void ValidateRequiredFields(string yaml)
+    {
+        var stream = new YamlStream();
+        stream.Load(new StringReader(yaml));
+        if (stream.Documents.Count != 1 || stream.Documents[0].RootNode is not YamlMappingNode mapping)
+        {
+            throw new CanonicalStateException("Canonical state YAML must contain one mapping document.");
+        }
+
+        var fields = mapping.Children
+            .Where(entry => entry.Key is YamlScalarNode)
+            .ToDictionary(
+                entry => ((YamlScalarNode)entry.Key).Value ?? string.Empty,
+                entry => entry.Value,
+                StringComparer.Ordinal);
+        foreach (var requiredField in new[]
+                 {
+                     "version", "workflowId", "phase", "state", "planRevision", "ompSessionId",
+                     "branch", "targetBranch", "baseCommit", "updatedAt",
+                 })
+        {
+            if (!fields.TryGetValue(requiredField, out var value) ||
+                value is not YamlScalarNode scalar ||
+                string.Equals(scalar.Value, "null", StringComparison.OrdinalIgnoreCase) ||
+                (requiredField != "ompSessionId" && string.IsNullOrWhiteSpace(scalar.Value)))
+            {
+                throw new CanonicalStateException($"Canonical state YAML is missing required field '{requiredField}'.");
+            }
         }
     }
 

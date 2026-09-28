@@ -932,6 +932,9 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         repo.Config.Set("filter.lfs.smudge", "git-lfs smudge -- %f", ConfigurationLevel.Local);
         repo.Config.Set("filter.lfs.process", "git-lfs filter-process", ConfigurationLevel.Local);
         repo.Config.Set("filter.lfs.required", true, ConfigurationLevel.Local);
+        // `git lfs install --local` writes this marker. Set it directly with the filters so LFS
+        // recognizes the worktree without installing hooks or invoking the setup command.
+        repo.Config.Set("lfs.repositoryformatversion", 0, ConfigurationLevel.Local);
     }
 
 

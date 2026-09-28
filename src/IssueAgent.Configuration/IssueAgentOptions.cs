@@ -484,10 +484,6 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
                 failures.Add($"{path} {name} must configure exactly one of env or file.");
             }
         }
-        if (git?.SshPrivateKeyPassphrase is not null)
-        {
-            failures.Add($"{path} SSH private-key passphrases are not supported; omit SshPrivateKeyPassphrase.");
-        }
     }
 
     private static void ValidateGitCredentials(

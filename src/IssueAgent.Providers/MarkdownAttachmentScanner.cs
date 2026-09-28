@@ -9,12 +9,9 @@ namespace IssueAgent.Providers;
 /// </summary>
 public static partial class MarkdownAttachmentScanner
 {
-    private static readonly string[] DirectFileExtensions =
-    [
-        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg",
-        ".pdf", ".zip", ".tar", ".gz", ".log", ".txt", ".csv",
-        ".json", ".yaml", ".yml", ".patch", ".diff",
-    ];
+    // A filename extension is the direct-file signal, regardless of the particular file format.
+    // Attachment handling is deliberately content-agnostic (§15): archives and unknown types are
+    // retained as files, never extracted or interpreted.
 
     public static IEnumerable<Uri> ScanLinks(string body)
     {
@@ -40,8 +37,10 @@ public static partial class MarkdownAttachmentScanner
     public static bool IsDirectFileLink(Uri uri)
     {
         ArgumentNullException.ThrowIfNull(uri);
-        var path = uri.AbsolutePath;
-        return DirectFileExtensions.Any(extension => path.EndsWith(extension, StringComparison.OrdinalIgnoreCase));
+        var fileName = Path.GetFileName(uri.AbsolutePath);
+        return !string.IsNullOrWhiteSpace(fileName) &&
+               !fileName.EndsWith('.') &&
+               Path.GetExtension(fileName).Length > 1;
     }
 
     private static bool TryCreateAttachmentUri(string candidate, out Uri uri)

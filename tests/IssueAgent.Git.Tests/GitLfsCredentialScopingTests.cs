@@ -172,7 +172,7 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
     }
 
     [Fact]
-    public void ApplyAuthenticationFailsClosedForAnonymousHttpsLfsWithPinnedTls()
+    public void ApplyAuthenticationRejectsPinnedHttpsLfsWithoutAFingerprint()
     {
         var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example/octo/widgets.git");
         var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
@@ -183,13 +183,46 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
                 GitAuthentication.Anonymous(new TlsTrust
                 {
                     Mode = TlsTrustMode.Pinned,
-                    Fingerprints = ["sha256/fingerprint"],
                 }),
                 Track()));
 
-        Assert.Contains("cannot enforce certificate fingerprints", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("requires at least one certificate fingerprint", failure.Message, StringComparison.Ordinal);
         Assert.False(startInfo.Environment.ContainsKey("GIT_SSL_NO_VERIFY"));
         Assert.False(startInfo.Environment.ContainsKey("GIT_ASKPASS"));
+    }
+
+    [Fact]
+    public async Task PinnedTlsBuildsLfsBundleFromOnlyThePinnedEndpointCertificate()
+    {
+        using var key = RSA.Create(2048);
+        var request = new CertificateRequest("CN=localhost", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        using var certificate = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+        using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        var cancellationToken = TestContext.Current.CancellationToken;
+        listener.Start();
+        var accept = Task.Run(async () =>
+        {
+            using var client = await listener.AcceptTcpClientAsync(cancellationToken);
+            await using var stream = new System.Net.Security.SslStream(client.GetStream(), leaveInnerStreamOpen: false);
+            await stream.AuthenticateAsServerAsync(
+                new System.Net.Security.SslServerAuthenticationOptions { ServerCertificate = certificate },
+                cancellationToken);
+        }, cancellationToken);
+        var isolatedHome = Track();
+        var createBundle = typeof(GitLfsRunner).GetMethod(
+            "CreatePinnedCertificateBundleAsync",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+        var fingerprint = Convert.ToHexStringLower(SHA256.HashData(certificate.RawData));
+        var bundle = await (Task<string>)createBundle.Invoke(null,
+        [
+            new Uri($"https://localhost:{((System.Net.IPEndPoint)listener.LocalEndpoint).Port}/"),
+            new[] { fingerprint },
+            isolatedHome,
+            cancellationToken,
+        ])!;
+        await accept;
+
+        Assert.Equal(certificate.ExportCertificatePem(), File.ReadAllText(bundle));
     }
 
     [Fact]
@@ -264,7 +297,7 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
     }
 
     [Fact]
-    public void ApplyAuthenticationFailsClosedForSshAuthenticatedHttpsLfsWithPinnedTls()
+    public void ApplyAuthenticationRejectsPinnedSshLfsWithoutAFingerprint()
     {
         var worktreePath = CreateWorktreeWithOrigin("ssh://git.trusted.example/octo/widgets.git");
         var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
@@ -275,11 +308,33 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
                 Mode = GitAuthenticationMode.Ssh,
                 SshPrivateKey = "test key",
                 SshTrust = new SshTrust { Mode = SshHostVerificationMode.None },
-                TlsTrust = new TlsTrust { Mode = TlsTrustMode.Pinned, Fingerprints = ["sha256/fingerprint"] },
+                TlsTrust = new TlsTrust { Mode = TlsTrustMode.Pinned },
             }, Track()));
 
-        Assert.Contains("system-plus-additional-ca", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("requires at least one certificate fingerprint", failure.Message, StringComparison.Ordinal);
         Assert.False(startInfo.Environment.ContainsKey("GIT_SSH_COMMAND"));
+    }
+
+    [Fact]
+    public void SshPassphraseAskPassIsScopedToTheChildEnvironment()
+    {
+        var startInfo = new ProcessStartInfo();
+        var isolatedHome = Track();
+        var configureAskPass = typeof(GitSshTransport).GetMethod(
+            "ConfigurePassphraseAskPass",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+        configureAskPass.Invoke(null,
+        [
+            startInfo,
+            new GitAuthentication
+            {
+                Mode = GitAuthenticationMode.Ssh,
+                SshPrivateKeyPassphrase = "correct horse battery staple",
+            },
+            isolatedHome,
+        ]);
+        Assert.Equal("force", startInfo.Environment["SSH_ASKPASS_REQUIRE"]);
+        Assert.Equal("correct horse battery staple", RunSshAskPass(startInfo));
     }
 
     [Fact]
@@ -353,6 +408,25 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
             UseShellExecute = false,
         };
         startInfo.ArgumentList.Add(prompt);
+        foreach (var variable in authenticationStartInfo.Environment)
+        {
+            startInfo.Environment[variable.Key] = variable.Value;
+        }
+
+        using var process = Process.Start(startInfo)!;
+        var result = process.StandardOutput.ReadToEnd().TrimEnd();
+        process.WaitForExit();
+        Assert.Equal(0, process.ExitCode);
+        return result;
+    }
+
+    private static string RunSshAskPass(ProcessStartInfo authenticationStartInfo)
+    {
+        var startInfo = new ProcessStartInfo(authenticationStartInfo.Environment["SSH_ASKPASS"]!)
+        {
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+        };
         foreach (var variable in authenticationStartInfo.Environment)
         {
             startInfo.Environment[variable.Key] = variable.Value;

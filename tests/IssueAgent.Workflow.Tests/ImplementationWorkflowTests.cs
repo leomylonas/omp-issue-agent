@@ -52,6 +52,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
         Assert.Contains("Fixes #1", provider.MergeRequests[1].Description, StringComparison.Ordinal);
         var updated = provider.UpdatedComments[^1];
         Assert.Contains("Added a guard clause.", updated.Body, StringComparison.Ordinal);
+        Assert.Contains("## Linked pull/merge request #1", updated.Body, StringComparison.Ordinal);
         var publishedState = CanonicalCommentMarkdown.Parse(updated.Body).State;
         Assert.Equal(git.BranchCommitToReturn, publishedState.ExpectedImplementationHead);
         Assert.Equal("branch-published", publishedState.PublicationStage);
@@ -70,6 +71,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
             ExpectedImplementationHead = "def456",
             PublicationStage = ImplementationPublicationStage.BranchPublished,
         };
+        AddPublishedMergeRequest(state);
         var canonical = CanonicalCommentMarkdown.Parse(
             Assert.Single(provider.IssueComments[(Repository.Id, 1)]).Body);
         await provider.UpdateIssueCommentAsync(
@@ -873,6 +875,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
             ExpectedImplementationHead = git.RemoteBranchCommitToReturn,
             PublicationStage = ImplementationPublicationStage.BranchPublished,
         };
+        AddPublishedMergeRequest(interruptedState);
         var canonical = Assert.Single(provider.IssueComments[(Repository.Id, 1)]);
         var content = CanonicalCommentMarkdown.Parse(canonical.Body);
         await provider.UpdateIssueCommentAsync(
@@ -964,6 +967,15 @@ public sealed class ImplementationWorkflowTests : IDisposable
         provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] = ["agent:phase:planned", "agent:state:waiting", "agent:cmd:implement"];
         Directory.CreateDirectory(Path.Combine(workspaceRoot, workflowId.ToString(), "worktree"));
         return state;
+    }
+
+    private void AddPublishedMergeRequest(WorkflowState state)
+    {
+        provider.MergeRequests[1] = new ProviderMergeRequest(
+            Repository, 1, state.Branch, state.TargetBranch, "Fix",
+            $"<!-- issue-agent:workflow:{state.WorkflowId} -->",
+            IsDraft: true, IsMerged: false, IsClosed: false,
+            new AttachmentSource("merge-request-description", "1"));
     }
 
     private ImplementationWorkflow CreateWorkflow(bool ignoreBotComments = true) =>

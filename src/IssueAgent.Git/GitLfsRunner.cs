@@ -42,39 +42,24 @@ public static class GitLfsRunner
                 line.Contains("filter=lfs", StringComparison.Ordinal)));
 
     /// <summary>Replaces LFS pointer files in the worktree with their real content.</summary>
-    public static async Task MaterializeContentAsync(
+    public static Task MaterializeContentAsync(
         string worktreePath,
         string canonicalRemoteUrl,
         GitAuthentication authentication,
-        CancellationToken cancellationToken)
-    {
-        await EnsureFiltersRegisteredAsync(worktreePath, canonicalRemoteUrl, authentication, cancellationToken).ConfigureAwait(false);
-        await RunAsync(worktreePath, canonicalRemoteUrl, authentication, cancellationToken, "lfs", "pull").ConfigureAwait(false);
-    }
+        CancellationToken cancellationToken) =>
+        RunAsync(worktreePath, canonicalRemoteUrl, authentication, cancellationToken, "lfs", "pull");
 
     /// <summary>Uploads every LFS object referenced by <paramref name="branchName"/> that the remote
     /// does not already have. Must complete successfully before the corresponding <c>git push</c>
     /// publishes the ref; a failure here means the publication failed even if a later plain push
     /// would have succeeded.</summary>
-    public static async Task UploadObjectsAsync(
+    public static Task UploadObjectsAsync(
         string worktreePath,
         string canonicalRemoteUrl,
         string branchName,
         GitAuthentication authentication,
-        CancellationToken cancellationToken)
-    {
-        await EnsureFiltersRegisteredAsync(worktreePath, canonicalRemoteUrl, authentication, cancellationToken).ConfigureAwait(false);
-        await RunAsync(worktreePath, canonicalRemoteUrl, authentication, cancellationToken, "lfs", "push", "origin", "--", branchName).ConfigureAwait(false);
-    }
-
-
-    /// <summary>Registers git-lfs's repository marker without installing hooks.</summary>
-    private static Task EnsureFiltersRegisteredAsync(
-        string worktreePath,
-        string canonicalRemoteUrl,
-        GitAuthentication authentication,
         CancellationToken cancellationToken) =>
-        RunAsync(worktreePath, canonicalRemoteUrl, authentication, cancellationToken, "lfs", "install", "--local", "--skip-repo");
+        RunAsync(worktreePath, canonicalRemoteUrl, authentication, cancellationToken, "lfs", "push", "origin", "--", branchName);
 
     private static async Task RunAsync(
         string worktreePath,
@@ -100,8 +85,17 @@ public static class GitLfsRunner
             };
             startInfo.ArgumentList.Add("-c");
             startInfo.ArgumentList.Add("core.hooksPath=/dev/null");
-            // git-lfs uses this marker to recognize the explicitly provisioned filters. Supply
-            // it per process rather than writing `git lfs install` state into the worktree.
+            // Worktree-local config may be stored in the bare repository's common config. Supply
+            // the complete filter registration on the isolated invocation so git-lfs never needs
+            // `git lfs install` to discover it.
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add("filter.lfs.clean=git-lfs clean -- %f");
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add("filter.lfs.smudge=git-lfs smudge -- %f");
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add("filter.lfs.process=git-lfs filter-process");
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add("filter.lfs.required=true");
             startInfo.ArgumentList.Add("-c");
             startInfo.ArgumentList.Add("lfs.repositoryformatversion=0");
             AddTrustedLfsEndpointConfiguration(startInfo, canonicalRemoteUrl);
@@ -174,7 +168,7 @@ public static class GitLfsRunner
         var canonicalHttpsRemote = TryGetHttpsUri(canonicalRemoteUrl);
         if (canonicalHttpsRemote is not null)
         {
-            ApplyHttpsTlsTrust(startInfo, authentication.TlsTrust, isolatedHome);
+            await ApplyHttpsTlsTrustAsync(startInfo, authentication.TlsTrust, isolatedHome, canonicalHttpsRemote, cancellationToken).ConfigureAwait(false);
         }
 
         switch (authentication.Mode)
@@ -208,11 +202,17 @@ public static class GitLfsRunner
                 // so apply the same HTTPS CA policy before git-lfs starts.
                 if (canonicalHttpsRemote is null)
                 {
-                    ApplyHttpsTlsTrust(startInfo, authentication.TlsTrust, isolatedHome);
+                    if (!TryGetLfsRemoteUri(canonicalRemoteUrl, out var lfsRemote))
+                    {
+                        throw new InvalidOperationException("Could not resolve the canonical LFS endpoint for SSH authentication.");
+                    }
+
+                    await ApplyHttpsTlsTrustAsync(startInfo, authentication.TlsTrust, isolatedHome, lfsRemote, cancellationToken).ConfigureAwait(false);
                 }
 
                 var remoteUrl = canonicalRemoteUrl;
                 startInfo.Environment["GIT_SSH_COMMAND"] = await GitSshTransport.BuildSshCommandForLfsAsync(authentication, trust, remoteUrl, isolatedHome, cancellationToken).ConfigureAwait(false);
+                GitSshTransport.ConfigurePassphraseAskPass(startInfo, authentication, isolatedHome);
                 break;
 
             case GitAuthenticationMode.Anonymous:
@@ -288,7 +288,12 @@ public static class GitLfsRunner
             : null;
 
 
-    private static void ApplyHttpsTlsTrust(ProcessStartInfo startInfo, TlsTrust tlsTrust, string isolatedHome)
+    private static async Task ApplyHttpsTlsTrustAsync(
+        ProcessStartInfo startInfo,
+        TlsTrust tlsTrust,
+        string isolatedHome,
+        Uri remote,
+        CancellationToken cancellationToken)
     {
         switch (tlsTrust.Mode)
         {
@@ -301,10 +306,49 @@ public static class GitLfsRunner
                 startInfo.Environment["GIT_SSL_NO_VERIFY"] = "true";
                 return;
             case TlsTrustMode.Pinned:
-                throw new InvalidOperationException(
-                    "git-lfs cannot enforce certificate fingerprints. Configure system trust or system-plus-additional-ca trust for Git LFS HTTPS transfers.");
+                startInfo.Environment["GIT_SSL_CAINFO"] = await CreatePinnedCertificateBundleAsync(remote, tlsTrust.Fingerprints, isolatedHome, cancellationToken).ConfigureAwait(false);
+                return;
             default:
                 throw new InvalidOperationException($"git-lfs cannot safely enforce the configured TLS trust mode '{tlsTrust.Mode}'.");
+        }
+    }
+
+    /// <summary>Creates a git-lfs CA bundle from the endpoint certificate after checking its configured pin.</summary>
+    private static async Task<string> CreatePinnedCertificateBundleAsync(
+        Uri remote,
+        IReadOnlyList<string> fingerprints,
+        string isolatedHome,
+        CancellationToken cancellationToken)
+    {
+        if (fingerprints.Count == 0)
+        {
+            throw new InvalidOperationException("git-lfs pinned TLS trust requires at least one certificate fingerprint.");
+        }
+
+        using var tcp = new System.Net.Sockets.TcpClient();
+        await tcp.ConnectAsync(remote.Host, remote.Port is > 0 ? remote.Port : 443, cancellationToken).ConfigureAwait(false);
+        using var tls = new System.Net.Security.SslStream(tcp.GetStream(), leaveInnerStreamOpen: false);
+        X509Certificate2? certificate = null;
+        await tls.AuthenticateAsClientAsync(new System.Net.Security.SslClientAuthenticationOptions
+        {
+            TargetHost = remote.Host,
+            RemoteCertificateValidationCallback = (_, presented, _, _) =>
+            {
+                certificate = presented is null ? null : new X509Certificate2(presented);
+                return certificate is not null && PinnedCertificateVerifier.Matches(certificate, fingerprints);
+            },
+        }, cancellationToken).ConfigureAwait(false);
+
+        using (certificate ?? throw new InvalidOperationException($"LFS TLS endpoint '{remote.Host}' did not present a certificate."))
+        {
+            if (!PinnedCertificateVerifier.Matches(certificate, fingerprints))
+            {
+                throw new InvalidOperationException($"LFS TLS certificate for '{remote.Host}' did not match a configured pinned fingerprint.");
+            }
+
+            var bundlePath = Path.Combine(isolatedHome, "pinned-lfs-certificate.pem");
+            File.WriteAllText(bundlePath, certificate.ExportCertificatePem());
+            return bundlePath;
         }
     }
 

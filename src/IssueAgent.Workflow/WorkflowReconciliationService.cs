@@ -57,10 +57,8 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
                 explanation);
         }
 
-        var mergeRequest = await dependencies.Provider
-            .FindMergeRequestAsync(config.Repository, state.Branch, state.TargetBranch, cancellationToken)
-            .ConfigureAwait(false);
-        if (mergeRequest is not null && !MatchesWorkflowIdentity(config.Repository, state, content, mergeRequest))
+        var mergeRequest = await FindMergeRequestAsync(config, state, content, cancellationToken).ConfigureAwait(false);
+        if (mergeRequest is not null && !HasWorkflowMarker(state, mergeRequest))
         {
             return await PauseForHumanAsync(
                 config,
@@ -69,8 +67,19 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
                 content,
                 state,
                 WaitingReason.ManualIntervention,
-                "The branch-matched PR/MR does not match both this workflow's marker and stored identity. Local workflow data was preserved for human review.",
+                "The stored or branch-matched PR/MR does not match this workflow's identity marker. Local workflow data was preserved for human review.",
                 cancellationToken).ConfigureAwait(false);
+        }
+        if (mergeRequest is not null && content.State.PullOrMergeRequest is null)
+        {
+            // The branch was published before the canonical link checkpoint. Its workflow marker
+            // is the durable ownership proof until the request number can be recorded.
+            content = content with
+            {
+                State = content.State with { PullOrMergeRequest = $"{config.Repository.Id}#{mergeRequest.Number}" },
+            };
+            await PersistCanonicalStateAsync(config, issueNumber, canonicalComment, content, state, cancellationToken)
+                .ConfigureAwait(false);
         }
         if (mergeRequest?.IsMerged == true)
         {
@@ -279,16 +288,32 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
             decision.Explanation);
     }
 
-    private static bool MatchesWorkflowIdentity(
-        RepositoryRef repository,
+    private async Task<ProviderMergeRequest?> FindMergeRequestAsync(
+        WorkflowRepositoryConfig config,
         WorkflowState state,
         CanonicalCommentContent content,
-        ProviderMergeRequest mergeRequest) =>
-        mergeRequest.Description.Contains($"<!-- issue-agent:workflow:{state.WorkflowId} -->", StringComparison.Ordinal) &&
-        string.Equals(
-            content.State.PullOrMergeRequest,
-            $"{repository.Id}#{mergeRequest.Number}",
-            StringComparison.Ordinal);
+        CancellationToken cancellationToken)
+    {
+        var identity = content.State.PullOrMergeRequest;
+        if (identity is null)
+        {
+            return await dependencies.Provider.FindMergeRequestAsync(
+                config.Repository, state.Branch, state.TargetBranch, cancellationToken).ConfigureAwait(false);
+        }
+
+        var prefix = $"{config.Repository.Id}#";
+        if (!identity.StartsWith(prefix, StringComparison.Ordinal) ||
+            !long.TryParse(identity[prefix.Length..], out var number) ||
+            number <= 0)
+        {
+            throw new CanonicalStateException("Canonical state pullOrMergeRequest is not a valid repository request identity.");
+        }
+
+        return await dependencies.Provider.GetMergeRequestAsync(config.Repository, number, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static bool HasWorkflowMarker(WorkflowState state, ProviderMergeRequest mergeRequest) =>
+        mergeRequest.Description.Contains($"<!-- issue-agent:workflow:{state.WorkflowId} -->", StringComparison.Ordinal);
 
     private static bool HasRetainedRevisionResult(WorkflowState state, CanonicalCommentContent content) =>
         state.Phase == WorkflowPhase.Revising &&

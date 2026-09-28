@@ -238,6 +238,7 @@ public sealed partial class WorkflowDispatcher(
         catch (CanonicalCommentCorruptException exception)
         {
             LogCorruptState(logger, exception, providerName, runtime.Repository.Id, issueNumber);
+            await PauseDuplicateCanonicalStateAsync(runtime, issueNumber, cancellationToken).ConfigureAwait(false);
             await runtime.Dependencies.Notifier.NotifyAsync(
                 new WorkflowNotification(
                     WorkflowNotificationKind.HumanActionRequired,
@@ -333,6 +334,7 @@ public sealed partial class WorkflowDispatcher(
         }
 
         var command = commandResolution.Command;
+        var handedOffContinue = false;
         var publishRetainedRevision = false;
         var initialPlanningBootstrap = IsInitialPlanningBootstrapCheckpoint(state) &&
             (command is null or WorkflowCommand.Continue);
@@ -536,6 +538,7 @@ public sealed partial class WorkflowDispatcher(
             // checkpoint and transitions phase/state labels. A process crash before that durable
             // hand-off then leaves the command available for safe replay.
             publishRetainedRevision = ShouldPublishRetainedRevision(state, reconciled.Content!, routedCommand);
+            handedOffContinue = routedCommand != WorkflowCommand.Continue;
             command = routedCommand;
         }
 
@@ -611,6 +614,17 @@ public sealed partial class WorkflowDispatcher(
                 outcome,
                 implementation ? metrics.ImplementationErrors : metrics.PlanErrors,
                 runtime.Tags);
+            if (handedOffContinue)
+            {
+                await ConsumeCommandAsync(
+                    runtime.Provider,
+                    runtime.Repository,
+                    issueNumber,
+                    mergeRequest?.Number,
+                    commandResolution.Sources,
+                    WorkflowCommand.Continue,
+                    cancellationToken).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -860,6 +874,28 @@ public sealed partial class WorkflowDispatcher(
                 "unknown",
                 "IssueAgent canonical state is missing; restore the managed comment before continuing."),
             cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task PauseDuplicateCanonicalStateAsync(
+        Runtime runtime,
+        long issueNumber,
+        CancellationToken cancellationToken)
+    {
+        var workItem = new ProviderWorkItemReference(runtime.Repository, ProviderWorkItemKind.Issue, issueNumber);
+        await LabelCatalog.EnsureAllAsync(runtime.Provider, runtime.Repository, cancellationToken).ConfigureAwait(false);
+        var labels = await runtime.Provider.GetLabelsAsync(workItem, cancellationToken).ConfigureAwait(false);
+        if (!labels.Contains(WorkflowLabels.WaitingState))
+        {
+            await runtime.Provider.EnsureLabelAsync(
+                runtime.Repository,
+                LabelCatalog.All.First(label => label.Name == WorkflowLabels.WaitingState),
+                cancellationToken).ConfigureAwait(false);
+            await runtime.Provider.AddLabelsAsync(workItem, [WorkflowLabels.WaitingState], cancellationToken).ConfigureAwait(false);
+        }
+        if (labels.Contains(WorkflowLabels.WorkingState))
+        {
+            await runtime.Provider.RemoveLabelAsync(workItem, WorkflowLabels.WorkingState, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private async Task<Runtime?> PrepareRuntimeAsync(string providerName, RepositoryOptions repositoryOptions, CancellationToken cancellationToken)
