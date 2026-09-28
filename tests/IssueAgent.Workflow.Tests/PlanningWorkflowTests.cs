@@ -509,6 +509,41 @@ public sealed class PlanningWorkflowTests : IDisposable
         Assert.Equal("Published implementation.", persisted.ImplementationResult);
         Assert.Equal($"{Repository.Id}#42", persisted.State.PullOrMergeRequest);
     }
+    [Fact]
+    public async Task RunReplanAsyncFromFailedPublishedReviewPreservesCheckpointAndMergeRequest()
+    {
+        provider.AddIssue(Repository, 1, "Bug", "Description");
+        var failedState = new WorkflowState(
+            WorkflowId.New(), WorkflowPhase.Failed, WorkflowOperationalState.Waiting, WaitingReason.ManualIntervention,
+            1, 1, "session-1", "agent/issue-1-bug", "main", "def456", clock.UtcNow.AddHours(-1),
+            PlanInputHash: PlanInputHasher.Compute("Bug", "Description"),
+            ExpectedImplementationHead: "def456",
+            PublicationStage: ImplementationPublicationStage.BranchPublished,
+            InterruptedPhase: WorkflowPhase.Planning);
+        await provider.CreateIssueCommentAsync(
+            Repository,
+            1,
+            CanonicalCommentMarkdown.Render(new CanonicalCommentContent(
+                "Original plan.", [], "Published implementation.",
+                CanonicalStateSerializer.ToDocument(failedState, $"{Repository.Id}#42"))),
+            CancellationToken.None);
+        provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] =
+            [WorkflowLabels.FailedPhase, WorkflowLabels.WaitingState, WorkflowCommandLabels.Continue];
+        Directory.CreateDirectory(Path.Combine(workspaceRoot, failedState.WorkflowId.ToString(), "worktree"));
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1", clock.UtcNow, """{"planText":"Recovered plan.","decisions":[]}"""));
+
+        var outcome = await CreateWorkflow().RunReplanAsync(CreateConfig(), 1, failedState, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowPhase.Planned, outcome.State.Phase);
+        Assert.Equal("def456", outcome.State.BaseCommit);
+        Assert.Equal("def456", outcome.State.ExpectedImplementationHead);
+        Assert.Equal(ImplementationPublicationStage.BranchPublished, outcome.State.PublicationStage);
+        var persisted = CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body);
+        Assert.Equal("Published implementation.", persisted.ImplementationResult);
+        Assert.Equal($"{Repository.Id}#42", persisted.State.PullOrMergeRequest);
+    }
+
 
     [Fact]
     public async Task RunReplanAsyncPersistsFailureWhenOmpResultViolatesContract()

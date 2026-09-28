@@ -108,6 +108,48 @@ public sealed class StartupValidatorTests
         }
     }
 
+    [Theory]
+    [InlineData("""{"type":"ready","protocolVersion":2,"supportedProtocolVersions":[1,2]}""")]
+    [InlineData("""{"type":"ready","protocolVersion":1,"supportedProtocolVersions":[2]}""")]
+    public async Task ProbeOmpAsyncRejectsAnIncompatibleReadyProtocol(string readyFrame)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        var workspace = Path.Combine(Path.GetTempPath(), $"issue-agent-startup-{Guid.NewGuid():N}");
+        try
+        {
+            var executable = CreateProbeExecutable(workspace, readyFrame);
+            var options = new IssueAgentOptions
+            {
+                Workspace = new WorkspaceOptions { RootPath = workspace },
+                Omp = new OmpOptions
+                {
+                    ExecutablePath = executable,
+                    ExecutionVariables = new Dictionary<string, string> { ["PROBE_CONFIGURATION"] = "configured" },
+                },
+            };
+            var omp = new EffectiveOmpConfiguration(
+                executable, TimeSpan.FromSeconds(2), null,
+                new Dictionary<string, string>(), new Dictionary<string, string>(),
+                new Dictionary<string, string> { ["planning"] = "plan" });
+
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => StartupValidator.ProbeOmpAsync(options, omp, CancellationToken.None));
+
+            Assert.Contains("startup compatibility probe", exception.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(workspace))
+            {
+                Directory.Delete(workspace, recursive: true);
+            }
+        }
+    }
+
     [Fact]
     public async Task ProbeOmpAsyncRejectsAProgramThatDoesNotSpeakOmpRpc()
     {
@@ -262,7 +304,9 @@ public sealed class StartupValidatorTests
     }
 
     [System.Runtime.Versioning.SupportedOSPlatform("linux")]
-    private static string CreateProbeExecutable(string workspace)
+    private static string CreateProbeExecutable(
+        string workspace,
+        string readyFrame = """{"type":"ready","protocolVersion":1,"supportedProtocolVersions":[1,2]}""")
     {
         Directory.CreateDirectory(workspace);
         var path = Path.Combine(workspace, "fake-omp.sh");
@@ -275,14 +319,14 @@ public sealed class StartupValidatorTests
               previous="$argument"
             done
             [ "$PROBE_CONFIGURATION" = "configured" ] || exit 2
-            printf '%s\n' '{"type":"ready"}'
+            printf '%s\n' '__READY_FRAME__'
             while IFS= read -r request; do
               case "$request" in
                 *new_session*) printf '%s\n' '{"type":"response","id":"1","success":true}' ;;
                 *get_state*) printf '%s\n' "{\"type\":\"response\",\"id\":\"2\",\"success\":true,\"data\":{\"sessionId\":\"probe\",\"sessionPath\":\"$session_dir/session.jsonl\"}}" ;;
               esac
             done
-            """);
+            """.Replace("__READY_FRAME__", readyFrame, StringComparison.Ordinal));
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         return path;
     }

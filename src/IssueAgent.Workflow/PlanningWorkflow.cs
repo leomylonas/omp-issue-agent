@@ -283,9 +283,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
                 reconciled.Input.Title,
                 reconciled.Input.Description,
                 existingContent,
-                currentState.Phase == WorkflowPhase.Review &&
-                    currentState.PublicationStage == ImplementationPublicationStage.BranchPublished &&
-                    currentState.ExpectedImplementationHead is not null,
+                HasVerifiedPublishedCheckpoint(currentState, existingContent),
                 cancellationToken).ConfigureAwait(false);
         }
         catch (WorkflowContractException exception)
@@ -295,7 +293,13 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         }
     }
 
+    private static bool HasVerifiedPublishedCheckpoint(WorkflowState state, CanonicalCommentContent content) =>
+        state.PublicationStage == ImplementationPublicationStage.BranchPublished &&
+        state.ExpectedImplementationHead is { Length: > 0 } &&
+        content.State.PullOrMergeRequest is { Length: > 0 };
+
     private sealed record InputSnapshot(string Title, string Description, string CommentsDigest);
+
 
     private sealed record ReconciledPlanningResult(PlanningResult Result, InputSnapshot Input);
     private async Task<InputSnapshot> CaptureInputSnapshotAsync(

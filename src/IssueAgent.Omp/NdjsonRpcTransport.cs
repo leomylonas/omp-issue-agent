@@ -83,6 +83,8 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
             {
                 throw new InvalidOperationException("OMP process exited without sending its ready frame.");
             }
+
+            ValidateReadyFrame(await transport.ready.Task.ConfigureAwait(false));
         }
         catch
         {
@@ -102,6 +104,26 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
         }
 
         return deadline;
+    }
+
+    private static void ValidateReadyFrame(JsonObject readyFrame)
+    {
+        const int supportedProtocolVersion = 1;
+        if (readyFrame["protocolVersion"] is not JsonValue protocolVersionNode ||
+            !protocolVersionNode.TryGetValue<int>(out var protocolVersion) ||
+            protocolVersion != supportedProtocolVersion)
+        {
+            throw new InvalidOperationException(
+                $"OMP ready frame must declare supported protocol version {supportedProtocolVersion}.");
+        }
+
+        if (readyFrame["supportedProtocolVersions"] is not JsonArray supportedVersions ||
+            !supportedVersions.OfType<JsonValue>().Any(version =>
+                version.TryGetValue<int>(out var value) && value == supportedProtocolVersion))
+        {
+            throw new InvalidOperationException(
+                $"OMP ready frame must advertise protocol version {supportedProtocolVersion} support.");
+        }
     }
 
     /// <summary>Non-response OMP frames (agent events, UI requests, and metadata updates) in

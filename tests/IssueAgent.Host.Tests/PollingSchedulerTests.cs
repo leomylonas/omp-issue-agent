@@ -47,15 +47,28 @@ public sealed class PollingSchedulerTests
     }
 
     [Fact]
-    public void PollingEligibilityClampsProviderRetryWindow()
+    public void PollingEligibilityPreservesProviderRetryWindowsBeyondOneMinute()
+    {
+        var time = new AdjustableTimeProvider(DateTimeOffset.Parse("2026-01-01T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture));
+        var schedule = new PollingEligibilitySchedule(time);
+
+        schedule.Defer("github/octo/widgets", TimeSpan.FromMinutes(3));
+
+        time.Advance(TimeSpan.FromMinutes(1));
+        Assert.False(schedule.IsEligible("github/octo/widgets"));
+        time.Advance(TimeSpan.FromMinutes(2));
+        Assert.True(schedule.IsEligible("github/octo/widgets"));
+    }
+
+    [Fact]
+    public void PollingEligibilitySaturatesOnlyAnOverflowingProviderRetryWindow()
     {
         var time = new AdjustableTimeProvider(DateTimeOffset.Parse("2026-01-01T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture));
         var schedule = new PollingEligibilitySchedule(time);
 
         schedule.Defer("github/octo/widgets", TimeSpan.MaxValue);
 
-        time.Advance(TimeSpan.FromMinutes(1));
-        Assert.True(schedule.IsEligible("github/octo/widgets"));
+        Assert.False(schedule.IsEligible("github/octo/widgets"));
     }
 
     private sealed class AdjustableTimeProvider(DateTimeOffset utcNow) : TimeProvider

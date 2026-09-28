@@ -179,16 +179,13 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
         var remoteHead = await dependencies.Git
             .TryResolveRemoteBranchCommitAsync(config.Repository.Id, state.Branch, cancellationToken)
             .ConfigureAwait(false);
-        var verifiedPublishedWorkflow = state.Phase is WorkflowPhase.Review or WorkflowPhase.Revising &&
-            content.State.PullOrMergeRequest is { Length: > 0 };
+        var verifiedPublishedWorkflow = HasVerifiedPublishedCheckpoint(state, content);
         var localHeadIsAncestorOfRemote = verifiedPublishedWorkflow &&
             localHead is not null &&
             remoteHead is not null &&
             !string.Equals(localHead, remoteHead, StringComparison.Ordinal) &&
             await dependencies.Git.IsAncestorAsync(config.Repository.Id, localHead, remoteHead, cancellationToken).ConfigureAwait(false);
-        if (state.Phase == WorkflowPhase.Revising &&
-            state.WaitingReason is WaitingReason.MissingCredentials or WaitingReason.ProtectedBranch &&
-            content.ImplementationResult is { Length: > 0 } &&
+        if (HasRetainedRevisionResult(state, content) &&
             localHead is not null &&
             remoteHead is not null &&
             !worktreeDirty &&
@@ -196,12 +193,25 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
             await dependencies.Git.IsAncestorAsync(
                 config.Repository.Id, remoteHead, localHead, cancellationToken).ConfigureAwait(false))
         {
+            if (state.OperationalState == WorkflowOperationalState.Working)
+            {
+                return await PauseForHumanAsync(
+                    config,
+                    issueNumber,
+                    canonicalComment,
+                    content,
+                    state,
+                    WaitingReason.ManualIntervention,
+                    "A revision result was checkpointed before publication completed. The local revision is ahead of the remote branch and was retained for explicit human recovery.",
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             return new WorkflowReconciliationResult(
                 ReconciliationDisposition.Waiting,
                 state,
                 content,
                 canonicalComment,
-                "The local revision result is ahead of the remote branch after publication was blocked. It was retained; correct the publication blocker and continue.");
+                "The local revision result is ahead of the remote branch after an interrupted publication. It was retained; review it and continue when ready.");
         }
 
         if (!worktreeDirty && localHeadIsAncestorOfRemote)
@@ -209,7 +219,12 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
             // Only a workflow with a verified published review request may adopt human commits
             // from its remote agent branch. An unpublished workflow must not treat an unrelated
             // remote ref as its implementation history.
-            state = state with { BaseCommit = remoteHead!, UpdatedAt = dependencies.Clock.UtcNow };
+            state = state with
+            {
+                BaseCommit = remoteHead!,
+                ExpectedImplementationHead = remoteHead,
+                UpdatedAt = dependencies.Clock.UtcNow,
+            };
             content = content with
             {
                 State = CanonicalStateSerializer.ToDocument(state, content.State.PullOrMergeRequest),
@@ -275,6 +290,15 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
             $"{repository.Id}#{mergeRequest.Number}",
             StringComparison.Ordinal);
 
+    private static bool HasRetainedRevisionResult(WorkflowState state, CanonicalCommentContent content) =>
+        state.Phase == WorkflowPhase.Revising &&
+        content.ImplementationResult is { Length: > 0 };
+    private static bool HasVerifiedPublishedCheckpoint(WorkflowState state, CanonicalCommentContent content) =>
+        state.PublicationStage == ImplementationPublicationStage.BranchPublished &&
+        state.ExpectedImplementationHead is { Length: > 0 } &&
+        content.State.PullOrMergeRequest is { Length: > 0 };
+
+
     private static bool IsInitialPlanningBootstrapCheckpoint(WorkflowState state) =>
         state.Phase == WorkflowPhase.Planning &&
         state.OperationalState == WorkflowOperationalState.Working &&
@@ -298,7 +322,8 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(acceptedRemoteHead);
 
-        var preservesReview = state.Phase == WorkflowPhase.Review;
+        var preservesPublishedWorkflow = HasVerifiedPublishedCheckpoint(state, content);
+        var preservesReview = preservesPublishedWorkflow && state.Phase == WorkflowPhase.Review;
         var acceptedState = state with
         {
             Phase = preservesReview ? WorkflowPhase.Review : WorkflowPhase.Planned,
@@ -306,14 +331,14 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
             WaitingReason = preservesReview ? WaitingReason.ReviewRequested : WaitingReason.PlanApproval,
             BaseCommit = acceptedRemoteHead,
             InterruptedPhase = null,
-            ExpectedImplementationHead = preservesReview ? state.ExpectedImplementationHead : null,
-            PublicationStage = preservesReview ? state.PublicationStage : null,
-            RebasedPublicationBase = preservesReview ? state.RebasedPublicationBase : null,
+            ExpectedImplementationHead = preservesPublishedWorkflow ? acceptedRemoteHead : null,
+            PublicationStage = preservesPublishedWorkflow ? state.PublicationStage : null,
+            RebasedPublicationBase = preservesPublishedWorkflow ? state.RebasedPublicationBase : null,
             UpdatedAt = dependencies.Clock.UtcNow,
         };
         var acceptedContent = content with
         {
-            ImplementationResult = preservesReview ? content.ImplementationResult : null,
+            ImplementationResult = preservesPublishedWorkflow ? content.ImplementationResult : null,
             State = CanonicalStateSerializer.ToDocument(acceptedState, content.State.PullOrMergeRequest),
         };
         await PersistCanonicalStateAsync(
