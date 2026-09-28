@@ -564,6 +564,94 @@ public sealed class PlanningWorkflowTests : IDisposable
         Assert.Equal($"{Repository.Id}#42", persisted.State.PullOrMergeRequest);
     }
 
+    [Fact]
+    public async Task RunReplanAsyncFromFailedPublishedReviewLoadsMergeRequestContext()
+    {
+        provider.AddIssue(Repository, 1, "Bug", "Description");
+        var failedState = new WorkflowState(
+            WorkflowId.New(), WorkflowPhase.Failed, WorkflowOperationalState.Waiting, WaitingReason.ManualIntervention,
+            1, 1, "session-1", "agent/issue-1-bug", "main", "def456", clock.UtcNow.AddHours(-1),
+            PlanInputHash: PlanInputHasher.Compute("Bug", "Description"),
+            ExpectedImplementationHead: "def456",
+            PublicationStage: ImplementationPublicationStage.BranchPublished,
+            InterruptedPhase: WorkflowPhase.Planning);
+        await provider.CreateIssueCommentAsync(
+            Repository,
+            1,
+            CanonicalCommentMarkdown.Render(new CanonicalCommentContent(
+                "Original plan.", [], "Published implementation.",
+                CanonicalStateSerializer.ToDocument(failedState, $"{Repository.Id}#42"))),
+            CancellationToken.None);
+        provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] =
+            [WorkflowLabels.FailedPhase, WorkflowLabels.WaitingState, WorkflowCommandLabels.Continue];
+        Directory.CreateDirectory(Path.Combine(workspaceRoot, failedState.WorkflowId.ToString(), "worktree"));
+        provider.MergeRequests[42] = new ProviderMergeRequest(
+            Repository, 42, failedState.Branch, failedState.TargetBranch, "Bug", "Review description", true, false, false,
+            new AttachmentSource("merge-request-description", "42"));
+        provider.MergeRequestComments[(Repository.Id, 42)] =
+        [
+            new ProviderComment(1, "reviewer", "Please retain the published API.", clock.UtcNow, clock.UtcNow,
+                new AttachmentSource("merge-request-comment", "42", "1"), false),
+        ];
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1", clock.UtcNow, """{"planText":"Recovered plan.","decisions":[]}"""));
+
+        await CreateWorkflow().RunReplanAsync(CreateConfig(), 1, failedState, omp, CancellationToken.None);
+
+        Assert.Contains("## Linked pull/merge request #42", Assert.Single(omp.RunRequests).Prompt, StringComparison.Ordinal);
+        Assert.Contains("Please retain the published API.", Assert.Single(omp.RunRequests).Prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunReplanAsyncReconcilesMergeRequestFeedbackArrivingDuringPlanning()
+    {
+        provider.AddIssue(Repository, 1, "Bug", "Description");
+        var reviewState = new WorkflowState(
+            WorkflowId.New(), WorkflowPhase.Review, WorkflowOperationalState.Waiting, WaitingReason.ReviewRequested,
+            1, 1, "session-1", "agent/issue-1-bug", "main", "abc123", clock.UtcNow.AddHours(-1),
+            PlanInputHash: PlanInputHasher.Compute("Bug", "Description"),
+            ExpectedImplementationHead: "def456",
+            PublicationStage: ImplementationPublicationStage.BranchPublished);
+        await provider.CreateIssueCommentAsync(
+            Repository,
+            1,
+            CanonicalCommentMarkdown.Render(new CanonicalCommentContent(
+                "Original plan.", [], "Published implementation.",
+                CanonicalStateSerializer.ToDocument(reviewState, $"{Repository.Id}#42"))),
+            CancellationToken.None);
+        provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] =
+            [WorkflowLabels.ReviewPhase, WorkflowLabels.WaitingState, WorkflowCommandLabels.Replan];
+        Directory.CreateDirectory(Path.Combine(workspaceRoot, reviewState.WorkflowId.ToString(), "worktree"));
+        provider.MergeRequests[42] = new ProviderMergeRequest(
+            Repository, 42, reviewState.Branch, reviewState.TargetBranch, "Bug", "Review description", true, false, false,
+            new AttachmentSource("merge-request-description", "42"));
+        provider.ReviewThreads[(Repository.Id, 42)] =
+        [
+            new ProviderReviewThread("thread-1", false,
+            [
+                new ProviderComment(1, "reviewer", "Initial review feedback.", clock.UtcNow, clock.UtcNow,
+                    new AttachmentSource("review-thread-comment", "42", "1"), false),
+            ]),
+        ];
+        var omp = new FakeOmpClient().EnqueueRun(
+            onStart: () => provider.ReviewThreads[(Repository.Id, 42)] =
+            [
+                new ProviderReviewThread("thread-1", true,
+                [
+                    new ProviderComment(1, "reviewer", "Updated review feedback.", clock.UtcNow, clock.UtcNow,
+                        new AttachmentSource("review-thread-comment", "42", "1"), false),
+                ]),
+            ],
+            new OmpCompletedEvent("session-1", clock.UtcNow, """{"planText":"Initial revision.","decisions":[]}"""));
+        omp.EnqueueRun(new OmpCompletedEvent(
+            "session-1", clock.UtcNow, """{"planText":"Reconciled revision.","decisions":[]}"""));
+
+        await CreateWorkflow().RunReplanAsync(CreateConfig(), 1, reviewState, omp, CancellationToken.None);
+
+        Assert.Equal(2, omp.RunRequests.Count);
+        Assert.Contains("Updated review feedback.", omp.RunRequests[1].Prompt, StringComparison.Ordinal);
+    }
+
 
     [Fact]
     public async Task RunReplanAsyncPersistsFailureWhenOmpResultViolatesContract()
