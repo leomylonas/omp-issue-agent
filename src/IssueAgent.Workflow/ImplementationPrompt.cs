@@ -124,6 +124,7 @@ public static class ImplementationPromptBuilder
             builder.AppendLine();
         }
 
+        AppendLinkedReviewContext(builder, context.PullOrMergeRequest);
         AppendIssueSummary(builder, context.PrimaryIssue);
         AppendOutputContract(builder);
         return builder.ToString();
@@ -163,6 +164,26 @@ public static class ImplementationPromptBuilder
         AppendIssueSummary(builder, context.PrimaryIssue);
         AppendOutputContract(builder);
         return builder.ToString();
+    }
+
+    private static void AppendLinkedReviewContext(StringBuilder builder, MergeRequestContext? mergeRequest)
+    {
+        if (mergeRequest is null)
+        {
+            return;
+        }
+
+        builder.AppendLine("## Linked pull/merge request #" + mergeRequest.Number.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        builder.AppendLine(mergeRequest.Description);
+        foreach (var comment in mergeRequest.Comments.Concat(mergeRequest.ReviewThreads))
+        {
+            builder.Append("- ").Append(comment.Author)
+                .Append(" (resolved: ").Append(comment.IsResolved ? "true" : "false")
+                .Append("): ").AppendLine(comment.Body);
+        }
+
+        AppendReviewAttachments(builder, mergeRequest.Attachments);
+        builder.AppendLine();
     }
 
     private static void AppendReviewAttachments(StringBuilder builder, IReadOnlyList<AttachmentReference>? attachments)

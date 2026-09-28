@@ -42,19 +42,30 @@ public sealed partial class GitSshTransport
 
     private static async ValueTask<string> GetOriginUrlAsync(string workingDirectory, CancellationToken cancellationToken)
     {
-        var result = await RunProcessAsync(new ProcessStartInfo("git")
+        var isolatedHome = Directory.CreateTempSubdirectory("issueagent-git-home-").FullName;
+        try
         {
-            ArgumentList = { "-c", "core.hooksPath=/dev/null", "-C", workingDirectory, "remote", "get-url", "origin" },
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-        }, cancellationToken).ConfigureAwait(false);
-        if (result.ExitCode != 0)
-        {
-            throw new InvalidOperationException($"Could not resolve the origin remote: {result.StandardError}");
-        }
+            var startInfo = new ProcessStartInfo("git")
+            {
+                ArgumentList = { "-c", "core.hooksPath=/dev/null", "-C", workingDirectory, "remote", "get-url", "origin" },
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            };
+            ConfigureIsolatedEnvironment(startInfo, isolatedHome);
 
-        return result.StandardOutput.Trim();
+            var result = await RunProcessAsync(startInfo, cancellationToken).ConfigureAwait(false);
+            if (result.ExitCode != 0)
+            {
+                throw new InvalidOperationException($"Could not resolve the origin remote: {result.StandardError}");
+            }
+
+            return result.StandardOutput.Trim();
+        }
+        finally
+        {
+            Directory.Delete(isolatedHome, recursive: true);
+        }
     }
 
     private static async ValueTask RunGitAsync(IReadOnlyList<string> arguments, string? workingDirectory, string remoteUrl, GitAuthentication authentication, CancellationToken cancellationToken)
@@ -85,11 +96,8 @@ public sealed partial class GitSshTransport
                 startInfo.ArgumentList.Add(argument);
             }
 
-            startInfo.Environment["GIT_CONFIG_NOSYSTEM"] = "1";
-            startInfo.Environment["HOME"] = isolatedHome;
-            startInfo.Environment["XDG_CONFIG_HOME"] = isolatedHome;
+            ConfigureIsolatedEnvironment(startInfo, isolatedHome);
             startInfo.Environment["GIT_SSH_COMMAND"] = sshCommand;
-            startInfo.Environment["GIT_TERMINAL_PROMPT"] = "0";
             ConfigurePassphraseAskPass(startInfo, authentication, isolatedHome);
 
             var result = await RunProcessAsync(startInfo, cancellationToken).ConfigureAwait(false);
@@ -143,6 +151,27 @@ public sealed partial class GitSshTransport
         }
 
         return options.ToString();
+    }
+
+    private static void ConfigureIsolatedEnvironment(ProcessStartInfo startInfo, string isolatedHome)
+    {
+        foreach (var key in startInfo.Environment.Keys
+                     .Where(key => key.StartsWith("GIT_CONFIG_", StringComparison.OrdinalIgnoreCase) ||
+                                   key.Equals("GIT_ASKPASS", StringComparison.OrdinalIgnoreCase) ||
+                                   key.Equals("SSH_ASKPASS", StringComparison.OrdinalIgnoreCase) ||
+                                   key.Equals("SSH_ASKPASS_REQUIRE", StringComparison.OrdinalIgnoreCase) ||
+                                   key.Equals("GIT_SSH", StringComparison.OrdinalIgnoreCase) ||
+                                   key.Equals("GIT_SSH_COMMAND", StringComparison.OrdinalIgnoreCase))
+                     .ToArray())
+        {
+            startInfo.Environment.Remove(key);
+        }
+
+        startInfo.Environment["GIT_CONFIG_NOSYSTEM"] = "1";
+        startInfo.Environment["GIT_CONFIG_GLOBAL"] = OperatingSystem.IsWindows() ? "NUL" : "/dev/null";
+        startInfo.Environment["HOME"] = isolatedHome;
+        startInfo.Environment["XDG_CONFIG_HOME"] = isolatedHome;
+        startInfo.Environment["GIT_TERMINAL_PROMPT"] = "0";
     }
 
     internal static void ConfigurePassphraseAskPass(ProcessStartInfo? startInfo, GitAuthentication authentication, string isolatedHome)

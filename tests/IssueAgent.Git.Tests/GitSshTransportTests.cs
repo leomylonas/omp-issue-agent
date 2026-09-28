@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using LibGit2Sharp;
@@ -66,6 +67,69 @@ public sealed class GitSshTransportTests : IDisposable
                 CancellationToken.None).AsTask());
 
         Assert.Contains("User=configured-user", File.ReadAllText(sshArgumentsPath), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CloneScrubsInheritedGitConfigurationAndAskPassPrograms()
+    {
+        var bareRemotePath = Track(TempGitFixtures.CreateBareRemoteRepository(out _));
+        var clonePath = Track(TempGitFixtures.CreateTempDirectory());
+        Directory.Delete(clonePath);
+        var environmentPath = Path.Combine(Track(TempGitFixtures.CreateTempDirectory()), "ssh-environment");
+
+        await WithFakeCommandAsync(
+            "ssh",
+            $"#!/bin/sh\nenv > \"{environmentPath}\"\nexec git-upload-pack \"{bareRemotePath}\"\n",
+            async () =>
+            {
+                var inheritedVariables = new Dictionary<string, string?>
+                {
+                    ["GIT_CONFIG_COUNT"] = Environment.GetEnvironmentVariable("GIT_CONFIG_COUNT"),
+                    ["GIT_CONFIG_KEY_0"] = Environment.GetEnvironmentVariable("GIT_CONFIG_KEY_0"),
+                    ["GIT_CONFIG_VALUE_0"] = Environment.GetEnvironmentVariable("GIT_CONFIG_VALUE_0"),
+                    ["GIT_ASKPASS"] = Environment.GetEnvironmentVariable("GIT_ASKPASS"),
+                    ["SSH_ASKPASS"] = Environment.GetEnvironmentVariable("SSH_ASKPASS"),
+                    ["SSH_ASKPASS_REQUIRE"] = Environment.GetEnvironmentVariable("SSH_ASKPASS_REQUIRE"),
+                    ["GIT_SSH"] = Environment.GetEnvironmentVariable("GIT_SSH"),
+                    ["GIT_SSH_COMMAND"] = Environment.GetEnvironmentVariable("GIT_SSH_COMMAND"),
+                };
+                try
+                {
+                    Environment.SetEnvironmentVariable("GIT_CONFIG_COUNT", "1");
+                    Environment.SetEnvironmentVariable("GIT_CONFIG_KEY_0", "credential.helper");
+                    Environment.SetEnvironmentVariable("GIT_CONFIG_VALUE_0", "!attacker");
+                    Environment.SetEnvironmentVariable("GIT_ASKPASS", "/tmp/attacker-git-askpass");
+                    Environment.SetEnvironmentVariable("SSH_ASKPASS", "/tmp/attacker-ssh-askpass");
+                    Environment.SetEnvironmentVariable("SSH_ASKPASS_REQUIRE", "force");
+                    Environment.SetEnvironmentVariable("GIT_SSH", "attacker-ssh");
+                    Environment.SetEnvironmentVariable("GIT_SSH_COMMAND", "attacker-ssh-command");
+
+                    await GitSshTransport.CloneBareAsync(
+                        $"git@localhost:{bareRemotePath}",
+                        clonePath,
+                        SshAuthentication(),
+                        CancellationToken.None);
+                }
+                finally
+                {
+                    foreach (var (key, value) in inheritedVariables)
+                    {
+                        Environment.SetEnvironmentVariable(key, value);
+                    }
+                }
+            });
+
+        var sshEnvironment = File.ReadAllLines(environmentPath);
+        Assert.DoesNotContain(sshEnvironment, line => line.StartsWith("GIT_CONFIG_COUNT=", StringComparison.Ordinal));
+        Assert.DoesNotContain(sshEnvironment, line => line.StartsWith("GIT_CONFIG_KEY_0=", StringComparison.Ordinal));
+        Assert.DoesNotContain(sshEnvironment, line => line.StartsWith("GIT_CONFIG_VALUE_0=", StringComparison.Ordinal));
+        Assert.DoesNotContain(sshEnvironment, line => line.StartsWith("GIT_ASKPASS=", StringComparison.Ordinal));
+        Assert.DoesNotContain(sshEnvironment, line => line.StartsWith("SSH_ASKPASS=", StringComparison.Ordinal));
+        Assert.DoesNotContain(sshEnvironment, line => line.StartsWith("SSH_ASKPASS_REQUIRE=", StringComparison.Ordinal));
+        Assert.DoesNotContain(sshEnvironment, line => line.StartsWith("GIT_SSH=", StringComparison.Ordinal));
+        Assert.DoesNotContain(sshEnvironment, line => line.Equals("GIT_SSH_COMMAND=attacker-ssh-command", StringComparison.Ordinal));
+        Assert.Contains($"GIT_CONFIG_NOSYSTEM=1", sshEnvironment);
+        Assert.Contains($"GIT_CONFIG_GLOBAL={(OperatingSystem.IsWindows() ? "NUL" : "/dev/null")}", sshEnvironment);
     }
 
     [Fact]

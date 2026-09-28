@@ -3,6 +3,9 @@
     <PackageReference Include="LibGit2Sharp" />
   </ItemGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="IssueAgent.Git.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../IssueAgent.Domain/IssueAgent.Domain.csproj" />
   </ItemGroup>
 </Project>

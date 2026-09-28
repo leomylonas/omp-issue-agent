@@ -331,6 +331,13 @@ public static class GitLfsRunner
         Uri remote,
         CancellationToken cancellationToken)
     {
+        foreach (var key in startInfo.Environment.Keys
+                     .Where(key => key.StartsWith("GIT_SSL_", StringComparison.OrdinalIgnoreCase))
+                     .ToArray())
+        {
+            startInfo.Environment.Remove(key);
+        }
+
         switch (tlsTrust.Mode)
         {
             case TlsTrustMode.System:

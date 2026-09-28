@@ -87,6 +87,35 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                 commandsToConsume: [WorkflowCommand.Implement]).ConfigureAwait(false);
         }
 
+        ProviderMergeRequest? linkedMergeRequest = null;
+        if (currentState.PublicationStage == ImplementationPublicationStage.BranchPublished &&
+            existingContent.State.PullOrMergeRequest is not null)
+        {
+            try
+            {
+                linkedMergeRequest = await StoredMergeRequestIdentity.FindAsync(
+                    deps.Provider,
+                    config.Repository,
+                    existingContent.State.PullOrMergeRequest,
+                    currentState.Branch,
+                    currentState.TargetBranch,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (CanonicalStateException exception)
+            {
+                return await PauseAsync(
+                    config,
+                    issueNumber,
+                    currentState,
+                    existingContent,
+                    existingContent.ImplementationResult ?? string.Empty,
+                    WaitingReason.CorruptState,
+                    exception.Message,
+                    cancellationToken,
+                    [WorkflowCommand.Implement]).ConfigureAwait(false);
+            }
+        }
+
         if (currentState.Phase == WorkflowPhase.Implementing)
         {
             if (currentState.WaitingReason is WaitingReason.NewInputDuringImplementation or WaitingReason.MaterialPlanDeviation)
@@ -144,7 +173,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         var currentPlan = new PlanContext(existingContent.State.PlanRevision, existingContent.PlanText, existingContent.DecisionsAndRationale);
         var attachmentsPath = AttachmentsPath(config, currentState.WorkflowId);
         var (context, inputSnapshot) = await BuildContextForInputSnapshotAsync(
-            config, issueNumber, workingState, currentPlan, attachmentsPath, cancellationToken).ConfigureAwait(false);
+            config, issueNumber, workingState, currentPlan, linkedMergeRequest, attachmentsPath, cancellationToken).ConfigureAwait(false);
         if (IsPlanStale(inputSnapshot, existingContent))
         {
             return await PauseForStalePlanAsync(
@@ -962,6 +991,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         long issueNumber,
         WorkflowState workingState,
         PlanContext currentPlan,
+        ProviderMergeRequest? mergeRequest,
         string attachmentsPath,
         CancellationToken cancellationToken)
     {
@@ -969,7 +999,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         {
             var baseline = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
             var context = await deps.ContextBuilder
-                .BuildAsync(config.Repository, issueNumber, workingState, currentPlan, mergeRequest: null, attachmentsPath, cancellationToken)
+                .BuildAsync(config.Repository, issueNumber, workingState, currentPlan, mergeRequest, attachmentsPath, cancellationToken)
                 .ConfigureAwait(false);
             var reconciled = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
             if (reconciled == baseline)

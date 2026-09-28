@@ -30,8 +30,21 @@ public static class StoredMergeRequestIdentity
         IGitProvider provider,
         RepositoryRef repository,
         string? identity,
-        CancellationToken cancellationToken) =>
-        identity is null
+        string sourceBranch,
+        string targetBranch,
+        CancellationToken cancellationToken)
+    {
+        var mergeRequest = identity is null
             ? null
             : await provider.GetMergeRequestAsync(repository, Parse(repository, identity), cancellationToken).ConfigureAwait(false);
+        if (mergeRequest is not null &&
+            (!string.Equals(mergeRequest.SourceBranch, sourceBranch, StringComparison.Ordinal) ||
+             !string.Equals(mergeRequest.TargetBranch, targetBranch, StringComparison.Ordinal)))
+        {
+            throw new CanonicalStateException(
+                "The stored pull/merge request no longer targets this workflow's source and target branches.");
+        }
+
+        return mergeRequest;
+    }
 }

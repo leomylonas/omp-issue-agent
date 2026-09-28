@@ -73,6 +73,8 @@ public sealed class ImplementationWorkflowTests : IDisposable
             BaseCommit = "def456",
             ExpectedImplementationHead = "def456",
             PublicationStage = ImplementationPublicationStage.BranchPublished,
+            ReviewFeedbackCutoff = clock.UtcNow.AddHours(-1),
+            ReviewFeedbackVersions = new HashSet<string>(StringComparer.Ordinal) { "comment:prior" },
         };
         AddPublishedMergeRequest(state);
         var canonical = CanonicalCommentMarkdown.Parse(
@@ -86,6 +88,11 @@ public sealed class ImplementationWorkflowTests : IDisposable
                 State = CanonicalStateSerializer.ToDocument(state, $"{Repository.Id}#1"),
             }),
             CancellationToken.None);
+        provider.MergeRequestComments[(Repository.Id, 1)] =
+        [
+            new ProviderComment(1, "reviewer", "Keep the public API stable.", clock.UtcNow, clock.UtcNow,
+                new AttachmentSource("merge-request-comment", "1"), false),
+        ];
         var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """
             {"summary":"Applied the revised plan.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}
             """));
@@ -95,6 +102,40 @@ public sealed class ImplementationWorkflowTests : IDisposable
         Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
         Assert.Equal(1, git.MergeAttempts);
         Assert.Equal(0, git.RebaseAttempts);
+        var request = Assert.Single(omp.RunRequests);
+        Assert.Contains("Keep the public API stable.", request.Prompt, StringComparison.Ordinal);
+        Assert.Equal(state.ReviewFeedbackCutoff, outcome.State.ReviewFeedbackCutoff);
+        Assert.Equal(state.ReviewFeedbackVersions, outcome.State.ReviewFeedbackVersions);
+    }
+
+    [Fact]
+    public async Task RunAsyncPausesWhenReimplementationRequestWasRetargeted()
+    {
+        var state = (await SeedApprovedPlanAsync()) with
+        {
+            ExpectedImplementationHead = "def456",
+            PublicationStage = ImplementationPublicationStage.BranchPublished,
+        };
+        AddPublishedMergeRequest(state);
+        var canonical = CanonicalCommentMarkdown.Parse(Assert.Single(provider.IssueComments[(Repository.Id, 1)]).Body);
+        await provider.UpdateIssueCommentAsync(
+            Repository,
+            1,
+            Assert.Single(provider.IssueComments[(Repository.Id, 1)]).Id,
+            CanonicalCommentMarkdown.Render(canonical with
+            {
+                State = CanonicalStateSerializer.ToDocument(state, $"{Repository.Id}#1"),
+            }),
+            CancellationToken.None);
+        provider.MergeRequests[1] = provider.MergeRequests[1] with { TargetBranch = "other-target" };
+
+        var outcome = await CreateWorkflow().RunAsync(
+            CreateConfig(), WorkflowMode.Full, 1, state, new FakeOmpClient(), CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WorkflowPhase.Planned, outcome.State.Phase);
+        Assert.Equal(WaitingReason.CorruptState, outcome.State.WaitingReason);
+        Assert.Empty(git.ResetWorktrees);
     }
 
     [Fact]

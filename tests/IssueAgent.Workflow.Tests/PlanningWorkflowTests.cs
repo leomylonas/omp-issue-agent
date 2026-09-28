@@ -472,6 +472,36 @@ public sealed class PlanningWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunReplanAsyncPausesWhenStoredRequestWasRetargeted()
+    {
+        provider.AddIssue(Repository, 1, "Bug", "Description");
+        var reviewState = new WorkflowState(
+            WorkflowId.New(), WorkflowPhase.Review, WorkflowOperationalState.Waiting, WaitingReason.ReviewRequested,
+            1, 1, "session-1", "agent/issue-1-bug", "main", "abc123", clock.UtcNow.AddHours(-1),
+            PlanInputHash: PlanInputHasher.Compute("Bug", "Description"),
+            ExpectedImplementationHead: "def456",
+            PublicationStage: ImplementationPublicationStage.BranchPublished);
+        await provider.CreateIssueCommentAsync(
+            Repository,
+            1,
+            CanonicalCommentMarkdown.Render(new CanonicalCommentContent(
+                "Original plan.", [], "Published implementation.",
+                CanonicalStateSerializer.ToDocument(reviewState, $"{Repository.Id}#42"))),
+            CancellationToken.None);
+        provider.MergeRequests[42] = new ProviderMergeRequest(
+            Repository, 42, reviewState.Branch, "other-target", "Bug", "Review description", true, false, false,
+            new AttachmentSource("merge-request-description", "42"));
+        Directory.CreateDirectory(Path.Combine(workspaceRoot, reviewState.WorkflowId.ToString(), "worktree"));
+
+        var outcome = await CreateWorkflow().RunReplanAsync(CreateConfig(), 1, reviewState, new FakeOmpClient(), CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
+        Assert.Equal(WaitingReason.CorruptState, outcome.State.WaitingReason);
+        Assert.Empty(git.ResetWorktrees);
+    }
+
+    [Fact]
     public async Task RunReplanAsyncFromReviewPreservesPublishedHistoryAndMergeRequestForRecovery()
     {
         provider.AddIssue(Repository, 1, "Bug", "Description");

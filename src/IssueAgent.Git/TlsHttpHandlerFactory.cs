@@ -60,27 +60,61 @@ public static class TlsHttpHandlerFactory
             }
 
             var resolved = await Dns.GetHostAddressesAsync(context.DnsEndPoint.Host, cancellationToken).ConfigureAwait(false);
-            var candidate = resolved.FirstOrDefault(validated.Contains);
-            if (candidate is null)
+            return await ConnectToValidatedAddressesAsync(
+                context.DnsEndPoint.Host,
+                context.DnsEndPoint.Port,
+                resolved,
+                validated,
+                cancellationToken).ConfigureAwait(false);
+        };
+        return handler;
+    }
+
+    internal static async ValueTask<Stream> ConnectToValidatedAddressesAsync(
+        string host,
+        int port,
+        IReadOnlyList<IPAddress> resolvedAddresses,
+        IReadOnlySet<IPAddress> validatedAddresses,
+        CancellationToken cancellationToken)
+    {
+        SocketException? lastConnectionFailure = null;
+        var hasValidatedAddress = false;
+
+        foreach (var address in resolvedAddresses)
+        {
+            if (!validatedAddresses.Contains(address))
             {
-                throw new InvalidOperationException(
-                    $"Refusing to connect to '{context.DnsEndPoint.Host}': its DNS answer no longer matches any address validated moments ago (possible DNS-rebinding attempt).");
+                continue;
             }
 
-            var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+            hasValidatedAddress = true;
+            var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
             try
             {
-                await socket.ConnectAsync(candidate, context.DnsEndPoint.Port, cancellationToken).ConfigureAwait(false);
+                await socket.ConnectAsync(address, port, cancellationToken).ConfigureAwait(false);
                 return new NetworkStream(socket, ownsSocket: true);
+            }
+            catch (SocketException exception)
+            {
+                socket.Dispose();
+                lastConnectionFailure = exception;
             }
             catch
             {
                 socket.Dispose();
                 throw;
             }
-        };
-        return handler;
+        }
+
+        if (!hasValidatedAddress)
+        {
+            throw new InvalidOperationException(
+                $"Refusing to connect to '{host}': its DNS answer no longer matches any address validated moments ago (possible DNS-rebinding attempt).");
+        }
+
+        throw lastConnectionFailure!;
     }
+
 
     private static bool IsTrusted(TlsTrust tlsTrust, X509Certificate certificate, SslPolicyErrors policyErrors)
     {

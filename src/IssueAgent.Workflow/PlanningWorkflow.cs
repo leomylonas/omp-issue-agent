@@ -167,7 +167,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             var planningResult = PlanningResult.Parse(outcome.Completed!.ResultJson);
             var reconciledResult = await ReconcileNewInputDuringPlanningAsync(
                 config, issueNumber, omp, initialState.OmpSessionId, worktreePath, context, planningResult, planningInput,
-                currentPlan: null, refreshMergeRequest: false, cancellationToken: cancellationToken)
+                currentPlan: null, refreshMergeRequest: false, durableMergeRequestIdentity: null, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
             return await PublishPlanAsync(
                 config,
@@ -239,19 +239,30 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
                 : [WorkflowCommand.Continue],
             cancellationToken).ConfigureAwait(false);
 
+        var hasVerifiedPublishedCheckpoint = HasVerifiedPublishedCheckpoint(currentState, existingContent);
+        ProviderMergeRequest? mergeRequest;
+        try
+        {
+            mergeRequest = hasVerifiedPublishedCheckpoint
+                ? await StoredMergeRequestIdentity.FindAsync(
+                    deps.Provider,
+                    config.Repository,
+                    existingContent.State.PullOrMergeRequest,
+                    currentState.Branch,
+                    currentState.TargetBranch,
+                    cancellationToken).ConfigureAwait(false)
+                : null;
+        }
+        catch (CanonicalStateException exception)
+        {
+            return await PauseForInvalidLinkedMergeRequestAsync(
+                config, issueNumber, currentState, existingContent, exception.Message, cancellationToken).ConfigureAwait(false);
+        }
+
         var worktreePath = WorktreePath(config, currentState.WorkflowId);
         var attachmentsPath = AttachmentsPath(config, currentState.WorkflowId);
         await PrepareWorktreeContentAsync(config, worktreePath, cancellationToken).ConfigureAwait(false);
         var currentPlan = new PlanContext(existingContent.State.PlanRevision, existingContent.PlanText, existingContent.DecisionsAndRationale);
-        var hasVerifiedPublishedCheckpoint = HasVerifiedPublishedCheckpoint(currentState, existingContent);
-        var mergeRequest = hasVerifiedPublishedCheckpoint
-            ? await StoredMergeRequestIdentity.FindAsync(
-                deps.Provider,
-                config.Repository,
-                existingContent.State.PullOrMergeRequest,
-                cancellationToken).ConfigureAwait(false)
-            : null;
-
         var planningInput = await CaptureInputSnapshotAsync(config, issueNumber, mergeRequest, cancellationToken).ConfigureAwait(false);
         var context = await deps.ContextBuilder
             .BuildAsync(config.Repository, issueNumber, workingState, currentPlan, mergeRequest, attachmentsPath, cancellationToken)
@@ -291,6 +302,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
                 planningInput,
                 currentPlan,
                 hasVerifiedPublishedCheckpoint,
+                existingContent.State.PullOrMergeRequest,
                 cancellationToken)
                 .ConfigureAwait(false);
             return await PublishPlanAsync(
@@ -304,6 +316,11 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
                 existingContent,
                 hasVerifiedPublishedCheckpoint,
                 cancellationToken).ConfigureAwait(false);
+        }
+        catch (CanonicalStateException exception)
+        {
+            return await PauseForInvalidLinkedMergeRequestAsync(
+                config, issueNumber, currentState, existingContent, exception.Message, cancellationToken).ConfigureAwait(false);
         }
         catch (WorkflowContractException exception)
         {
@@ -402,6 +419,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         InputSnapshot inputSnapshot,
         PlanContext? currentPlan,
         bool refreshMergeRequest,
+        string? durableMergeRequestIdentity,
         CancellationToken cancellationToken)
     {
         var result = initialResult;
@@ -410,9 +428,13 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         while (true)
         {
             var latestMergeRequest = refreshMergeRequest
-                ? await deps.Provider
-                    .FindMergeRequestAsync(config.Repository, context.WorkflowState.Branch, context.WorkflowState.TargetBranch, cancellationToken)
-                    .ConfigureAwait(false)
+                ? await StoredMergeRequestIdentity.FindAsync(
+                    deps.Provider,
+                    config.Repository,
+                    durableMergeRequestIdentity,
+                    context.WorkflowState.Branch,
+                    context.WorkflowState.TargetBranch,
+                    cancellationToken).ConfigureAwait(false)
                 : null;
             var latest = await CaptureInputSnapshotAsync(config, issueNumber, latestMergeRequest, cancellationToken).ConfigureAwait(false);
             if (latest == baseline)
@@ -572,6 +594,36 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             WaitingReason.ManualIntervention,
             $"Initial planning could not create its retained worktree after bounded retries ({exception.GetType().Name}). The durable checkpoint was preserved; resolve the local Git/worktree problem before continuing.",
             cancellationToken);
+    }
+
+    private async Task<WorkflowOutcome> PauseForInvalidLinkedMergeRequestAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState currentState,
+        CanonicalCommentContent existingContent,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        var pausedState = currentState with
+        {
+            OperationalState = WorkflowOperationalState.Waiting,
+            WaitingReason = WaitingReason.CorruptState,
+            UpdatedAt = deps.Clock.UtcNow,
+        };
+        await UpsertCanonicalCommentAsync(
+            config,
+            issueNumber,
+            existingContent with
+            {
+                State = CanonicalStateSerializer.ToDocument(pausedState, existingContent.State.PullOrMergeRequest),
+            },
+            cancellationToken).ConfigureAwait(false);
+        await TransitionLabelsAsync(config, issueNumber, pausedState.Phase, WorkflowOperationalState.Waiting, [], cancellationToken)
+            .ConfigureAwait(false);
+        await deps.Notifier.NotifyAsync(
+            new WorkflowNotification(WorkflowNotificationKind.HumanActionRequired, config.Repository.Id, issueNumber, pausedState.WorkflowId.ToString(), message),
+            cancellationToken).ConfigureAwait(false);
+        return new WorkflowOutcome(WorkflowOutcomeStatus.Waiting, pausedState, message);
     }
 
     private async Task<WorkflowOutcome> FailAsync(

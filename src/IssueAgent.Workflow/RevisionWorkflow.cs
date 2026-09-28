@@ -67,11 +67,22 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             WorkflowOperationalState.Working,
             currentState.Phase == WorkflowPhase.Review ? [WorkflowCommand.Revise] : [WorkflowCommand.Continue],
             cancellationToken).ConfigureAwait(false);
-        var mergeRequest = await StoredMergeRequestIdentity.FindAsync(
-            deps.Provider,
-            config.Repository,
-            existingContent.State.PullOrMergeRequest,
-            cancellationToken).ConfigureAwait(false);
+        ProviderMergeRequest? mergeRequest;
+        try
+        {
+            mergeRequest = await StoredMergeRequestIdentity.FindAsync(
+                deps.Provider,
+                config.Repository,
+                existingContent.State.PullOrMergeRequest,
+                currentState.Branch,
+                currentState.TargetBranch,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (CanonicalStateException exception)
+        {
+            return await EscalateAsync(config, issueNumber, workingState, existingContent, exception.Message, cancellationToken)
+                .ConfigureAwait(false);
+        }
         if (mergeRequest is null)
         {
             return await EscalateAsync(

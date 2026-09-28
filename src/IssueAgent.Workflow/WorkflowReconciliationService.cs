@@ -321,7 +321,7 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
             ? await dependencies.Provider.FindMergeRequestAsync(
                 config.Repository, state.Branch, state.TargetBranch, cancellationToken).ConfigureAwait(false)
             : await StoredMergeRequestIdentity.FindAsync(
-                dependencies.Provider, config.Repository, identity, cancellationToken).ConfigureAwait(false);
+                dependencies.Provider, config.Repository, identity, state.Branch, state.TargetBranch, cancellationToken).ConfigureAwait(false);
     }
 
     private static bool HasWorkflowMarker(WorkflowState state, ProviderMergeRequest mergeRequest) =>

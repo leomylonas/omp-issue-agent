@@ -1,40 +1,39 @@
 using System.Net;
 using System.Net.Http;
-
+using System.Net.Sockets;
+using System.Text;
 namespace IssueAgent.Git.Tests;
 
-public sealed class TlsHttpHandlerFactoryTests : IDisposable
+public sealed class TlsHttpHandlerFactoryTests : IAsyncLifetime
 {
-    private readonly HttpListener listener = new();
+    private static readonly byte[] OkResponse = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"u8.ToArray();
+    private readonly TcpListener listener = new(IPAddress.Loopback, 0);
+    private readonly CancellationTokenSource listenerCancellation = new();
+    private readonly Task server;
     private readonly Uri baseUri;
 
     public TlsHttpHandlerFactoryTests()
     {
-        var port = GetFreeTcpPort();
-        baseUri = new Uri($"http://127.0.0.1:{port}/");
-        listener.Prefixes.Add(baseUri.ToString());
         listener.Start();
-        _ = Task.Run(ServeOnceAsync);
+        baseUri = new Uri($"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}/");
+        server = Task.Run(() => ServeAsync(listenerCancellation.Token));
     }
 
-    private async Task ServeOnceAsync()
+    private async Task ServeAsync(CancellationToken cancellationToken)
     {
         try
         {
-            while (listener.IsListening)
+            while (true)
             {
-                var context = await listener.GetContextAsync().ConfigureAwait(false);
-                context.Response.StatusCode = 200;
-                var body = "ok"u8.ToArray();
-                context.Response.ContentLength64 = body.Length;
-                await context.Response.OutputStream.WriteAsync(body).ConfigureAwait(false);
-                context.Response.OutputStream.Close();
+                using var client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
+                await using var stream = client.GetStream();
+                await stream.WriteAsync(OkResponse, cancellationToken).ConfigureAwait(false);
             }
         }
-        catch (ObjectDisposedException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
-        catch (HttpListenerException)
+        catch (SocketException) when (cancellationToken.IsCancellationRequested)
         {
         }
     }
@@ -49,6 +48,33 @@ public sealed class TlsHttpHandlerFactoryTests : IDisposable
         using var response = await httpClient.SendAsync(request, CancellationToken.None);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ConnectCallbackFallsBackAcrossValidatedAddressesWithoutConnectingToUnvalidatedDnsAnswers()
+    {
+        await using var stream = await TlsHttpHandlerFactory.ConnectToValidatedAddressesAsync(
+            "attachment.example",
+            baseUri.Port,
+            [
+                IPAddress.Parse("127.0.0.3"),
+                IPAddress.Parse("127.0.0.2"),
+                IPAddress.Loopback,
+            ],
+            new HashSet<IPAddress>
+            {
+                IPAddress.Parse("127.0.0.2"),
+                IPAddress.Loopback,
+            },
+            TestContext.Current.CancellationToken);
+
+        await stream.WriteAsync(
+            "GET / HTTP/1.1\r\nHost: attachment.example\r\nConnection: close\r\n\r\n"u8.ToArray(),
+            TestContext.Current.CancellationToken);
+        var buffer = new byte[1024];
+        var bytesRead = await stream.ReadAsync(buffer, TestContext.Current.CancellationToken);
+
+        Assert.Contains("200 OK", Encoding.ASCII.GetString(buffer, 0, bytesRead), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -83,18 +109,13 @@ public sealed class TlsHttpHandlerFactoryTests : IDisposable
         Assert.Contains("no longer matches", exception!.ToString(), StringComparison.Ordinal);
     }
 
-    private static int GetFreeTcpPort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
+    public ValueTask InitializeAsync() => ValueTask.CompletedTask;
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
+        listenerCancellation.Cancel();
         listener.Stop();
-        listener.Close();
+        await server.ConfigureAwait(false);
+        listenerCancellation.Dispose();
     }
 }

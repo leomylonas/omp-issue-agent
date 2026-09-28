@@ -29,7 +29,7 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task ReconcilesPublishedRequestByStoredIdentityRatherThanMutableBranch()
+    public async Task ReconciliationEscalatesWhenStoredRequestWasRetargeted()
     {
         var (state, canonical) = SeedWorkflow(WorkflowPhase.Review, WorkflowOperationalState.Waiting, WaitingReason.ReviewRequested);
         state = state with { ReviewFeedbackCutoff = clock.UtcNow };
@@ -49,9 +49,9 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
 
         var result = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
 
-        Assert.Equal(ReconciliationDisposition.ResumeAllowed, result.Disposition);
-        Assert.Equal(state.WorkflowId, result.State!.WorkflowId);
-        Assert.Equal(7, result.MergeRequest!.Number);
+        Assert.Equal(ReconciliationDisposition.Corrupt, result.Disposition);
+        Assert.Null(result.State);
+        Assert.Contains("corruption-warning", Assert.Single(provider.UpdatedComments).Body, StringComparison.Ordinal);
     }
 
     [Fact]

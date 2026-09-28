@@ -186,6 +186,36 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
     }
 
     [Fact]
+    public void ApplyAuthenticationRemovesInheritedTlsOverridesForSystemTrust()
+    {
+        var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example/octo/widgets.git");
+        var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
+        startInfo.Environment["GIT_SSL_NO_VERIFY"] = "true";
+        startInfo.Environment["GIT_SSL_CAINFO"] = "/tmp/attacker-ca.pem";
+        startInfo.Environment["GIT_SSL_CIPHER_LIST"] = "insecure";
+
+        InvokeApplyAuthentication(startInfo, GitAuthentication.Anonymous(TlsTrust.System), Track());
+
+        Assert.DoesNotContain(startInfo.Environment.Keys, key => key.StartsWith("GIT_SSL_", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void ApplyAuthenticationReplacesInheritedCaOverrideForNoneTrust()
+    {
+        var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example/octo/widgets.git");
+        var startInfo = new ProcessStartInfo { WorkingDirectory = worktreePath };
+        startInfo.Environment["GIT_SSL_CAINFO"] = "/tmp/attacker-ca.pem";
+
+        InvokeApplyAuthentication(
+            startInfo,
+            GitAuthentication.Anonymous(new TlsTrust { Mode = TlsTrustMode.None }),
+            Track());
+
+        Assert.Equal("true", startInfo.Environment["GIT_SSL_NO_VERIFY"]);
+        Assert.False(startInfo.Environment.ContainsKey("GIT_SSL_CAINFO"));
+    }
+
+    [Fact]
     public void ApplyAuthenticationRejectsPinnedHttpsLfsWithoutAFingerprint()
     {
         var worktreePath = CreateWorktreeWithOrigin("https://git.trusted.example/octo/widgets.git");
