@@ -757,6 +757,28 @@ public sealed class RevisionWorkflowTests : IDisposable
         Assert.Contains("branch protection", Assert.Single(notifier.Notifications).Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal("protected-branch", CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body).State.WaitingReason);
     }
+    [Fact]
+    public async Task RunAsyncPausesBeforePushWhenLinkedRequestIsRetargetedDuringLfsUpload()
+    {
+        var state = await SeedReviewStateAsync();
+        git.LfsRequired = true;
+        git.OnLfsUpload = () => provider.MergeRequests[1] = provider.MergeRequests[1] with
+        {
+            TargetBranch = "retargeted",
+        };
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"summary":"Addressed review concern.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WaitingReason.ManualIntervention, outcome.State.WaitingReason);
+        Assert.Equal(0, git.PushCallCount);
+    }
+
 
 
     private async Task<WorkflowState> SeedReviewStateAsync()

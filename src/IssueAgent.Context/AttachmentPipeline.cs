@@ -143,7 +143,6 @@ public sealed class AttachmentPipeline(
                 downloaded = downloaded with { ContentDigest = ComputeContentDigest(downloaded.LocalPath) };
                 remainingBudget.Consume(downloaded.SizeBytes);
                 CacheDownloadedAttachment(destinationDirectory, url, downloaded);
-                ProtectRetainedAttachmentDirectory(destinationDirectory);
                 results.Add(new AttachmentReference(
                     url.ToString(),
                     downloaded.SafeFileName,
@@ -184,6 +183,10 @@ public sealed class AttachmentPipeline(
                 // failure. Omitted, not fatal: one bad link must not abort the whole context.
                 DeletePartialFile(partialPath);
                 results.Add(Omitted(providerAttachment, $"Attachment download failed: {exception.StatusCode?.ToString() ?? exception.GetType().Name}."));
+            }
+            finally
+            {
+                ProtectRetainedAttachmentDirectory(destinationDirectory);
             }
         }
 
@@ -446,10 +449,13 @@ public sealed class AttachmentPipeline(
             return;
         }
 
-        File.SetUnixFileMode(destinationDirectory, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        File.SetUnixFileMode(
+            destinationDirectory,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+            UnixFileMode.GroupRead | UnixFileMode.GroupExecute);
         foreach (var file in Directory.EnumerateFiles(destinationDirectory))
         {
-            File.SetUnixFileMode(file, UnixFileMode.UserRead);
+            File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead);
         }
     }
 

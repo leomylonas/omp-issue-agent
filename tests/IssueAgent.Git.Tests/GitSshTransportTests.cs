@@ -70,6 +70,33 @@ public sealed class GitSshTransportTests : IDisposable
     }
 
     [Fact]
+    public async Task CloneBareAsyncTracksFetchedOriginHeadsExplicitly()
+    {
+        var bareRemotePath = Track(TempGitFixtures.CreateBareRemoteRepository(out _));
+        var clonePath = Track(TempGitFixtures.CreateTempDirectory());
+        Directory.Delete(clonePath);
+
+        await WithFakeCommandAsync(
+            "ssh",
+            $"#!/bin/sh\nexec git-upload-pack \"{bareRemotePath}\"\n",
+            () => GitSshTransport.CloneBareAsync(
+                $"git@localhost:{bareRemotePath}",
+                clonePath,
+                SshAuthentication(),
+                CancellationToken.None).AsTask());
+
+        using var clone = new Repository(clonePath);
+        var origin = clone.Network.Remotes["origin"];
+        Assert.Contains(
+            origin.FetchRefSpecs,
+            spec => string.Equals(
+                spec.Specification,
+                "+refs/heads/*:refs/remotes/origin/*",
+                StringComparison.Ordinal));
+        Assert.NotNull(clone.Branches["origin/main"]);
+    }
+
+    [Fact]
     public async Task CloneScrubsInheritedGitConfigurationAndAskPassPrograms()
     {
         var bareRemotePath = Track(TempGitFixtures.CreateBareRemoteRepository(out _));

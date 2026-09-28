@@ -780,6 +780,48 @@ public sealed class ImplementationWorkflowTests : IDisposable
         Assert.Contains("Continued after acknowledgement.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
         Assert.DoesNotContain(WorkflowCommandLabels.Continue, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
     }
+    [Fact]
+    public async Task RunAsyncContinuationPausesBeforePushWhenLinkedRequestDescriptionChangesDuringLfsUpload()
+    {
+        var plannedState = await SeedApprovedPlanAsync();
+        var state = plannedState with
+        {
+            Phase = WorkflowPhase.Implementing,
+            OperationalState = WorkflowOperationalState.Waiting,
+            WaitingReason = WaitingReason.NewInputDuringImplementation,
+            PublicationStage = ImplementationPublicationStage.BranchPublished,
+        };
+        var canonical = Assert.Single(provider.IssueComments[(Repository.Id, 1)]);
+        var content = CanonicalCommentMarkdown.Parse(canonical.Body);
+        await provider.UpdateIssueCommentAsync(
+            Repository,
+            1,
+            canonical.Id,
+            CanonicalCommentMarkdown.Render(content with
+            {
+                ImplementationResult = "Retained implementation result.",
+                State = CanonicalStateSerializer.ToDocument(state, "github/octo/widgets#1"),
+            }),
+            CancellationToken.None);
+        AddPublishedMergeRequest(state);
+        git.LfsRequired = true;
+        git.OnLfsUpload = () => provider.MergeRequests[1] = provider.MergeRequests[1] with
+        {
+            Description = "Edited linked request description.",
+        };
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"summary":"Continued implementation.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await CreateWorkflow().RunAsync(
+            CreateConfig(), WorkflowMode.Full, 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WaitingReason.NewInputDuringImplementation, outcome.State.WaitingReason);
+        Assert.Equal(0, git.PushCallCount);
+    }
+
 
 
     [Fact]

@@ -70,7 +70,13 @@ public sealed partial class PollingScheduler(
         ConcurrentQueue<WorkflowCandidate> discovered,
         CancellationToken cancellationToken)
     {
-        await pollingLimiter.WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (!await pollingEligibility.AcquirePollingSlotIfEligibleAsync(
+            pollingLimiter,
+            providerOptions.Name,
+            cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
         var stopwatch = Stopwatch.StartNew();
         var provider = providers.Get(providerOptions.Name);
         var repository = new RepositoryRef(

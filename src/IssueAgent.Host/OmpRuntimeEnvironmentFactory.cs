@@ -30,7 +30,7 @@ public sealed class OmpRuntimeEnvironmentFactory(EffectiveIssueAgentConfiguratio
         // OMP performs commits inside the worktree. Apply identity after configured execution
         // variables so the repository's resolved GitIdentity always governs those commits.
         var environment = new Dictionary<string, string>(
-            OmpEnvironment.Build(ambientEnvironment, connection, executionValues, GetNonOmpSecretSourceNames(repository)),
+            OmpEnvironment.Build(ambientEnvironment, connection, executionValues, GetNonOmpSecretSourceNames(configuration.Source)),
             StringComparer.Ordinal);
         environment["GIT_AUTHOR_NAME"] = gitIdentity.Name;
         environment["GIT_AUTHOR_EMAIL"] = gitIdentity.Email;
@@ -39,19 +39,20 @@ public sealed class OmpRuntimeEnvironmentFactory(EffectiveIssueAgentConfiguratio
         return environment;
     }
 
-    private HashSet<string> GetNonOmpSecretSourceNames(EffectiveRepositoryConfiguration repository)
+    internal static HashSet<string> GetNonOmpSecretSourceNames(IssueAgentOptions options)
     {
-        var ompSecretSources = configuration.Source.Omp.ExecutionSecrets.Values
-            .Concat(repository.Source.Settings.OmpExecutionSecrets.Values)
+        var ompSecretSources = options.Omp.ExecutionSecrets.Values
+            .Concat(options.Providers.SelectMany(provider => provider.Repositories)
+                .SelectMany(repository => repository.Settings.OmpExecutionSecrets.Values))
             .Select(source => source.Env)
             .OfType<string>()
             .Where(name => !string.IsNullOrWhiteSpace(name))
             .ToHashSet(StringComparer.Ordinal);
         var allSecretSources = new HashSet<string>(StringComparer.Ordinal);
-        AddSecretSource(allSecretSources, configuration.Source.Notifications.Telegram?.BotToken);
-        AddSecretSource(allSecretSources, configuration.Source.Notifications.Slack?.WebhookUrl);
-        AddGitSecretSources(allSecretSources, configuration.Source.Defaults.Git);
-        foreach (var provider in configuration.Source.Providers)
+        AddSecretSource(allSecretSources, options.Notifications.Telegram?.BotToken);
+        AddSecretSource(allSecretSources, options.Notifications.Slack?.WebhookUrl);
+        AddGitSecretSources(allSecretSources, options.Defaults.Git);
+        foreach (var provider in options.Providers)
         {
             AddSecretSource(allSecretSources, provider.Token);
             AddGitSecretSources(allSecretSources, provider.Defaults.Git);

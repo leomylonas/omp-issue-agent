@@ -183,7 +183,8 @@ public sealed partial class StartupValidator(
                         entry => entry.Value as string,
                         StringComparer.Ordinal),
                 connection,
-                MergeExecutionValues(options.Omp.ExecutionVariables, omp.ExecutionSecrets));
+                MergeExecutionValues(options.Omp.ExecutionVariables, omp.ExecutionSecrets),
+                OmpRuntimeEnvironmentFactory.GetNonOmpSecretSourceNames(options));
             await using var client = OmpProcessClientFactory.Start(
                 omp.ExecutablePath,
                 ["--mode", "rpc", "--session-dir", probeDirectory],

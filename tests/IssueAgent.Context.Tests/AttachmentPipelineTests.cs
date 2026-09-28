@@ -30,6 +30,69 @@ public sealed class AttachmentPipelineTests
     }
 
     [Fact]
+    public async Task ProcessAsyncProtectsRetainedAttachmentsForOmpGroupWithoutGrantingGroupWrite()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        const string url = "https://example.com/attachment.txt";
+        provider.DownloadableContent[url] = "contents"u8.ToArray();
+        var pipeline = new AttachmentPipeline(provider, new AttachmentLimits());
+
+        var attachment = Assert.Single(await pipeline.ProcessAsync(
+            $"[attachment]({url})",
+            new AttachmentSource("issue-description", "1"),
+            destination,
+            new RemainingBudget(100),
+            CancellationToken.None));
+
+        var directoryMode = File.GetUnixFileMode(destination);
+        var fileMode = File.GetUnixFileMode(attachment.LocalPath);
+        Assert.True((directoryMode & (UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                                      UnixFileMode.GroupRead | UnixFileMode.GroupExecute)) ==
+                    (UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                     UnixFileMode.GroupRead | UnixFileMode.GroupExecute));
+        Assert.False((directoryMode & UnixFileMode.GroupWrite) != 0);
+        Assert.True((fileMode & (UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead)) ==
+                    (UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead));
+        Assert.False((fileMode & UnixFileMode.GroupWrite) != 0);
+    }
+
+    [Fact]
+    public async Task ProcessAsyncRestoresAttachmentProtectionWhenDownloadFailsUnexpectedly()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        provider.AttachmentDownloadOverride = (_, directory, _) =>
+        {
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(Path.Combine(directory, "partial.txt"), "partial");
+            throw new InvalidOperationException("download failed unexpectedly");
+        };
+        var pipeline = new AttachmentPipeline(provider, new AttachmentLimits());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.ProcessAsync(
+            "[attachment](https://example.com/attachment.txt)",
+            new AttachmentSource("issue-description", "1"),
+            destination,
+            new RemainingBudget(100),
+            CancellationToken.None));
+
+        var directoryMode = File.GetUnixFileMode(destination);
+        var fileMode = File.GetUnixFileMode(Path.Combine(destination, "partial.txt"));
+        Assert.True((directoryMode & (UnixFileMode.GroupRead | UnixFileMode.GroupExecute)) ==
+                    (UnixFileMode.GroupRead | UnixFileMode.GroupExecute));
+        Assert.False((directoryMode & UnixFileMode.GroupWrite) != 0);
+        Assert.True((fileMode & UnixFileMode.GroupRead) != 0);
+        Assert.False((fileMode & UnixFileMode.GroupWrite) != 0);
+    }
+
+    [Fact]
     public async Task ProcessAsyncSkipsOrdinaryWebpageLinksThatAreNeitherTrustedNorDirectFiles()
     {
         var pipeline = new AttachmentPipeline(provider, new AttachmentLimits());

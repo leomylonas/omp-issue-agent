@@ -22,8 +22,22 @@ namespace IssueAgent.Git;
 /// </summary>
 public sealed partial class GitSshTransport
 {
-    public static ValueTask CloneBareAsync(string cloneUrl, string destinationPath, GitAuthentication authentication, CancellationToken cancellationToken) =>
-        RunGitAsync(["clone", "--bare", "--", cloneUrl, destinationPath], workingDirectory: null, cloneUrl, authentication, cancellationToken);
+    public static async ValueTask CloneBareAsync(string cloneUrl, string destinationPath, GitAuthentication authentication, CancellationToken cancellationToken)
+    {
+        await RunGitAsync(["clone", "--bare", "--", cloneUrl, destinationPath], workingDirectory: null, cloneUrl, authentication, cancellationToken).ConfigureAwait(false);
+        await RunGitAsync(
+            ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
+            destinationPath,
+            cloneUrl,
+            authentication,
+            cancellationToken).ConfigureAwait(false);
+        await RunGitAsync(
+            ["fetch", "origin", "--prune"],
+            destinationPath,
+            cloneUrl,
+            authentication,
+            cancellationToken).ConfigureAwait(false);
+    }
 
     public static async ValueTask FetchAsync(string bareRepositoryPath, GitAuthentication authentication, CancellationToken cancellationToken) =>
         await RunGitAsync(["fetch", "--all", "--prune"], bareRepositoryPath, await GetOriginUrlAsync(bareRepositoryPath, cancellationToken).ConfigureAwait(false), authentication, cancellationToken).ConfigureAwait(false);

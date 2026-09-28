@@ -98,7 +98,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
     public ValueTask<string> ResolveBranchCommitAsync(string repositoryId, string branchName, CancellationToken cancellationToken)
     {
         using var repo = new Repository(BareRepositoryPath(repositoryId));
-        var branch = repo.Branches[$"origin/{branchName}"] ?? repo.Branches[branchName];
+        var branch = repo.Branches[$"origin/{branchName}"];
         if (branch is null)
         {
             throw new GitReferenceNotFoundException($"Branch '{branchName}' was not found in repository '{repositoryId}'.");
@@ -119,14 +119,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
             return ValueTask.FromResult<string?>(remoteBranch.Tip.Sha);
         }
 
-        // `git clone --bare` (used by the SSH transport) fetches origin heads directly into
-        // refs/heads rather than refs/remotes/origin. That ref is still origin-owned according to
-        // the bare repository's fetch refspec; it is not a worktree-local fallback.
-        var origin = repo.Network.Remotes["origin"];
-        var fetchesHeadsDirectly = origin?.FetchRefSpecs.Any(spec =>
-            spec.Specification.Contains(":refs/heads/", StringComparison.Ordinal)) == true;
-        return ValueTask.FromResult(
-            fetchesHeadsDirectly ? repo.Branches[branchName]?.Tip.Sha : null);
+        return ValueTask.FromResult<string?>(null);
     }
 
     public ValueTask<bool> IsAncestorAsync(

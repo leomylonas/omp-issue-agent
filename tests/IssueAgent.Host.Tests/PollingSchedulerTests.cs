@@ -60,6 +60,24 @@ public sealed class PollingSchedulerTests
     }
 
     [Fact]
+    public async Task PollingEligibilityRechecksProviderAfterWaitingForPollingSlot()
+    {
+        var schedule = new PollingEligibilitySchedule();
+        using var pollingLimiter = new SemaphoreSlim(1, 1);
+        await pollingLimiter.WaitAsync(TestContext.Current.CancellationToken);
+
+        var waitingAcquisition = schedule.AcquirePollingSlotIfEligibleAsync(
+            pollingLimiter,
+            "github",
+            TestContext.Current.CancellationToken);
+        schedule.Defer("github", TimeSpan.FromMinutes(1));
+        pollingLimiter.Release();
+
+        Assert.False(await waitingAcquisition);
+        Assert.Equal(1, pollingLimiter.CurrentCount);
+    }
+
+    [Fact]
     public void PollingEligibilitySaturatesOnlyAnOverflowingProviderRetryWindow()
     {
         var time = new AdjustableTimeProvider(DateTimeOffset.Parse("2026-01-01T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture));

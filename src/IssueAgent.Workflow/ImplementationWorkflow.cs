@@ -109,18 +109,12 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         }
 
         ProviderMergeRequest? linkedMergeRequest = null;
-        if (currentState.PublicationStage == ImplementationPublicationStage.BranchPublished &&
-            existingContent.State.PullOrMergeRequest is not null)
+        if (existingContent.State.PullOrMergeRequest is not null)
         {
             try
             {
-                linkedMergeRequest = await StoredMergeRequestIdentity.FindAsync(
-                    deps.Provider,
-                    config.Repository,
-                    existingContent.State.PullOrMergeRequest,
-                    currentState.Branch,
-                    currentState.TargetBranch,
-                    cancellationToken).ConfigureAwait(false);
+                linkedMergeRequest = await RefreshLinkedMergeRequestAsync(
+                    config, currentState, existingContent, cancellationToken).ConfigureAwait(false);
             }
             catch (StoredMergeRequestIdentity.StoredMergeRequestUnavailableException exception)
             {
@@ -157,14 +151,15 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                 // The human explicitly asked to continue past a pause that intentionally kept the
                 // worktree and its commits (specification §22, §25): resume in place rather than
                 // resetting or redoing the implementation.
-                return await ResumeAfterPauseAsync(config, issueNumber, currentState, existingContent, issue, omp, cancellationToken)
+                return await ResumeAfterPauseAsync(
+                    config, issueNumber, currentState, existingContent, issue, omp, linkedMergeRequest, cancellationToken)
                     .ConfigureAwait(false);
             }
 
             if (currentState.PublicationStage == ImplementationPublicationStage.ResultCheckpointed)
             {
                 return await RecoverResultCheckpointedImplementationAsync(
-                    config, issueNumber, currentState, existingContent, issue, cancellationToken).ConfigureAwait(false);
+                    config, issueNumber, currentState, existingContent, issue, linkedMergeRequest, cancellationToken).ConfigureAwait(false);
             }
 
             var recovered = await TryRecoverPublishedImplementationAsync(config, issueNumber, currentState, existingContent, cancellationToken)
@@ -206,8 +201,8 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
 
         var currentPlan = new PlanContext(existingContent.State.PlanRevision, existingContent.PlanText, existingContent.DecisionsAndRationale);
         var attachmentsPath = AttachmentsPath(config, currentState.WorkflowId);
-        var (context, inputSnapshot) = await BuildContextForInputSnapshotAsync(
-            config, issueNumber, workingState, currentPlan, linkedMergeRequest, attachmentsPath, cancellationToken).ConfigureAwait(false);
+        (var context, var inputSnapshot, linkedMergeRequest) = await BuildContextForInputSnapshotAsync(
+            config, issueNumber, workingState, existingContent, currentPlan, linkedMergeRequest, attachmentsPath, cancellationToken).ConfigureAwait(false);
         if (IsPlanStale(inputSnapshot, existingContent))
         {
             return await PauseForStalePlanAsync(
@@ -253,6 +248,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         CanonicalCommentContent existingContent,
         ProviderIssue issue,
         IOmpClient omp,
+        ProviderMergeRequest? linkedMergeRequest,
         CancellationToken cancellationToken)
     {
         if (existingContent.ImplementationResult is not { Length: > 0 })
@@ -273,7 +269,9 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Implementing, WorkflowOperationalState.Working, [WorkflowCommand.Continue], cancellationToken).ConfigureAwait(false);
 
         var worktreePath = WorktreePath(config, currentState.WorkflowId);
-        var inputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
+        linkedMergeRequest = await RefreshLinkedMergeRequestAsync(
+            config, currentState, existingContent, cancellationToken).ConfigureAwait(false);
+        var inputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, linkedMergeRequest, cancellationToken).ConfigureAwait(false);
         await omp.SelectRoleAsync(config.ImplementationRole, cancellationToken).ConfigureAwait(false);
         var continuationOutcome = await OmpRunCollector
             .RunToCompletionAsync(
@@ -305,7 +303,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         }
 
         return await PublishImplementationResultAsync(
-            config, issueNumber, workingState, workingContent, worktreePath, issue, omp, null,
+            config, issueNumber, workingState, workingContent, worktreePath, issue, omp, linkedMergeRequest,
             result.RenderMarkdown(), inputSnapshot, cancellationToken).ConfigureAwait(false);
     }
 
@@ -414,6 +412,8 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         // Re-check human input immediately before publication. This gate covers the corrective pass
         // and conflict resolution above; the identical gate after LFS upload covers the final
         // upload window before the branch becomes visible to reviewers.
+        mergeRequest = await RefreshLinkedMergeRequestAsync(
+            config, workingState, workingContent, cancellationToken).ConfigureAwait(false);
         var latestInputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, mergeRequest, cancellationToken).ConfigureAwait(false);
         if (IsPlanStale(latestInputSnapshot, workingContent))
         {
@@ -498,6 +498,8 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
 
         // LFS upload can take long enough for human input to arrive. Do not push a branch based on
         // work that was produced without that input.
+        mergeRequest = await RefreshLinkedMergeRequestAsync(
+            config, checkpointState, checkpointContent, cancellationToken).ConfigureAwait(false);
         latestInputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, mergeRequest, cancellationToken).ConfigureAwait(false);
         if (IsPlanStale(latestInputSnapshot, workingContent))
         {
@@ -518,6 +520,8 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                 cancellationToken).ConfigureAwait(false);
         }
 
+        await RefreshLinkedMergeRequestAsync(
+            config, checkpointState, checkpointContent, cancellationToken).ConfigureAwait(false);
         try
         {
             await deps.Git.PushAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
@@ -563,6 +567,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         WorkflowState currentState,
         CanonicalCommentContent existingContent,
         ProviderIssue issue,
+        ProviderMergeRequest? linkedMergeRequest,
         CancellationToken cancellationToken)
     {
         if (existingContent.ImplementationResult is not { Length: > 0 } implementationResult ||
@@ -597,7 +602,9 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                 cancellationToken).ConfigureAwait(false);
         }
 
-        var recoveryInput = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
+        linkedMergeRequest = await RefreshLinkedMergeRequestAsync(
+            config, currentState, existingContent, cancellationToken).ConfigureAwait(false);
+        var recoveryInput = await CaptureInputSnapshotAsync(config, issueNumber, linkedMergeRequest, cancellationToken).ConfigureAwait(false);
         if (!string.Equals(recoveryInput.Digest, implementationInputDigest, StringComparison.Ordinal))
         {
             return await PauseAsync(
@@ -632,7 +639,9 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         {
             // Recovery replays privileged publication work without rerunning OMP. Capture its own
             // baseline because human input may arrive after the original attempt was checkpointed.
-            var inputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
+            linkedMergeRequest = await RefreshLinkedMergeRequestAsync(
+                config, currentState, existingContent, cancellationToken).ConfigureAwait(false);
+            var inputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, linkedMergeRequest, cancellationToken).ConfigureAwait(false);
             try
             {
                 await deps.Git.PublishChangedSubmodulesAsync(
@@ -659,7 +668,9 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
 
             // Submodule publication and LFS upload can both take long enough for new human input
             // to arrive. Do not make the checkpointed branch visible until that input is reviewed.
-            var latestInputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
+            linkedMergeRequest = await RefreshLinkedMergeRequestAsync(
+                config, currentState, existingContent, cancellationToken).ConfigureAwait(false);
+            var latestInputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, linkedMergeRequest, cancellationToken).ConfigureAwait(false);
             if (IsPlanStale(latestInputSnapshot, existingContent))
             {
                 return await PauseForStalePlanAsync(
@@ -679,6 +690,8 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                     cancellationToken).ConfigureAwait(false);
             }
 
+            await RefreshLinkedMergeRequestAsync(
+                config, currentState, existingContent, cancellationToken).ConfigureAwait(false);
             try
             {
                 await deps.Git.PushAsync(
@@ -1021,10 +1034,11 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
     /// <summary>Captures implementation input before prompt construction. When input changes while
     /// context is assembled, rebuild the prompt context and capture a final baseline for the
     /// pre-prompt plan-staleness and pre-push input gates.</summary>
-    private async Task<(AgentContext Context, InputSnapshot InputSnapshot)> BuildContextForInputSnapshotAsync(
+    private async Task<(AgentContext Context, InputSnapshot InputSnapshot, ProviderMergeRequest? MergeRequest)> BuildContextForInputSnapshotAsync(
         WorkflowRepositoryConfig config,
         long issueNumber,
         WorkflowState workingState,
+        CanonicalCommentContent existingContent,
         PlanContext currentPlan,
         ProviderMergeRequest? mergeRequest,
         string attachmentsPath,
@@ -1032,14 +1046,18 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
     {
         while (true)
         {
+            mergeRequest = await RefreshLinkedMergeRequestAsync(
+                config, workingState, existingContent, cancellationToken).ConfigureAwait(false);
             var baseline = await CaptureInputSnapshotAsync(config, issueNumber, mergeRequest, cancellationToken).ConfigureAwait(false);
             var context = await deps.ContextBuilder
                 .BuildAsync(config.Repository, issueNumber, workingState, currentPlan, mergeRequest, attachmentsPath, cancellationToken)
                 .ConfigureAwait(false);
+            mergeRequest = await RefreshLinkedMergeRequestAsync(
+                config, workingState, existingContent, cancellationToken).ConfigureAwait(false);
             var reconciled = await CaptureInputSnapshotAsync(config, issueNumber, mergeRequest, cancellationToken).ConfigureAwait(false);
             if (reconciled == baseline)
             {
-                return (context, baseline);
+                return (context, baseline, mergeRequest);
             }
         }
     }
@@ -1051,6 +1069,19 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                 ? $"{Title}\0{Description}\0{CommentsDigest}"
                 : $"{Title}\0{Description}\0{CommentsDigest}\0{MergeRequestDigest}")));
     }
+
+    private Task<ProviderMergeRequest?> RefreshLinkedMergeRequestAsync(
+        WorkflowRepositoryConfig config,
+        WorkflowState state,
+        CanonicalCommentContent content,
+        CancellationToken cancellationToken) =>
+        StoredMergeRequestIdentity.FindAsync(
+            deps.Provider,
+            config.Repository,
+            content.State.PullOrMergeRequest,
+            state.Branch,
+            state.TargetBranch,
+            cancellationToken);
 
     private async Task<InputSnapshot> CaptureInputSnapshotAsync(
         WorkflowRepositoryConfig config,
@@ -1105,8 +1136,6 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                 : Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('|', requestStamps)))));
     }
 
-    private Task<InputSnapshot> CaptureInputSnapshotAsync(WorkflowRepositoryConfig config, long issueNumber, CancellationToken cancellationToken) =>
-        CaptureInputSnapshotAsync(config, issueNumber, mergeRequest: null, cancellationToken);
 
     private async Task<WorkflowOutcome> FailAsync(WorkflowRepositoryConfig config, long issueNumber, WorkflowState workingState, string message, CancellationToken cancellationToken)
     {

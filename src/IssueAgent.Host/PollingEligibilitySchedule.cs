@@ -16,6 +16,22 @@ internal sealed class PollingEligibilitySchedule(TimeProvider? timeProvider = nu
         }
     }
 
+    /// <summary>Acquires a polling slot only when the provider remains eligible at acquisition time.</summary>
+    public async Task<bool> AcquirePollingSlotIfEligibleAsync(
+        SemaphoreSlim pollingLimiter,
+        string providerName,
+        CancellationToken cancellationToken)
+    {
+        await pollingLimiter.WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (IsEligible(providerName))
+        {
+            return true;
+        }
+
+        pollingLimiter.Release();
+        return false;
+    }
+
     public void Defer(string repositoryKey, TimeSpan retryAfter)
     {
         var now = timeProvider.GetUtcNow();

@@ -236,6 +236,20 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task TryResolveRemoteBranchCommitAsyncDoesNotTreatBareLocalHeadsAsAuthoritative()
+    {
+        var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out _));
+        const string repositoryId = "repo-authoritative-head";
+        await manager.EnsureBareRepositoryAsync(repositoryId, remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var barePath = Path.Combine(reposRoot, repositoryId);
+
+        RunGitCli(barePath, "update-ref", "-d", "refs/remotes/origin/main");
+        RunGitCli(barePath, "config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*");
+
+        Assert.Null(await manager.TryResolveRemoteBranchCommitAsync(repositoryId, "main", CancellationToken.None));
+    }
+
+    [Fact]
     public async Task FetchAsyncBringsNewRemoteCommits()
     {
         var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out _));

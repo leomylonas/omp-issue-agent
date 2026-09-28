@@ -200,6 +200,15 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         IOmpClient omp,
         CancellationToken cancellationToken)
     {
+        mergeRequest = await StoredMergeRequestIdentity.FindAsync(
+            deps.Provider,
+            config.Repository,
+            workingContent.State.PullOrMergeRequest,
+            workingState.Branch,
+            workingState.TargetBranch,
+            cancellationToken).ConfigureAwait(false)
+            ?? throw new WorkflowContractException("Cannot publish revision: no merge request was found for this workflow's branch.");
+
         // The checkpoint includes both the result and the revising/working state. A restart between
         // recording the result and pushing can therefore only resume this retained revision.
         var publicationCheckpoint = workingContent with { ImplementationResult = resultMarkdown };
@@ -333,6 +342,23 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 cancellationToken).ConfigureAwait(false);
         }
 
+        try
+        {
+            mergeRequest = await StoredMergeRequestIdentity.FindAsync(
+                deps.Provider,
+                config.Repository,
+                workingContent.State.PullOrMergeRequest,
+                workingState.Branch,
+                workingState.TargetBranch,
+                cancellationToken).ConfigureAwait(false)
+                ?? throw new WorkflowContractException("Cannot publish revision: no merge request was found for this workflow's branch.");
+        }
+        catch (StoredMergeRequestIdentity.StoredMergeRequestUnavailableException exception)
+        {
+            return await PauseForNewFeedbackAsync(
+                config, issueNumber, workingState, publicationCheckpoint, resultMarkdown,
+                exception.Message, cancellationToken, WaitingReason.ManualIntervention).ConfigureAwait(false);
+        }
         try
         {
             await deps.Git.PushAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);

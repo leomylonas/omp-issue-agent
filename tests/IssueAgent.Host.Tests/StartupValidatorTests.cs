@@ -163,6 +163,56 @@ public sealed class StartupValidatorTests
         }
     }
 
+    [Fact]
+    public async Task ProbeOmpAsyncDoesNotForwardProviderSecretsFromAllowedAmbientNames()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        var workspace = Path.Combine(Path.GetTempPath(), $"issue-agent-startup-{Guid.NewGuid():N}");
+        var originalConfigFiles = Environment.GetEnvironmentVariable("PI_CONFIG_FILES");
+        try
+        {
+            Environment.SetEnvironmentVariable("PI_CONFIG_FILES", "provider-secret");
+            var executable = CreateProbeExecutable(workspace, excludedEnvironmentVariable: "PI_CONFIG_FILES");
+            var options = new IssueAgentOptions
+            {
+                Workspace = new WorkspaceOptions { RootPath = workspace },
+                Omp = new OmpOptions
+                {
+                    ExecutablePath = executable,
+                    ExecutionVariables = new Dictionary<string, string> { ["PROBE_CONFIGURATION"] = "configured" },
+                },
+                Providers =
+                [
+                    new ProviderOptions
+                    {
+                        Name = "github",
+                        Kind = ProviderKind.GitHub,
+                        BaseUri = new Uri("https://api.github.com/"),
+                        Token = new SecretSource { Env = "PI_CONFIG_FILES" },
+                    },
+                ],
+            };
+            var omp = new EffectiveOmpConfiguration(
+                executable, TimeSpan.FromSeconds(2), null,
+                new Dictionary<string, string>(), new Dictionary<string, string>(),
+                new Dictionary<string, string> { ["planning"] = "plan" });
+
+            await StartupValidator.ProbeOmpAsync(options, omp, CancellationToken.None);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PI_CONFIG_FILES", originalConfigFiles);
+            if (Directory.Exists(workspace))
+            {
+                Directory.Delete(workspace, recursive: true);
+            }
+        }
+    }
+
     [Theory]
     [InlineData("""{"type":"ready","protocolVersion":2,"supportedProtocolVersions":[1,2]}""")]
     [InlineData("""{"type":"ready","protocolVersion":1,"supportedProtocolVersions":[2]}""")]
@@ -361,7 +411,8 @@ public sealed class StartupValidatorTests
     [System.Runtime.Versioning.SupportedOSPlatform("linux")]
     private static string CreateProbeExecutable(
         string workspace,
-        string readyFrame = """{"type":"ready","protocolVersion":1,"supportedProtocolVersions":[1,2]}""")
+        string readyFrame = """{"type":"ready","protocolVersion":1,"supportedProtocolVersions":[1,2]}""",
+        string? excludedEnvironmentVariable = null)
     {
         Directory.CreateDirectory(workspace);
         var path = Path.Combine(workspace, "fake-omp.sh");
@@ -374,6 +425,7 @@ public sealed class StartupValidatorTests
               previous="$argument"
             done
             [ "$PROBE_CONFIGURATION" = "configured" ] || exit 2
+            __EXCLUDED_ENVIRONMENT_CHECK__
             printf '%s\n' '__READY_FRAME__'
             while IFS= read -r request; do
               case "$request" in
@@ -381,7 +433,12 @@ public sealed class StartupValidatorTests
                 *get_state*) printf '%s\n' "{\"type\":\"response\",\"id\":\"2\",\"success\":true,\"data\":{\"sessionId\":\"probe\",\"sessionPath\":\"$session_dir/session.jsonl\"}}" ;;
               esac
             done
-            """.Replace("__READY_FRAME__", readyFrame, StringComparison.Ordinal));
+            """
+            .Replace("__READY_FRAME__", readyFrame, StringComparison.Ordinal)
+            .Replace(
+                "__EXCLUDED_ENVIRONMENT_CHECK__",
+                excludedEnvironmentVariable is null ? string.Empty : $"[ -z \"${{{excludedEnvironmentVariable}+x}}\" ] || exit 3",
+                StringComparison.Ordinal));
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         return path;
     }
