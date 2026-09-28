@@ -41,7 +41,28 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
     {
         ArgumentNullException.ThrowIfNull(config);
 
-        var restoredState = currentState with { WaitingReason = WaitingReason.PlanApproval, UpdatedAt = deps.Clock.UtcNow };
+        var restoredState = currentState with
+        {
+            Phase = WorkflowPhase.Planned,
+            OperationalState = WorkflowOperationalState.Waiting,
+            WaitingReason = WaitingReason.PlanApproval,
+            UpdatedAt = deps.Clock.UtcNow,
+        };
+        var canonicalComment = await CanonicalCommentLocator
+            .FindAsync(deps.Provider, config.Repository, issueNumber, cancellationToken, config.CanonicalCommentAuthor)
+            .ConfigureAwait(false);
+        if (canonicalComment is not null)
+        {
+            var content = CanonicalCommentMarkdown.Parse(canonicalComment.Body);
+            await UpsertCanonicalCommentAsync(
+                config,
+                issueNumber,
+                content with
+                {
+                    State = CanonicalStateSerializer.ToDocument(restoredState, content.State.PullOrMergeRequest),
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
         await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Planned, WorkflowOperationalState.Waiting, [WorkflowCommand.Implement], cancellationToken).ConfigureAwait(false);
         await NotifyAsync(config, issueNumber, restoredState, WorkflowNotificationKind.HumanActionRequired,
             "This deployment is configured plan-only; implementation was not started. Approve manually or reconfigure to full mode.", cancellationToken)
@@ -100,6 +121,19 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                     currentState.Branch,
                     currentState.TargetBranch,
                     cancellationToken).ConfigureAwait(false);
+            }
+            catch (StoredMergeRequestIdentity.StoredMergeRequestUnavailableException exception)
+            {
+                return await PauseAsync(
+                    config,
+                    issueNumber,
+                    currentState,
+                    existingContent,
+                    existingContent.ImplementationResult ?? string.Empty,
+                    WaitingReason.ManualIntervention,
+                    exception.Message,
+                    cancellationToken,
+                    [WorkflowCommand.Implement]).ConfigureAwait(false);
             }
             catch (CanonicalStateException exception)
             {
@@ -204,7 +238,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         }
 
         return await PublishImplementationResultAsync(
-            config, issueNumber, workingState, workingContent, worktreePath, issue, omp,
+            config, issueNumber, workingState, workingContent, worktreePath, issue, omp, linkedMergeRequest,
             result.RenderMarkdown(), inputSnapshot, cancellationToken).ConfigureAwait(false);
     }
 
@@ -271,7 +305,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         }
 
         return await PublishImplementationResultAsync(
-            config, issueNumber, workingState, workingContent, worktreePath, issue, omp,
+            config, issueNumber, workingState, workingContent, worktreePath, issue, omp, null,
             result.RenderMarkdown(), inputSnapshot, cancellationToken).ConfigureAwait(false);
     }
 
@@ -286,6 +320,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         string worktreePath,
         ProviderIssue issue,
         IOmpClient omp,
+        ProviderMergeRequest? mergeRequest,
         string resultMarkdown,
         InputSnapshot inputSnapshot,
         CancellationToken cancellationToken)
@@ -379,7 +414,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         // Re-check human input immediately before publication. This gate covers the corrective pass
         // and conflict resolution above; the identical gate after LFS upload covers the final
         // upload window before the branch becomes visible to reviewers.
-        var latestInputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
+        var latestInputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, mergeRequest, cancellationToken).ConfigureAwait(false);
         if (IsPlanStale(latestInputSnapshot, workingContent))
         {
             return await PauseForStalePlanAsync(
@@ -463,7 +498,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
 
         // LFS upload can take long enough for human input to arrive. Do not push a branch based on
         // work that was produced without that input.
-        latestInputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
+        latestInputSnapshot = await CaptureInputSnapshotAsync(config, issueNumber, mergeRequest, cancellationToken).ConfigureAwait(false);
         if (IsPlanStale(latestInputSnapshot, workingContent))
         {
             return await PauseForStalePlanAsync(
@@ -505,7 +540,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         };
         await UpsertCanonicalCommentAsync(config, issueNumber, checkpointContent, cancellationToken).ConfigureAwait(false);
 
-        var mergeRequest = await FindOrCreateMergeRequestAsync(
+        var publishedMergeRequest = await FindOrCreateMergeRequestAsync(
             config, issueNumber, issue, publishedBranchState, checkpointContent.State.PullOrMergeRequest, resultMarkdown, cancellationToken).ConfigureAwait(false);
 
         return await PublishReviewAsync(
@@ -513,7 +548,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             issueNumber,
             publishedBranchState,
             checkpointContent,
-            mergeRequest,
+            publishedMergeRequest,
             resultMarkdown,
             cancellationToken).ConfigureAwait(false);
     }
@@ -997,11 +1032,11 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
     {
         while (true)
         {
-            var baseline = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
+            var baseline = await CaptureInputSnapshotAsync(config, issueNumber, mergeRequest, cancellationToken).ConfigureAwait(false);
             var context = await deps.ContextBuilder
                 .BuildAsync(config.Repository, issueNumber, workingState, currentPlan, mergeRequest, attachmentsPath, cancellationToken)
                 .ConfigureAwait(false);
-            var reconciled = await CaptureInputSnapshotAsync(config, issueNumber, cancellationToken).ConfigureAwait(false);
+            var reconciled = await CaptureInputSnapshotAsync(config, issueNumber, mergeRequest, cancellationToken).ConfigureAwait(false);
             if (reconciled == baseline)
             {
                 return (context, baseline);
@@ -1009,39 +1044,69 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         }
     }
 
-    private sealed record InputSnapshot(string Title, string Description, string CommentsDigest)
+    private sealed record InputSnapshot(string Title, string Description, string CommentsDigest, string MergeRequestDigest = "")
     {
         public string Digest => Convert.ToHexStringLower(
-            SHA256.HashData(Encoding.UTF8.GetBytes($"{Title}\0{Description}\0{CommentsDigest}")));
+            SHA256.HashData(Encoding.UTF8.GetBytes(MergeRequestDigest.Length == 0
+                ? $"{Title}\0{Description}\0{CommentsDigest}"
+                : $"{Title}\0{Description}\0{CommentsDigest}\0{MergeRequestDigest}")));
     }
 
     private async Task<InputSnapshot> CaptureInputSnapshotAsync(
         WorkflowRepositoryConfig config,
         long issueNumber,
+        ProviderMergeRequest? mergeRequest,
         CancellationToken cancellationToken)
     {
         var issue = await deps.Provider.GetIssueAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false);
         var commentStamps = new List<string>();
         string? authoritativeAuthor = null;
-        await foreach (var comment in deps.Provider
-            .GetIssueCommentsAsync(config.Repository, issueNumber, cancellationToken)
-            .ConfigureAwait(false))
+        await foreach (var comment in deps.Provider.GetIssueCommentsAsync(config.Repository, issueNumber, cancellationToken).ConfigureAwait(false))
         {
             var isAuthoritativeCanonicalComment = CanonicalCommentMarkdown.IsCanonicalComment(comment.Body) &&
-                CanonicalCommentMarkdown.IsAuthoritativeCanonicalComment(
-                    comment,
-                    authoritativeAuthor ??= await CanonicalCommentLocator
-                        .ResolveAuthoritativeIdentityAsync(deps.Provider, config.CanonicalCommentAuthor, cancellationToken)
-                        .ConfigureAwait(false));
+                CanonicalCommentMarkdown.IsAuthoritativeCanonicalComment(comment, authoritativeAuthor ??= await CanonicalCommentLocator
+                    .ResolveAuthoritativeIdentityAsync(deps.Provider, config.CanonicalCommentAuthor, cancellationToken).ConfigureAwait(false));
             if ((!config.IgnoreBotComments || !comment.IsBot) && !isAuthoritativeCanonicalComment)
             {
                 commentStamps.Add($"{comment.Id}:{comment.UpdatedAt:O}:{comment.Body}");
             }
         }
 
-        var digest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('|', commentStamps))));
-        return new InputSnapshot(issue.Title, issue.Description, digest);
+        var requestStamps = new List<string>();
+        if (mergeRequest is not null)
+        {
+            requestStamps.Add($"{mergeRequest.Number}:{mergeRequest.Title}:{mergeRequest.Description}");
+            await foreach (var comment in deps.Provider.GetMergeRequestCommentsAsync(config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false))
+            {
+                if (!config.IgnoreBotComments || !comment.IsBot)
+                {
+                    requestStamps.Add($"comment:{comment.Id}:{comment.UpdatedAt:O}:{comment.Body}");
+                }
+            }
+            await foreach (var thread in deps.Provider.GetReviewThreadsAsync(config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false))
+            {
+                requestStamps.Add($"thread:{thread.Id}:{thread.IsResolved}");
+                foreach (var comment in thread.Comments)
+                {
+                    if (!config.IgnoreBotComments || !comment.IsBot)
+                    {
+                        requestStamps.Add($"thread:{thread.Id}:{comment.Id}:{comment.UpdatedAt:O}:{comment.Body}");
+                    }
+                }
+            }
+        }
+
+        return new InputSnapshot(
+            issue.Title,
+            issue.Description,
+            Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('|', commentStamps)))),
+            mergeRequest is null
+                ? string.Empty
+                : Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('|', requestStamps)))));
     }
+
+    private Task<InputSnapshot> CaptureInputSnapshotAsync(WorkflowRepositoryConfig config, long issueNumber, CancellationToken cancellationToken) =>
+        CaptureInputSnapshotAsync(config, issueNumber, mergeRequest: null, cancellationToken);
 
     private async Task<WorkflowOutcome> FailAsync(WorkflowRepositoryConfig config, long issueNumber, WorkflowState workingState, string message, CancellationToken cancellationToken)
     {

@@ -67,4 +67,7 @@ ENV HOME=/data \
     PI_CODING_AGENT_SESSION_DIR=/data/omp \
     ASPNETCORE_URLS=http://+:8080
 EXPOSE 8080
+HEALTHCHECK --interval=5s --timeout=3s --start-period=10s --retries=6 \
+    CMD curl --fail --silent http://127.0.0.1:8080/health/ready || exit 1
+
 ENTRYPOINT ["/usr/local/bin/issue-agent-entrypoint", "dotnet", "IssueAgent.Host.dll"]

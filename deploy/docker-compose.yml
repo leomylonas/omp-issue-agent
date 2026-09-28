@@ -40,6 +40,13 @@ services:
       - SETUID
     stop_grace_period: 25s
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health/ready"]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 6
+
 secrets:
   github_token:
     file: ./secrets/github-token

@@ -126,16 +126,11 @@ jobs:
           GITHUB_TOKEN: ""
         run: |
           install --mode=0600 .github/fixtures/github-token deploy/secrets/github-token
-          docker compose -f deploy/docker-compose.yml up --detach --build
+          docker compose -f deploy/docker-compose.yml up --detach --build --wait --wait-timeout 30
+          container_id="$(docker compose -f deploy/docker-compose.yml ps --quiet issue-agent)"
           trap 'docker compose -f deploy/docker-compose.yml down --volumes' EXIT
-          for attempt in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:8080/health/live; then
-              exit 0
-            fi
-            sleep 1
-          done
-          docker compose -f deploy/docker-compose.yml logs
-          exit 1
+          test "$(docker inspect --format '{{.State.Running}} {{.State.Health.Status}}' "$container_id")" = "true healthy"
+          curl --fail --silent http://127.0.0.1:8080/health/ready
       - name: Validate Dockerfile
         run: docker buildx build --check --platform linux/amd64,linux/arm64 -f Dockerfile .
       - name: Build production container
@@ -145,9 +140,13 @@ jobs:
           container_id="$(docker run --detach --read-only --tmpfs /tmp --volume issue-agent-ci-data:/data --publish 127.0.0.1::8080 issue-agent:ci)"
           trap 'docker rm --force "$container_id"; docker volume rm issue-agent-ci-data' EXIT
           port="$(docker port "$container_id" 8080/tcp | sed 's/.*://')"
-          for attempt in $(seq 1 30); do
-            if curl --fail --silent "http://127.0.0.1:${port}/health/live"; then
+          for attempt in $(seq 1 40); do
+            state="$(docker inspect --format '{{.State.Running}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$container_id")"
+            if [ "$state" = "true healthy" ] && curl --fail --silent "http://127.0.0.1:${port}/health/ready"; then
               exit 0
+            fi
+            if [ "$state" != "true starting" ] && [ "$state" != "true healthy" ]; then
+              break
             fi
             sleep 1
           done

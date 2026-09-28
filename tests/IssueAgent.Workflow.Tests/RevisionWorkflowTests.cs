@@ -79,9 +79,13 @@ public sealed class RevisionWorkflowTests : IDisposable
 
         Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
         Assert.Equal(WorkflowPhase.Revising, outcome.State.Phase);
-        Assert.Equal(WaitingReason.CorruptState, outcome.State.WaitingReason);
+        Assert.Equal(WaitingReason.ManualIntervention, outcome.State.WaitingReason);
+        Assert.Equal(
+            "Initial implementation summary.",
+            CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body).ImplementationResult);
         Assert.DoesNotContain(notifier.Notifications, notification => notification.Kind == WorkflowNotificationKind.RevisionFailed);
     }
+
 
     [Fact]
     public async Task RevisionPromptIncludesAvailableAndOmittedReviewAttachments()

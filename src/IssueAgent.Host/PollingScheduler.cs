@@ -40,7 +40,7 @@ public sealed partial class PollingScheduler(
         var repositories = effectiveConfiguration.Providers
             .SelectMany(provider => provider.Repositories
                 .Where(repository => repository.Enabled &&
-                    pollingEligibility.IsEligible($"{provider.Name}/{repository.Id}"))
+                    pollingEligibility.IsEligible(provider.Name))
                 .Select(repository => (Provider: provider, Repository: repository)))
             .ToArray();
         var discovered = new ConcurrentQueue<WorkflowCandidate>();
@@ -164,7 +164,7 @@ public sealed partial class PollingScheduler(
         }
         catch (PollingRateLimitedException exception)
         {
-            pollingEligibility.Defer($"{providerOptions.Name}/{repository.Id}", exception.RetryAfter);
+            pollingEligibility.Defer(providerOptions.Name, exception.RetryAfter);
         }
         catch (Exception exception)
         {

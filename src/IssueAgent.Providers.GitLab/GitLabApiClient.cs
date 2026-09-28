@@ -91,11 +91,9 @@ public sealed partial class GitLabApiClient(HttpClient httpClient, RetryPolicy r
             GitLabJsonContext.Default.GitLabCreateMergeRequestRequest,
             GitLabJsonContext.Default.GitLabMergeRequest,
             cancellationToken).ConfigureAwait(false);
-
     public async Task<GitLabMergeRequest> GetMergeRequestAsync(string projectId, long mergeRequestIid, CancellationToken cancellationToken) =>
         await GetAsync($"projects/{Encode(projectId)}/merge_requests/{mergeRequestIid}", GitLabJsonContext.Default.GitLabMergeRequest, cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidOperationException($"GitLab merge request {mergeRequestIid} was not found.");
-
+        ?? throw new ProviderResourceNotFoundException($"GitLab merge request {mergeRequestIid} was not found.");
     public async Task<IReadOnlyList<string>> UpdateMergeRequestLabelsAsync(string projectId, long mergeRequestIid, IReadOnlyCollection<string>? addLabels, IReadOnlyCollection<string>? removeLabel, CancellationToken cancellationToken)
     {
         var body = new GitLabUpdateLabelsRequest(

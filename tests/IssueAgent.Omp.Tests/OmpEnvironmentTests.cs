@@ -47,6 +47,25 @@ public sealed class OmpEnvironmentTests
     }
 
     [Fact]
+    public void BuildDoesNotCopyAnAmbientVariableUsedByANonOmpSecretSource()
+    {
+        var ambient = new Dictionary<string, string?>
+        {
+            ["HTTP_PROXY"] = "http://secret-user:secret-password@proxy.example:8080",
+            ["PI_CONFIG_FILES"] = "/etc/omp/config.yml",
+        };
+
+        var result = OmpEnvironment.Build(
+            ambient,
+            new Dictionary<string, string>(),
+            new Dictionary<string, string>(),
+            new HashSet<string>(StringComparer.Ordinal) { "HTTP_PROXY" });
+
+        Assert.DoesNotContain("HTTP_PROXY", result.Keys);
+        Assert.Equal("/etc/omp/config.yml", result["PI_CONFIG_FILES"]);
+    }
+
+    [Fact]
     public void BuildIncludesOmpConnectionSettingsAndExecutionVariables()
     {
         var ompSettings = new Dictionary<string, string> { ["OMP_AUTH_BROKER_URL"] = "http://broker:9000" };

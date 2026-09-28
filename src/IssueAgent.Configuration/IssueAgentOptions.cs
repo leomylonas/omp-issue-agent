@@ -373,6 +373,19 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
 
             foreach (var repository in provider.Repositories)
             {
+                if (string.IsNullOrWhiteSpace(repository.Name))
+                {
+                    failures.Add($"Repository '{repository.Id}' Name must be non-empty.");
+                }
+                else if (!HasOnlyNonEmptyPathComponents(repository.Name))
+                {
+                    failures.Add($"Repository '{repository.Id}' Name must not contain blank path components.");
+                }
+                if (repository.OwnerOrNamespace is not null && !HasOnlyNonEmptyPathComponents(repository.OwnerOrNamespace))
+                {
+                    failures.Add($"Repository '{repository.Id}' OwnerOrNamespace must contain non-empty path components when configured.");
+                }
+
                 if (!IsSafeRepositoryId(repository.Id))
                 {
                     failures.Add($"Repository id '{repository.Id}' must be non-empty, relative, and contain no traversal segments.");
@@ -437,6 +450,9 @@ public sealed class IssueAgentOptionsValidator : IValidateOptions<IssueAgentOpti
         !Path.IsPathRooted(repositoryId) &&
         !repositoryId.StartsWith('\\') &&
         !repositoryId.Split(['/', '\\'], StringSplitOptions.None).Any(segment => segment is "." or "..");
+
+    private static bool HasOnlyNonEmptyPathComponents(string value) =>
+        value.Split('/', StringSplitOptions.None).All(component => !string.IsNullOrWhiteSpace(component));
 
     private static string? GetProviderNativeRepositoryIdentity(ProviderOptions provider, RepositoryOptions repository)
     {

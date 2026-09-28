@@ -253,10 +253,15 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
                     cancellationToken).ConfigureAwait(false)
                 : null;
         }
+        catch (StoredMergeRequestIdentity.StoredMergeRequestUnavailableException exception)
+        {
+            return await PauseForInvalidLinkedMergeRequestAsync(
+                config, issueNumber, currentState, existingContent, WaitingReason.ManualIntervention, exception.Message, cancellationToken).ConfigureAwait(false);
+        }
         catch (CanonicalStateException exception)
         {
             return await PauseForInvalidLinkedMergeRequestAsync(
-                config, issueNumber, currentState, existingContent, exception.Message, cancellationToken).ConfigureAwait(false);
+                config, issueNumber, currentState, existingContent, WaitingReason.CorruptState, exception.Message, cancellationToken).ConfigureAwait(false);
         }
 
         var worktreePath = WorktreePath(config, currentState.WorkflowId);
@@ -317,10 +322,15 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
                 hasVerifiedPublishedCheckpoint,
                 cancellationToken).ConfigureAwait(false);
         }
+        catch (StoredMergeRequestIdentity.StoredMergeRequestUnavailableException exception)
+        {
+            return await PauseForInvalidLinkedMergeRequestAsync(
+                config, issueNumber, currentState, existingContent, WaitingReason.ManualIntervention, exception.Message, cancellationToken).ConfigureAwait(false);
+        }
         catch (CanonicalStateException exception)
         {
             return await PauseForInvalidLinkedMergeRequestAsync(
-                config, issueNumber, currentState, existingContent, exception.Message, cancellationToken).ConfigureAwait(false);
+                config, issueNumber, currentState, existingContent, WaitingReason.CorruptState, exception.Message, cancellationToken).ConfigureAwait(false);
         }
         catch (WorkflowContractException exception)
         {
@@ -601,13 +611,14 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         long issueNumber,
         WorkflowState currentState,
         CanonicalCommentContent existingContent,
+        WaitingReason reason,
         string message,
         CancellationToken cancellationToken)
     {
         var pausedState = currentState with
         {
             OperationalState = WorkflowOperationalState.Waiting,
-            WaitingReason = WaitingReason.CorruptState,
+            WaitingReason = reason,
             UpdatedAt = deps.Clock.UtcNow,
         };
         await UpsertCanonicalCommentAsync(

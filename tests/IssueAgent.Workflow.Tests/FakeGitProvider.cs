@@ -180,7 +180,10 @@ public sealed class FakeGitProvider : IGitProvider
     }
 
     public ValueTask<ProviderMergeRequest> GetMergeRequestAsync(RepositoryRef repository, long number, CancellationToken cancellationToken) =>
-        ValueTask.FromResult(MergeRequests[(int)number]);
+        MergeRequests.TryGetValue((int)number, out var mergeRequest)
+            ? ValueTask.FromResult(mergeRequest)
+            : ValueTask.FromException<ProviderMergeRequest>(
+                new ProviderResourceNotFoundException($"No fake merge request registered for {repository.Id}#{number}."));
 
     public async IAsyncEnumerable<ProviderComment> GetMergeRequestCommentsAsync(RepositoryRef repository, long number, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {

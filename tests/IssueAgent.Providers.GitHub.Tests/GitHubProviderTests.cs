@@ -879,6 +879,45 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
+    public async Task DurableWorkflowCheckpointResumesAfterProviderRestartWithoutCreatingDuplicateResources()
+    {
+        const string canonicalBody = "<!-- issue-agent:state -->";
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7/comments").UsingPost())
+            .RespondWith(JsonResponse("""{"id":100,"user":{"login":"issue-agent-bot"},"body":"<!-- issue-agent:state -->","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z"}"""));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7/comments").UsingGet())
+            .RespondWith(JsonResponse("""[{"id":100,"user":{"login":"issue-agent-bot"},"body":"<!-- issue-agent:state -->","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z"}]"""));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/comments/100").UsingPatch())
+            .RespondWith(JsonResponse("""{"id":100,"user":{"login":"issue-agent-bot"},"body":"<!-- issue-agent:state -->\nreview ready","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-02T00:00:00Z"}"""));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls").UsingPost())
+            .RespondWith(JsonResponse("""{"number":9,"html_url":"https://github.example/octo/widgets/pull/9","head":{"ref":"agent/issue-7"},"base":{"ref":"main"},"title":"Fix","body":"body","draft":true,"merged":false,"state":"open"}"""));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls").UsingGet())
+            .RespondWith(JsonResponse("""[{"number":9,"html_url":"https://github.example/octo/widgets/pull/9","head":{"ref":"agent/issue-7"},"base":{"ref":"main"},"title":"Fix","body":"body","draft":true,"merged":false,"state":"open"}]"""));
+
+        _ = await fixture.Provider.CreateIssueCommentAsync(Repository, 7, canonicalBody, CancellationToken.None);
+        _ = await fixture.Provider.CreateDraftMergeRequestAsync(
+            new CreateMergeRequestRequest(Repository, "agent/issue-7", "main", "Fix", "body", true, 7),
+            CancellationToken.None);
+
+        var restartedProvider = GitHubProviderFactory.Create(new GitHubProviderConfiguration(
+            "github", new Uri(fixture.Server.Url! + "/"), null, ["github.example"]));
+        var checkpoint = Assert.Single(await CollectAsync(restartedProvider.GetIssueCommentsAsync(Repository, 7, CancellationToken.None)));
+        var existingMergeRequest = await restartedProvider.FindMergeRequestAsync(Repository, "agent/issue-7", "main", CancellationToken.None);
+        _ = await restartedProvider.UpdateIssueCommentAsync(Repository, 7, checkpoint.Id, canonicalBody + "\nreview ready", CancellationToken.None);
+
+        Assert.Equal(100, checkpoint.Id);
+        Assert.Equal(9, existingMergeRequest!.Number);
+        Assert.Single(fixture.Server.LogEntries, entry => entry.RequestMessage!.Method == "POST" &&
+            entry.RequestMessage.Path == "/api/v3/repos/octo/widgets/issues/7/comments");
+        Assert.Single(fixture.Server.LogEntries, entry => entry.RequestMessage!.Method == "POST" &&
+            entry.RequestMessage.Path == "/api/v3/repos/octo/widgets/pulls");
+    }
+
+    [Fact]
     public async Task DownloadAttachmentAsyncRetriesTransientServerErrors()
     {
         fixture.Server

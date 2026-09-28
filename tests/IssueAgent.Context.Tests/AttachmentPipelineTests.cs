@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Cryptography;
 using IssueAgent.Providers;
 
 namespace IssueAgent.Context.Tests;
@@ -464,6 +465,36 @@ public sealed class AttachmentPipelineTests
         Assert.Contains("count exceeds", attachment.OmissionReason, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ProcessAsyncRedownloadsAttachmentWhoseRetainedContentNoLongerMatchesTheManifestDigest()
+    {
+        const string url = "https://example.com/a.pdf";
+        Directory.CreateDirectory(destination);
+        var retainedPath = Path.Combine(destination, "a.pdf");
+        File.WriteAllBytes(retainedPath, [1]);
+        WriteManifest((url, "a.pdf", 1));
+        File.WriteAllBytes(retainedPath, [2]);
+        var downloads = 0;
+        provider.AttachmentDownloadOverride = (attachment, directory, _) =>
+        {
+            downloads++;
+            var path = AttachmentFileNames.ResolveSafeDestination(directory, attachment.SuggestedFileName);
+            File.WriteAllBytes(path, [3]);
+            return new DownloadedAttachment(path, Path.GetFileName(path), 1);
+        };
+        var pipeline = new AttachmentPipeline(provider, new AttachmentLimits());
+
+        var result = await pipeline.ProcessAsync(
+            $"[attachment]({url})",
+            new AttachmentSource("issue-description", "1"),
+            destination,
+            pipeline.CreateRemainingBudget(destination),
+            CancellationToken.None);
+
+        Assert.False(Assert.Single(result).IsOmitted);
+        Assert.Equal(1, downloads);
+    }
+
     private void WriteManifest(params (string Url, string SafeFileName, long SizeBytes)[] entries)
     {
         File.WriteAllText(
@@ -473,6 +504,8 @@ public sealed class AttachmentPipelineTests
                 entry.Url,
                 entry.SafeFileName,
                 entry.SizeBytes,
+                ContentDigest = Convert.ToHexStringLower(SHA256.HashData(
+                    File.ReadAllBytes(Path.Combine(destination, entry.SafeFileName)))),
             })));
     }
 }

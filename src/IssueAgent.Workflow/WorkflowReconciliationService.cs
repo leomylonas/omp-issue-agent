@@ -63,6 +63,18 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
         {
             mergeRequest = await FindMergeRequestAsync(config, state, content, cancellationToken).ConfigureAwait(false);
         }
+        catch (StoredMergeRequestIdentity.StoredMergeRequestUnavailableException exception)
+        {
+            return await PauseForHumanAsync(
+                config,
+                issueNumber,
+                canonicalComment,
+                content,
+                state,
+                WaitingReason.ManualIntervention,
+                exception.Message,
+                cancellationToken).ConfigureAwait(false);
+        }
         catch (CanonicalStateException exception)
         {
             var explanation = $"Canonical workflow state is corrupt and could not be reconstructed safely ({exception.GetType().Name}).";

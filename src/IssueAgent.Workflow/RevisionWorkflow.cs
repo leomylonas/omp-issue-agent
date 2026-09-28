@@ -78,6 +78,30 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 currentState.TargetBranch,
                 cancellationToken).ConfigureAwait(false);
         }
+        catch (StoredMergeRequestIdentity.StoredMergeRequestUnavailableException exception)
+        {
+            return await PauseForNewFeedbackAsync(
+                config,
+                issueNumber,
+                workingState,
+                existingContent,
+                existingContent.ImplementationResult ?? string.Empty,
+                exception.Message,
+                cancellationToken,
+                WaitingReason.ManualIntervention).ConfigureAwait(false);
+        }
+        catch (ProviderResourceNotFoundException)
+        {
+            return await PauseForNewFeedbackAsync(
+                config,
+                issueNumber,
+                workingState,
+                existingContent,
+                existingContent.ImplementationResult ?? string.Empty,
+                "The pull/merge request recorded by this workflow no longer exists. Local workflow data was preserved for human review.",
+                cancellationToken,
+                WaitingReason.ManualIntervention).ConfigureAwait(false);
+        }
         catch (CanonicalStateException exception)
         {
             return await EscalateAsync(config, issueNumber, workingState, existingContent, exception.Message, cancellationToken)

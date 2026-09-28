@@ -29,8 +29,12 @@ public sealed class ImplementationWorkflowTests : IDisposable
         Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
         Assert.Equal(WorkflowPhase.Planned, outcome.State.Phase);
         Assert.Equal(WaitingReason.PlanApproval, outcome.State.WaitingReason);
-        Assert.Empty(provider.UpdatedComments);
+        var persisted = CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body).State;
+        Assert.Equal("planned", persisted.Phase);
+        Assert.Equal("waiting", persisted.State);
+        Assert.Equal("plan-approval", persisted.WaitingReason);
     }
+
 
     [Fact]
     public async Task RunAsyncPublishesDraftMergeRequestAndSetsReviewWaiting()
@@ -134,9 +138,10 @@ public sealed class ImplementationWorkflowTests : IDisposable
 
         Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
         Assert.Equal(WorkflowPhase.Planned, outcome.State.Phase);
-        Assert.Equal(WaitingReason.CorruptState, outcome.State.WaitingReason);
+        Assert.Equal(WaitingReason.ManualIntervention, outcome.State.WaitingReason);
         Assert.Empty(git.ResetWorktrees);
     }
+
 
     [Fact]
     public async Task RunAsyncAdoptsMarkerMatchedMergeRequestBeforeCheckpointingItsIdentity()

@@ -511,6 +511,94 @@ public sealed class IssueAgentOptionsValidatorTests
     [Theory]
     [InlineData("")]
     [InlineData(" ")]
+    public void ValidateRejectsBlankRepositoryName(string repositoryName)
+    {
+        var options = CreateOptions() with
+        {
+            Providers = [CreateProvider() with
+            {
+                Repositories = [new RepositoryOptions { Id = "github/example/repository", Name = repositoryName }],
+            }],
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("Name must be non-empty", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void ValidateRejectsBlankExplicitRepositoryOwner(string ownerOrNamespace)
+    {
+        var options = CreateOptions() with
+        {
+            Providers = [CreateProvider() with
+            {
+                Repositories = [new RepositoryOptions
+                {
+                    Id = "github/example/repository",
+                    Name = "repository",
+                    OwnerOrNamespace = ownerOrNamespace,
+                }],
+            }],
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("OwnerOrNamespace", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("/repository")]
+    [InlineData("owner/")]
+    [InlineData("owner//repository")]
+    public void ValidateRejectsRepositoryNameWithBlankPathComponent(string repositoryName)
+    {
+        var options = CreateOptions() with
+        {
+            Providers = [CreateProvider() with
+            {
+                Repositories = [new RepositoryOptions { Id = "github/example/repository", Name = repositoryName }],
+            }],
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("Name must not contain blank path components", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("/owner")]
+    [InlineData("owner/")]
+    [InlineData("owner//subgroup")]
+    public void ValidateRejectsExplicitOwnerWithBlankPathComponent(string ownerOrNamespace)
+    {
+        var options = CreateOptions() with
+        {
+            Providers = [CreateProvider() with
+            {
+                Repositories = [new RepositoryOptions
+                {
+                    Id = "github/example/repository",
+                    Name = "repository",
+                    OwnerOrNamespace = ownerOrNamespace,
+                }],
+            }],
+        };
+
+        var result = validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures!, failure => failure.Contains("OwnerOrNamespace", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
     [InlineData("/repository")]
     [InlineData("../repository")]
     [InlineData("github/../repository")]

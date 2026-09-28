@@ -115,6 +115,11 @@ public interface IGitProvider
         CancellationToken cancellationToken);
 }
 
+/// <summary>Indicates that a provider resource addressed by a durable workflow reference no
+/// longer exists. Workflows can safely escalate this to a human without treating their own
+/// canonical state as malformed.</summary>
+public sealed class ProviderResourceNotFoundException(string message) : Exception(message);
+
 public sealed record RepositoryRef(string Id, string OwnerOrNamespace, string Name);
 
 public sealed record ProviderIdentity(string Login, string DisplayName, string? Email = null);
@@ -200,7 +205,8 @@ public sealed record ProviderAttachment(
 public sealed record DownloadedAttachment(
     string LocalPath,
     string SafeFileName,
-    long SizeBytes);
+    long SizeBytes,
+    string? ContentDigest = null);
 
 /// <summary>Thrown when an extensionless external download candidate is not explicitly identified
 /// as an attachment by its response headers.</summary>

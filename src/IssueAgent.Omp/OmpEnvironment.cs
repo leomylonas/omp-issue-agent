@@ -19,13 +19,15 @@ public static class OmpEnvironment
     public static IReadOnlyDictionary<string, string> Build(
         IReadOnlyDictionary<string, string?> ambientEnvironment,
         IReadOnlyDictionary<string, string> ompConnectionSettings,
-        IReadOnlyDictionary<string, string> executionVariables)
+        IReadOnlyDictionary<string, string> executionVariables,
+        IReadOnlySet<string>? nonOmpSecretSourceNames = null)
     {
         var result = new Dictionary<string, string>(StringComparer.Ordinal);
 
         foreach (var name in AlwaysAllowedNames.Concat(ProxyNames))
         {
-            if (ambientEnvironment.TryGetValue(name, out var value) && value is not null)
+            if (!IsExcludedSecretSource(name, nonOmpSecretSourceNames) &&
+                ambientEnvironment.TryGetValue(name, out var value) && value is not null)
             {
                 result[name] = value;
             }
@@ -33,7 +35,9 @@ public static class OmpEnvironment
 
         foreach (var (name, value) in ambientEnvironment)
         {
-            if (value is not null && AlwaysAllowedPrefixes.Any(prefix => name.StartsWith(prefix, StringComparison.Ordinal)))
+            if (value is not null &&
+                !IsExcludedSecretSource(name, nonOmpSecretSourceNames) &&
+                AlwaysAllowedPrefixes.Any(prefix => name.StartsWith(prefix, StringComparison.Ordinal)))
             {
                 result[name] = value;
             }
@@ -53,4 +57,8 @@ public static class OmpEnvironment
 
         return result;
     }
+
+    private static bool IsExcludedSecretSource(string name, IReadOnlySet<string>? nonOmpSecretSourceNames) =>
+        nonOmpSecretSourceNames?.Contains(name) is true;
+
 }

@@ -33,17 +33,16 @@ public sealed class PollingSchedulerTests
     }
 
     [Fact]
-    public void PollingEligibilityDefersOnlyTheRateLimitedRepositoryUntilRetryWindowEnds()
+    public void PollingEligibilityDefersRateLimitedProviderScopeUntilRetryWindowEnds()
     {
         var time = new AdjustableTimeProvider(DateTimeOffset.Parse("2026-01-01T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture));
         var schedule = new PollingEligibilitySchedule(time);
 
-        schedule.Defer("github/octo/widgets", TimeSpan.FromSeconds(30));
+        schedule.Defer("github", TimeSpan.FromSeconds(30));
 
-        Assert.False(schedule.IsEligible("github/octo/widgets"));
-        Assert.True(schedule.IsEligible("github/octo/other"));
+        Assert.False(schedule.IsEligible("github"));
         time.Advance(TimeSpan.FromSeconds(30));
-        Assert.True(schedule.IsEligible("github/octo/widgets"));
+        Assert.True(schedule.IsEligible("github"));
     }
 
     [Fact]

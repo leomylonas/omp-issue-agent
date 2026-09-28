@@ -497,7 +497,7 @@ public sealed class PlanningWorkflowTests : IDisposable
 
         Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
         Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
-        Assert.Equal(WaitingReason.CorruptState, outcome.State.WaitingReason);
+        Assert.Equal(WaitingReason.ManualIntervention, outcome.State.WaitingReason);
         Assert.Empty(git.ResetWorktrees);
     }
 

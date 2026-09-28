@@ -34,17 +34,36 @@ public static class StoredMergeRequestIdentity
         string targetBranch,
         CancellationToken cancellationToken)
     {
-        var mergeRequest = identity is null
-            ? null
-            : await provider.GetMergeRequestAsync(repository, Parse(repository, identity), cancellationToken).ConfigureAwait(false);
+        ProviderMergeRequest? mergeRequest;
+        try
+        {
+            mergeRequest = identity is null
+                ? null
+                : await provider.GetMergeRequestAsync(repository, Parse(repository, identity), cancellationToken).ConfigureAwait(false);
+        }
+        catch (ProviderResourceNotFoundException exception)
+        {
+            throw new StoredMergeRequestUnavailableException(
+                "The pull/merge request recorded by this workflow no longer exists. Local workflow data was preserved for human review.",
+                exception);
+        }
+
+        if (identity is not null && mergeRequest is null)
+        {
+            throw new StoredMergeRequestUnavailableException(
+                "The pull/merge request recorded by this workflow no longer exists. Local workflow data was preserved for human review.");
+        }
         if (mergeRequest is not null &&
             (!string.Equals(mergeRequest.SourceBranch, sourceBranch, StringComparison.Ordinal) ||
              !string.Equals(mergeRequest.TargetBranch, targetBranch, StringComparison.Ordinal)))
         {
-            throw new CanonicalStateException(
-                "The stored pull/merge request no longer targets this workflow's source and target branches.");
+            throw new StoredMergeRequestUnavailableException(
+                "The stored pull/merge request was retargeted or its source branch changed. Local workflow data was preserved for human review.");
         }
 
         return mergeRequest;
     }
+
+    public sealed class StoredMergeRequestUnavailableException(string message, Exception? innerException = null)
+        : Exception(message, innerException);
 }

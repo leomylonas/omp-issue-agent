@@ -509,6 +509,45 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     }
 
     [Fact]
+    public async Task DurableWorkflowCheckpointResumesAfterProviderRestartWithoutCreatingDuplicateResources()
+    {
+        const string canonicalBody = "<!-- issue-agent:state -->";
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/123/issues/7/notes").UsingPost())
+            .RespondWith(JsonResponse("""{"id":100,"body":"<!-- issue-agent:state -->","author":{"username":"issue-agent-bot"},"created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","system":false}"""));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/123/issues/7/notes").UsingGet())
+            .RespondWith(JsonResponse("""[{"id":100,"body":"<!-- issue-agent:state -->","author":{"username":"issue-agent-bot"},"created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","system":false}]"""));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/123/issues/7/notes/100").UsingPut())
+            .RespondWith(JsonResponse("""{"id":100,"body":"<!-- issue-agent:state -->\nreview ready","author":{"username":"issue-agent-bot"},"created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-02T00:00:00Z","system":false}"""));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/123/merge_requests").UsingPost())
+            .RespondWith(JsonResponse("""{"iid":9,"web_url":"https://gitlab.example/octo/widgets/-/merge_requests/9","source_branch":"agent/issue-7","target_branch":"main","title":"Draft: Fix","description":"body","draft":true,"state":"opened","labels":[]}"""));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/123/merge_requests").UsingGet())
+            .RespondWith(JsonResponse("""[{"iid":9,"web_url":"https://gitlab.example/octo/widgets/-/merge_requests/9","source_branch":"agent/issue-7","target_branch":"main","title":"Draft: Fix","description":"body","draft":true,"state":"opened","labels":[]}]"""));
+
+        _ = await fixture.Provider.CreateIssueCommentAsync(Repository, 7, canonicalBody, CancellationToken.None);
+        _ = await fixture.Provider.CreateDraftMergeRequestAsync(
+            new CreateMergeRequestRequest(Repository, "agent/issue-7", "main", "Fix", "body", true, 7),
+            CancellationToken.None);
+
+        var restartedProvider = GitLabProviderFactory.Create(new GitLabProviderConfiguration(
+            "gitlab", new Uri(fixture.Server.Url! + "/api/v4/"), null, ["gitlab.example"]));
+        var checkpoint = Assert.Single(await CollectAsync(restartedProvider.GetIssueCommentsAsync(Repository, 7, CancellationToken.None)));
+        var existingMergeRequest = await restartedProvider.FindMergeRequestAsync(Repository, "agent/issue-7", "main", CancellationToken.None);
+        _ = await restartedProvider.UpdateIssueCommentAsync(Repository, 7, checkpoint.Id, canonicalBody + "\nreview ready", CancellationToken.None);
+
+        Assert.Equal(100, checkpoint.Id);
+        Assert.Equal(9, existingMergeRequest!.Number);
+        Assert.Single(fixture.Server.LogEntries, entry => entry.RequestMessage!.Method == "POST" &&
+            entry.RequestMessage.Path == "/api/v4/projects/123/issues/7/notes");
+        Assert.Single(fixture.Server.LogEntries, entry => entry.RequestMessage!.Method == "POST" &&
+            entry.RequestMessage.Path == "/api/v4/projects/123/merge_requests");
+    }
+
+    [Fact]
     public async Task DownloadAttachmentAsyncUsesAnonymousClientForSameAuthorityApiUrl()
     {
         var authenticated = new RecordingHttpMessageHandler();

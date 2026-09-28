@@ -49,10 +49,36 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
 
         var result = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
 
-        Assert.Equal(ReconciliationDisposition.Corrupt, result.Disposition);
-        Assert.Null(result.State);
-        Assert.Contains("corruption-warning", Assert.Single(provider.UpdatedComments).Body, StringComparison.Ordinal);
+        Assert.Equal(ReconciliationDisposition.Waiting, result.Disposition);
+        Assert.NotNull(result.State);
+        Assert.Equal(WaitingReason.ManualIntervention, result.State.WaitingReason);
+        var persisted = CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body);
+        Assert.Equal($"{Repository.Id}#7", persisted.State.PullOrMergeRequest);
     }
+    [Fact]
+    public async Task ReconciliationPausesWhenStoredRequestIsMissing()
+    {
+        var (state, canonical) = SeedWorkflow(WorkflowPhase.Review, WorkflowOperationalState.Waiting, WaitingReason.ReviewRequested);
+        state = state with { ReviewFeedbackCutoff = clock.UtcNow };
+        canonical = canonical with
+        {
+            Body = CanonicalCommentMarkdown.Render(CanonicalCommentMarkdown.Parse(canonical.Body) with
+            {
+                State = CanonicalStateSerializer.ToDocument(state, $"{Repository.Id}#7"),
+            }),
+        };
+        provider.IssueComments[(Repository.Id, 1)][0] = canonical;
+        provider.MergeRequests.Remove(7);
+        Assert.Equal($"{Repository.Id}#7", CanonicalCommentMarkdown.Parse(canonical.Body).State.PullOrMergeRequest);
+
+        var result = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
+
+        Assert.Equal(ReconciliationDisposition.Waiting, result.Disposition);
+        Assert.Equal(WaitingReason.ManualIntervention, result.State!.WaitingReason);
+        var persisted = CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body);
+        Assert.Equal($"{Repository.Id}#7", persisted.State.PullOrMergeRequest);
+    }
+
 
     [Fact]
     public async Task MalformedStoredRequestIdentityIsEscalatedAsCorruptState()

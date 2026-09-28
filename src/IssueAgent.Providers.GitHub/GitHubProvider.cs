@@ -294,14 +294,22 @@ public sealed partial class GitHubProvider(
         long number,
         CancellationToken cancellationToken)
     {
-        var pullRequest = await ExecuteReadWithCancellationAsync(
-            token => client.Connection.Get<PullRequest>(
-                new Uri($"repos/{repository.OwnerOrNamespace}/{repository.Name}/pulls/{checked((int)number)}", UriKind.Relative),
-                null,
-                null,
-                token),
-            cancellationToken).ConfigureAwait(false);
-        return ToProviderMergeRequest(repository, pullRequest);
+        try
+        {
+            var pullRequest = await ExecuteReadWithCancellationAsync(
+                token => client.Connection.Get<PullRequest>(
+                    new Uri($"repos/{repository.OwnerOrNamespace}/{repository.Name}/pulls/{checked((int)number)}", UriKind.Relative),
+                    null,
+                    null,
+                    token),
+                cancellationToken).ConfigureAwait(false);
+            return ToProviderMergeRequest(repository, pullRequest);
+        }
+        catch (NotFoundException)
+        {
+            throw new ProviderResourceNotFoundException(
+                $"GitHub pull request {number} was not found in repository '{repository.Id}'.");
+        }
     }
 
     public async IAsyncEnumerable<ProviderComment> GetMergeRequestCommentsAsync(

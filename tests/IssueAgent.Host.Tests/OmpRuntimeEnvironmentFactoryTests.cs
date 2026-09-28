@@ -26,6 +26,7 @@ public sealed class OmpRuntimeEnvironmentFactoryTests
                     Name = "github",
                     Kind = ProviderKind.GitHub,
                     BaseUri = new Uri("https://api.github.com/"),
+                    Token = new SecretSource { Env = "HTTP_PROXY" },
                     IdentityOverride = "bot",
                     Repositories =
                     [
@@ -59,6 +60,7 @@ public sealed class OmpRuntimeEnvironmentFactoryTests
             new Dictionary<string, string?>
             {
                 ["PATH"] = "/usr/bin",
+                ["HTTP_PROXY"] = "http://provider-secret@proxy.example:8080",
                 ["GITHUB_TOKEN"] = "provider-token",
                 ["SECOND_SECRET"] = "ambient-secret",
             },
@@ -73,5 +75,6 @@ public sealed class OmpRuntimeEnvironmentFactoryTests
         Assert.Equal("FIRST_SECRET-value", environment["FIRST_SECRET"]);
         Assert.DoesNotContain("GITHUB_TOKEN", environment.Keys);
         Assert.DoesNotContain("SECOND_SECRET", environment.Keys);
+        Assert.DoesNotContain("HTTP_PROXY", environment.Keys);
     }
 }

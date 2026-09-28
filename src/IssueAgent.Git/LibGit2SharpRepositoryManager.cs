@@ -113,7 +113,20 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         CancellationToken cancellationToken)
     {
         using var repo = new Repository(BareRepositoryPath(repositoryId));
-        return ValueTask.FromResult(repo.Branches[$"origin/{branchName}"]?.Tip.Sha);
+        var remoteBranch = repo.Branches[$"origin/{branchName}"];
+        if (remoteBranch is not null)
+        {
+            return ValueTask.FromResult<string?>(remoteBranch.Tip.Sha);
+        }
+
+        // `git clone --bare` (used by the SSH transport) fetches origin heads directly into
+        // refs/heads rather than refs/remotes/origin. That ref is still origin-owned according to
+        // the bare repository's fetch refspec; it is not a worktree-local fallback.
+        var origin = repo.Network.Remotes["origin"];
+        var fetchesHeadsDirectly = origin?.FetchRefSpecs.Any(spec =>
+            spec.Specification.Contains(":refs/heads/", StringComparison.Ordinal)) == true;
+        return ValueTask.FromResult(
+            fetchesHeadsDirectly ? repo.Branches[branchName]?.Tip.Sha : null);
     }
 
     public ValueTask<bool> IsAncestorAsync(

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using IssueAgent.Domain;
 using IssueAgent.Providers;
 
@@ -120,6 +121,7 @@ public sealed class AttachmentPipeline(
             }
 
             var perAttachmentCap = Math.Min(limits.MaxAttachmentSizeBytes, remainingBudget.Remaining);
+            MakeRetainedAttachmentDirectoryWritable(destinationDirectory);
             // Providers resolve the same safe, collision-free path before opening the stream. Keep
             // that path so the orchestration boundary can remove a file left by a transport timeout
             // or final streaming failure after the provider's retries are exhausted.
@@ -138,8 +140,10 @@ public sealed class AttachmentPipeline(
                     continue;
                 }
 
+                downloaded = downloaded with { ContentDigest = ComputeContentDigest(downloaded.LocalPath) };
                 remainingBudget.Consume(downloaded.SizeBytes);
                 CacheDownloadedAttachment(destinationDirectory, url, downloaded);
+                ProtectRetainedAttachmentDirectory(destinationDirectory);
                 results.Add(new AttachmentReference(
                     url.ToString(),
                     downloaded.SafeFileName,
@@ -255,7 +259,10 @@ public sealed class AttachmentPipeline(
                 }
 
                 var file = new FileInfo(localPath);
-                if (!file.Exists || file.Attributes.HasFlag(FileAttributes.ReparsePoint) || file.Length != entry.SizeBytes)
+                if (!file.Exists ||
+                    file.Attributes.HasFlag(FileAttributes.ReparsePoint) ||
+                    file.Length != entry.SizeBytes ||
+                    !HasMatchingContentDigest(localPath, entry.ContentDigest))
                 {
                     continue;
                 }
@@ -268,10 +275,11 @@ public sealed class AttachmentPipeline(
 
                 restoredFileNames.Add(entry.SafeFileName);
                 downloadedAttachments[cacheKey] =
-                    new DownloadedAttachment(localPath, entry.SafeFileName, entry.SizeBytes);
+                    new DownloadedAttachment(localPath, entry.SafeFileName, entry.SizeBytes, entry.ContentDigest);
                 restoredTotalSize += entry.SizeBytes;
                 restoredAttachmentCount++;
             }
+            ProtectRetainedAttachmentDirectory(fullDestinationDirectory);
         }
     }
 
@@ -288,7 +296,8 @@ public sealed class AttachmentPipeline(
                 .Select(entry => new AttachmentManifestEntry(
                     entry.Key[prefix.Length..],
                     entry.Value.SafeFileName,
-                    entry.Value.SizeBytes))
+                    entry.Value.SizeBytes,
+                    entry.Value.ContentDigest))
                 .ToArray();
             var manifestPath = Path.Combine(fullDestinationDirectory, ManifestFileName);
             var temporaryPath = Path.Combine(fullDestinationDirectory, $".{Guid.NewGuid():N}.tmp");
@@ -317,7 +326,10 @@ public sealed class AttachmentPipeline(
             downloaded = cached;
 
             var file = new FileInfo(downloaded.LocalPath);
-            if (!file.Exists || file.Attributes.HasFlag(FileAttributes.ReparsePoint) || file.Length != downloaded.SizeBytes)
+            if (!file.Exists ||
+                file.Attributes.HasFlag(FileAttributes.ReparsePoint) ||
+                file.Length != downloaded.SizeBytes ||
+                !HasMatchingContentDigest(downloaded.LocalPath, downloaded.ContentDigest))
             {
                 downloadedAttachments.Remove(key);
                 downloaded = default!;
@@ -408,6 +420,49 @@ public sealed class AttachmentPipeline(
         };
     }
 
+    private static string ComputeContentDigest(string path) =>
+        Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(path)));
+    private static bool HasMatchingContentDigest(string path, string? expectedDigest)
+    {
+        if (string.IsNullOrWhiteSpace(expectedDigest))
+        {
+            return false;
+        }
+
+        try
+        {
+            return string.Equals(expectedDigest, ComputeContentDigest(path), StringComparison.OrdinalIgnoreCase);
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+    }
+
+    private static void ProtectRetainedAttachmentDirectory(string destinationDirectory)
+    {
+        if (OperatingSystem.IsWindows() || !Directory.Exists(destinationDirectory))
+        {
+            return;
+        }
+
+        File.SetUnixFileMode(destinationDirectory, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        foreach (var file in Directory.EnumerateFiles(destinationDirectory))
+        {
+            File.SetUnixFileMode(file, UnixFileMode.UserRead);
+        }
+    }
+
+    private static void MakeRetainedAttachmentDirectoryWritable(string destinationDirectory)
+    {
+        if (OperatingSystem.IsWindows() || !Directory.Exists(destinationDirectory))
+        {
+            return;
+        }
+
+        File.SetUnixFileMode(destinationDirectory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+    }
+
     private static bool HasValidDownloadedSize(DownloadedAttachment downloaded, long cap)
     {
         if (downloaded.SizeBytes < 0 || downloaded.SizeBytes > cap)
@@ -438,7 +493,7 @@ public sealed class AttachmentPipeline(
 }
 
 
-internal sealed record AttachmentManifestEntry(string Url, string SafeFileName, long SizeBytes);
+internal sealed record AttachmentManifestEntry(string Url, string SafeFileName, long SizeBytes, string? ContentDigest);
 
 /// <summary>Mutable running totals shared across every <see cref="AttachmentPipeline.ProcessAsync"/>
 /// call for one workflow context: the remaining byte budget and the remaining attachment-count
