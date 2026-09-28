@@ -62,6 +62,37 @@ public sealed class ImplementationWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsyncAfterReviewReplanMergesTargetWithoutRewritingPublishedBranch()
+    {
+        var state = (await SeedApprovedPlanAsync()) with
+        {
+            BaseCommit = "def456",
+            ExpectedImplementationHead = "def456",
+            PublicationStage = ImplementationPublicationStage.BranchPublished,
+        };
+        var canonical = CanonicalCommentMarkdown.Parse(
+            Assert.Single(provider.IssueComments[(Repository.Id, 1)]).Body);
+        await provider.UpdateIssueCommentAsync(
+            Repository,
+            1,
+            Assert.Single(provider.IssueComments[(Repository.Id, 1)]).Id,
+            CanonicalCommentMarkdown.Render(canonical with
+            {
+                State = CanonicalStateSerializer.ToDocument(state, $"{Repository.Id}#1"),
+            }),
+            CancellationToken.None);
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """
+            {"summary":"Applied the revised plan.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}
+            """));
+
+        var outcome = await CreateWorkflow().RunAsync(CreateConfig(), WorkflowMode.Full, 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
+        Assert.Equal(1, git.MergeAttempts);
+        Assert.Equal(0, git.RebaseAttempts);
+    }
+
+    [Fact]
     public async Task RunAsyncAdoptsMarkerMatchedMergeRequestBeforeCheckpointingItsIdentity()
     {
         var state = await SeedApprovedPlanAsync();
@@ -881,11 +912,15 @@ public sealed class ImplementationWorkflowTests : IDisposable
 
         Assert.Contains("Feedback at the observation boundary.", Assert.Single(revisionOmp.RunRequests).Prompt, StringComparison.Ordinal);
     }
-    [Fact]
-    public async Task RunAsyncPersistsMissingCredentialsWhenPublicationCannotAuthenticate()
+    [Theory]
+    [InlineData("Authentication failed for remote.", WaitingReason.MissingCredentials)]
+    [InlineData("Push rejected: protected branch hook declined.", WaitingReason.ProtectedBranch)]
+    public async Task RunAsyncPreservesResultCheckpointWhenInitialPublicationIsBlocked(
+        string publicationFailure,
+        WaitingReason expectedWaitingReason)
     {
         var state = await SeedApprovedPlanAsync();
-        git.PushException = new InvalidOperationException("Authentication failed for remote.");
+        git.PushException = new InvalidOperationException(publicationFailure);
         var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
             "session-1",
             clock.UtcNow,
@@ -893,12 +928,18 @@ public sealed class ImplementationWorkflowTests : IDisposable
 
         var outcome = await CreateWorkflow().RunAsync(CreateConfig(), WorkflowMode.Full, 1, state, omp, CancellationToken.None);
 
+        var persisted = CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body);
         Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
         Assert.Equal(WorkflowPhase.Implementing, outcome.State.Phase);
-        Assert.Equal(WaitingReason.MissingCredentials, outcome.State.WaitingReason);
+        Assert.Equal(expectedWaitingReason, outcome.State.WaitingReason);
+        Assert.Equal(ImplementationPublicationStage.ResultCheckpointed, outcome.State.PublicationStage);
+        Assert.Equal(git.BranchCommitToReturn, outcome.State.ExpectedImplementationHead);
+        Assert.Equal(
+            ImplementationPublicationStage.ResultCheckpointed,
+            CanonicalStateSerializer.ToWorkflowState(persisted.State).PublicationStage);
+        Assert.Equal(git.BranchCommitToReturn, persisted.State.ExpectedImplementationHead);
+        Assert.Equal("Implemented.", persisted.ImplementationResult);
         Assert.Equal(WorkflowNotificationKind.HumanActionRequired, Assert.Single(notifier.Notifications).Kind);
-        Assert.Contains("credentials", Assert.Single(notifier.Notifications).Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal("missing-credentials", CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body).State.WaitingReason);
     }
 
 

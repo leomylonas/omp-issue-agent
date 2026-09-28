@@ -307,8 +307,16 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         var latestTargetCommit = await deps.Git.ResolveBranchCommitAsync(config.Repository.Id, workingState.TargetBranch, cancellationToken).ConfigureAwait(false);
         if (latestTargetCommit != workingState.BaseCommit)
         {
-            var rebased = await deps.Git.TryRebaseOntoAsync(config.Repository.Id, worktreePath, latestTargetCommit, config.GitIdentity, cancellationToken).ConfigureAwait(false);
-            if (!rebased)
+            // A replan can return a published review to plan approval. Its base is the published
+            // branch head, not the original target commit: merge target changes so the existing
+            // PR/MR branch remains a fast-forward-only history.
+            var integrated = workingState.PublicationStage == ImplementationPublicationStage.BranchPublished &&
+                workingState.ExpectedImplementationHead is not null
+                ? await deps.Git.TryMergeAsync(
+                    config.Repository.Id, worktreePath, latestTargetCommit, config.GitIdentity, cancellationToken).ConfigureAwait(false)
+                : await deps.Git.TryRebaseOntoAsync(
+                    config.Repository.Id, worktreePath, latestTargetCommit, config.GitIdentity, cancellationToken).ConfigureAwait(false);
+            if (!integrated)
             {
                 await omp.SelectRoleAsync(config.ConflictResolutionRole, cancellationToken).ConfigureAwait(false);
                 var conflictOutcome = await OmpRunCollector
@@ -316,7 +324,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                     .ConfigureAwait(false);
                 if (!conflictOutcome.Succeeded)
                 {
-                    return await FailAsync(config, issueNumber, workingState, "Failed to resolve rebase conflicts before first publication.", cancellationToken).ConfigureAwait(false);
+                    return await FailAsync(config, issueNumber, workingState, "Failed to resolve target-branch conflicts before publication.", cancellationToken).ConfigureAwait(false);
                 }
 
                 ImplementationResult conflictResult;
@@ -420,7 +428,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             GitPublicationFailureClassifier.TryClassify(exception) is { } reason)
         {
             return await PauseAsync(
-                config, issueNumber, workingState, checkpointContent, resultMarkdown, reason,
+                config, issueNumber, checkpointState, checkpointContent, resultMarkdown, reason,
                 GitPublicationFailureClassifier.Explanation(reason), cancellationToken).ConfigureAwait(false);
         }
 
@@ -454,7 +462,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             GitPublicationFailureClassifier.TryClassify(exception) is { } reason)
         {
             return await PauseAsync(
-                config, issueNumber, workingState, checkpointContent, resultMarkdown, reason,
+                config, issueNumber, checkpointState, checkpointContent, resultMarkdown, reason,
                 GitPublicationFailureClassifier.Explanation(reason), cancellationToken).ConfigureAwait(false);
         }
 

@@ -67,12 +67,14 @@ public static class WorkflowCommandRouting
             WorkflowPhase.Planning => null,
             WorkflowPhase.Revising when state.WaitingReason is WaitingReason.MaterialPlanDeviation or
                 WaitingReason.NewFeedbackDuringRevision or WaitingReason.RemoteHistoryRewrite or
-                WaitingReason.MissingRemoteRevisionBranch => WorkflowCommand.Revise,
+                WaitingReason.MissingRemoteRevisionBranch or WaitingReason.MissingCredentials or
+                WaitingReason.ProtectedBranch => WorkflowCommand.Revise,
             WorkflowPhase.Revising when state.InterruptedPhase == WorkflowPhase.Revising => WorkflowCommand.Revise,
             WorkflowPhase.Revising when durableState.Phase == WorkflowPhase.Revising &&
                 durableState.OperationalState == WorkflowOperationalState.Working => WorkflowCommand.Revise,
             WorkflowPhase.Revising => null,
-            WorkflowPhase.Implementing when state.WaitingReason is WaitingReason.NewInputDuringImplementation or WaitingReason.MaterialPlanDeviation => WorkflowCommand.Implement,
+            WorkflowPhase.Implementing when state.WaitingReason is WaitingReason.NewInputDuringImplementation or
+                WaitingReason.MaterialPlanDeviation or WaitingReason.MissingCredentials or WaitingReason.ProtectedBranch => WorkflowCommand.Implement,
             WorkflowPhase.Implementing when state.InterruptedPhase == WorkflowPhase.Implementing => WorkflowCommand.Implement,
             WorkflowPhase.Implementing when durableState.Phase == WorkflowPhase.Implementing &&
                 durableState.OperationalState == WorkflowOperationalState.Working => WorkflowCommand.Implement,

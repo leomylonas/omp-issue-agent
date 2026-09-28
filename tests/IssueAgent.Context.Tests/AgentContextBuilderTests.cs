@@ -219,7 +219,7 @@ public sealed class AgentContextBuilderTests
             return new DownloadedAttachment(path, Path.GetFileName(path), bytes.Length);
         };
         var limits = new AttachmentLimits { MaxTotalSizeBytes = 10 };
-        var builder = new AgentContextBuilder(provider, new AttachmentPipeline(provider, limits), new AgentContextBuilderOptions
+        AgentContextBuilder CreateBuilder() => new(provider, new AttachmentPipeline(provider, limits), new AgentContextBuilderOptions
         {
             AttachmentLimits = limits,
             AllowedRepositories = [Repository],
@@ -228,12 +228,12 @@ public sealed class AgentContextBuilderTests
             WorkflowId.New(), WorkflowPhase.Planning, WorkflowOperationalState.Working, null,
             0, null, "omp-session", "agent/issue-1", "main", "abc123", DateTimeOffset.UtcNow);
 
-        var first = await builder.BuildAsync(Repository, 1, state, null, null, destination, CancellationToken.None);
+        var first = await CreateBuilder().BuildAsync(Repository, 1, state, null, null, destination, CancellationToken.None);
         provider.Issues[(Repository.Id, 1)] = provider.Issues[(Repository.Id, 1)] with
         {
             Description = "[a](https://github.example/files/a.pdf) [b](https://github.example/files/b.pdf)",
         };
-        var rebuilt = await builder.BuildAsync(Repository, 1, state, null, null, destination, CancellationToken.None);
+        var rebuilt = await CreateBuilder().BuildAsync(Repository, 1, state, null, null, destination, CancellationToken.None);
 
         Assert.Equal(1, downloadedUrls.Count(url => url.EndsWith("/a.pdf", StringComparison.Ordinal)));
         Assert.All(rebuilt.PrimaryIssue.Attachments.Where(attachment => attachment.SourceUrl.EndsWith("/a.pdf", StringComparison.Ordinal)), attachment => Assert.False(attachment.IsOmitted));

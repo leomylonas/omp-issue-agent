@@ -43,7 +43,7 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
     {
         var remainingBudget = attachmentBudgets.GetOrAdd(
             Path.GetFullPath(attachmentsDestinationDirectory),
-            _ => new RemainingBudget(options.AttachmentLimits.MaxTotalSizeBytes));
+            attachmentPipeline.CreateRemainingBudget);
 
         var primaryIssue = await BuildIssueContextAsync(repository, issueNumber, attachmentsDestinationDirectory, remainingBudget, cancellationToken)
             .ConfigureAwait(false);

@@ -236,6 +236,42 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
         Assert.True(Directory.Exists(WorktreePath(state)));
         Assert.Single(provider.UpdatedComments);
     }
+    [Theory]
+    [InlineData(WaitingReason.MissingCredentials)]
+    [InlineData(WaitingReason.ProtectedBranch)]
+    public async Task RevisionPublicationBlockerRetainsLocalAheadResult(
+        WaitingReason publicationBlocker)
+    {
+        git.BranchCommitToReturn = "local-revision";
+        git.RemoteBranchCommitToReturn = "published-revision";
+        git.IsAncestor = (ancestor, descendant) =>
+            ancestor == "published-revision" && descendant == "local-revision";
+        var (state, canonical) = SeedWorkflow(
+            WorkflowPhase.Revising,
+            WorkflowOperationalState.Waiting,
+            publicationBlocker);
+        state = state with
+        {
+            ReviewFeedbackCutoff = clock.UtcNow.AddHours(-1),
+            ReviewFeedbackVersions = new HashSet<string>(),
+        };
+        var content = CanonicalCommentMarkdown.Parse(canonical.Body) with
+        {
+            ImplementationResult = "Locally committed revision.",
+            State = CanonicalStateSerializer.ToDocument(state, $"{Repository.Id}#7"),
+        };
+        canonical = canonical with { Body = CanonicalCommentMarkdown.Render(content) };
+        provider.IssueComments[(Repository.Id, 1)][0] = canonical;
+
+        var result = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
+
+        Assert.Equal(ReconciliationDisposition.Waiting, result.Disposition);
+        Assert.Equal(publicationBlocker, result.State!.WaitingReason);
+        Assert.Equal("Locally committed revision.", result.Content!.ImplementationResult);
+        Assert.Empty(provider.UpdatedComments);
+        Assert.Empty(notifier.Notifications);
+    }
+
 
 
     [Fact]

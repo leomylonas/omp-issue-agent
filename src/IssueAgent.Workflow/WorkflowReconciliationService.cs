@@ -186,6 +186,24 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
             remoteHead is not null &&
             !string.Equals(localHead, remoteHead, StringComparison.Ordinal) &&
             await dependencies.Git.IsAncestorAsync(config.Repository.Id, localHead, remoteHead, cancellationToken).ConfigureAwait(false);
+        if (state.Phase == WorkflowPhase.Revising &&
+            state.WaitingReason is WaitingReason.MissingCredentials or WaitingReason.ProtectedBranch &&
+            content.ImplementationResult is { Length: > 0 } &&
+            localHead is not null &&
+            remoteHead is not null &&
+            !worktreeDirty &&
+            !localHeadIsAncestorOfRemote &&
+            await dependencies.Git.IsAncestorAsync(
+                config.Repository.Id, remoteHead, localHead, cancellationToken).ConfigureAwait(false))
+        {
+            return new WorkflowReconciliationResult(
+                ReconciliationDisposition.Waiting,
+                state,
+                content,
+                canonicalComment,
+                "The local revision result is ahead of the remote branch after publication was blocked. It was retained; correct the publication blocker and continue.");
+        }
+
         if (!worktreeDirty && localHeadIsAncestorOfRemote)
         {
             // Only a workflow with a verified published review request may adopt human commits

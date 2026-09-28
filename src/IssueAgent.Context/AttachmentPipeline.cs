@@ -27,7 +27,9 @@ public sealed class AttachmentPipeline(
     AttachmentLimits limits,
     Func<string, CancellationToken, Task<IPAddress[]>>? resolveHostAddressesAsync = null)
 {
+    private const string ManifestFileName = ".issue-agent-attachment-manifest.json";
     private readonly Dictionary<string, DownloadedAttachment> downloadedAttachments = new(StringComparer.Ordinal);
+    private readonly HashSet<string> loadedManifestDirectories = new(StringComparer.Ordinal);
     private readonly Lock downloadedAttachmentsLock = new();
     /// <summary>Scans <paramref name="body"/> for candidate attachment links and downloads each into
     /// <paramref name="destinationDirectory"/>, tracking cumulative usage against
@@ -44,9 +46,11 @@ public sealed class AttachmentPipeline(
         ArgumentNullException.ThrowIfNull(body);
         ArgumentNullException.ThrowIfNull(remainingBudget);
 
+        EnsureManifestLoaded(destinationDirectory);
+
         var results = new List<AttachmentReference>();
 
-        string CacheKey(Uri url) => Path.Combine(destinationDirectory, url.AbsoluteUri);
+        string CacheKey(Uri url) => BuildCacheKey(destinationDirectory, url);
         foreach (var candidateUrl in MarkdownAttachmentScanner.ScanLinks(body))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -126,7 +130,7 @@ public sealed class AttachmentPipeline(
                 }
 
                 remainingBudget.Consume(downloaded.SizeBytes);
-                CacheDownloadedAttachment(CacheKey(url), downloaded);
+                CacheDownloadedAttachment(destinationDirectory, url, downloaded);
                 results.Add(new AttachmentReference(
                     url.ToString(),
                     downloaded.SafeFileName,
@@ -168,6 +172,107 @@ public sealed class AttachmentPipeline(
         return results;
     }
 
+    /// <summary>Restores the retained attachment manifest so a reconstructed context builder
+    /// preserves both the already-downloaded files and their workflow-wide budget consumption.</summary>
+    public RemainingBudget CreateRemainingBudget(string destinationDirectory)
+    {
+        EnsureManifestLoaded(destinationDirectory);
+        lock (downloadedAttachmentsLock)
+        {
+            var prefix = $"{Path.GetFullPath(destinationDirectory)}\n";
+            var downloaded = downloadedAttachments
+                .Where(entry => entry.Key.StartsWith(prefix, StringComparison.Ordinal))
+                .Select(entry => entry.Value)
+                .ToArray();
+            return new RemainingBudget(
+                limits.MaxTotalSizeBytes,
+                downloaded.Aggregate(0L, (total, attachment) => total > long.MaxValue - attachment.SizeBytes ? long.MaxValue : total + attachment.SizeBytes),
+                downloaded.Length);
+        }
+    }
+
+    private void EnsureManifestLoaded(string destinationDirectory)
+    {
+        var fullDestinationDirectory = Path.GetFullPath(destinationDirectory);
+        lock (downloadedAttachmentsLock)
+        {
+            if (!loadedManifestDirectories.Add(fullDestinationDirectory))
+            {
+                return;
+            }
+
+            var manifestPath = Path.Combine(fullDestinationDirectory, ManifestFileName);
+            if (!File.Exists(manifestPath))
+            {
+                return;
+            }
+
+            List<AttachmentManifestEntry>? entries;
+            try
+            {
+                entries = System.Text.Json.JsonSerializer.Deserialize<List<AttachmentManifestEntry>>(File.ReadAllText(manifestPath));
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                return;
+            }
+
+            foreach (var entry in entries ?? [])
+            {
+                if (!Uri.TryCreate(entry.Url, UriKind.Absolute, out var url) ||
+                    !IsSafeFileName(entry.SafeFileName) ||
+                    entry.SizeBytes < 0)
+                {
+                    continue;
+                }
+
+                var localPath = Path.GetFullPath(Path.Combine(fullDestinationDirectory, entry.SafeFileName));
+                if (Path.GetDirectoryName(localPath) != fullDestinationDirectory)
+                {
+                    continue;
+                }
+
+                var file = new FileInfo(localPath);
+                if (!file.Exists || file.Attributes.HasFlag(FileAttributes.ReparsePoint) || file.Length != entry.SizeBytes)
+                {
+                    continue;
+                }
+
+                downloadedAttachments[BuildCacheKey(fullDestinationDirectory, url)] =
+                    new DownloadedAttachment(localPath, entry.SafeFileName, entry.SizeBytes);
+            }
+        }
+    }
+
+    private void CacheDownloadedAttachment(string destinationDirectory, Uri url, DownloadedAttachment downloaded)
+    {
+        var fullDestinationDirectory = Path.GetFullPath(destinationDirectory);
+        lock (downloadedAttachmentsLock)
+        {
+            downloadedAttachments[BuildCacheKey(fullDestinationDirectory, url)] = downloaded;
+            Directory.CreateDirectory(fullDestinationDirectory);
+            var prefix = $"{fullDestinationDirectory}\n";
+            var manifest = downloadedAttachments
+                .Where(entry => entry.Key.StartsWith(prefix, StringComparison.Ordinal))
+                .Select(entry => new AttachmentManifestEntry(
+                    entry.Key[prefix.Length..],
+                    entry.Value.SafeFileName,
+                    entry.Value.SizeBytes))
+                .ToArray();
+            var manifestPath = Path.Combine(fullDestinationDirectory, ManifestFileName);
+            var temporaryPath = Path.Combine(fullDestinationDirectory, $".{Guid.NewGuid():N}.tmp");
+            File.WriteAllText(temporaryPath, System.Text.Json.JsonSerializer.Serialize(manifest));
+            File.Move(temporaryPath, manifestPath, overwrite: true);
+        }
+    }
+
+    private static string BuildCacheKey(string destinationDirectory, Uri url) =>
+        $"{Path.GetFullPath(destinationDirectory)}\n{url.AbsoluteUri}";
+
+    private static bool IsSafeFileName(string fileName) =>
+        !string.IsNullOrWhiteSpace(fileName) &&
+        string.Equals(Path.GetFileName(fileName), fileName, StringComparison.Ordinal);
+
     private bool TryGetCachedAttachment(string key, out DownloadedAttachment downloaded)
     {
         lock (downloadedAttachmentsLock)
@@ -189,14 +294,6 @@ public sealed class AttachmentPipeline(
             }
 
             return true;
-        }
-    }
-
-    private void CacheDownloadedAttachment(string key, DownloadedAttachment downloaded)
-    {
-        lock (downloadedAttachmentsLock)
-        {
-            downloadedAttachments[key] = downloaded;
         }
     }
 
@@ -309,13 +406,16 @@ public sealed class AttachmentPipeline(
     }
 }
 
+
+internal sealed record AttachmentManifestEntry(string Url, string SafeFileName, long SizeBytes);
+
 /// <summary>Mutable running totals shared across every <see cref="AttachmentPipeline.ProcessAsync"/>
 /// call for one workflow context: the remaining byte budget and the remaining attachment-count
 /// budget (specification §15). Both are enforced across the whole context, not per comment body.</summary>
-public sealed class RemainingBudget(long totalBytes)
+public sealed class RemainingBudget(long totalBytes, long consumedBytes = 0, int attachmentCount = 0)
 {
-    private long remaining = Math.Max(0, totalBytes);
-    private int attachmentCount;
+    private long remaining = Math.Max(0, totalBytes - Math.Clamp(consumedBytes, 0, totalBytes));
+    private int attachmentCount = Math.Max(0, attachmentCount);
 
     public long Remaining => Volatile.Read(ref remaining);
 

@@ -176,6 +176,12 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
                 planRevision: 1,
                 reconciledResult.Input.Title,
                 reconciledResult.Input.Description,
+                new CanonicalCommentContent(
+                    string.Empty,
+                    [],
+                    null,
+                    CanonicalStateSerializer.ToDocument(initialState, pullOrMergeRequest: null)),
+                preservesPublishedReview: false,
                 cancellationToken).ConfigureAwait(false);
         }
         catch (WorkflowContractException exception)
@@ -276,6 +282,10 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
                 existingContent.State.PlanRevision + 1,
                 reconciled.Input.Title,
                 reconciled.Input.Description,
+                existingContent,
+                currentState.Phase == WorkflowPhase.Review &&
+                    currentState.PublicationStage == ImplementationPublicationStage.BranchPublished &&
+                    currentState.ExpectedImplementationHead is not null,
                 cancellationToken).ConfigureAwait(false);
         }
         catch (WorkflowContractException exception)
@@ -371,10 +381,14 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         int planRevision,
         string issueTitle,
         string issueDescription,
+        CanonicalCommentContent existingContent,
+        bool preservesPublishedReview,
         CancellationToken cancellationToken)
     {
-        var suggestedBranch = workingState.PendingBranch
-            ?? BranchNaming.TryDeriveSuggestedBranchName(issueNumber, issueTitle, planningResult.SuggestedSlug);
+        var suggestedBranch = preservesPublishedReview
+            ? null
+            : workingState.PendingBranch
+                ?? BranchNaming.TryDeriveSuggestedBranchName(issueNumber, issueTitle, planningResult.SuggestedSlug);
         if (suggestedBranch is not null && !string.Equals(workingState.Branch, suggestedBranch, StringComparison.Ordinal))
         {
             if (workingState.PendingBranch is null)
@@ -402,13 +416,16 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             await CheckpointSuggestedBranchAsync(config, issueNumber, workingState, cancellationToken).ConfigureAwait(false);
         }
 
-        // OMP's planning contract is read-only. Discard any accidental planning-time edits or
-        // commits before the plan becomes approvable, so implementation always starts at its
-        // recorded base commit.
+        // OMP's planning contract is read-only. Discard any accidental planning-time edits. A
+        // replan from review resumes on the published branch head so its next implementation can
+        // fast-forward the existing PR/MR branch instead of resetting it to the original base.
+        var implementationBase = preservesPublishedReview
+            ? workingState.ExpectedImplementationHead!
+            : workingState.BaseCommit;
         await deps.Git.ResetWorktreeAsync(
             config.Repository.Id,
             WorktreePath(config, workingState.WorkflowId),
-            workingState.BaseCommit,
+            implementationBase,
             cancellationToken).ConfigureAwait(false);
 
         var publishedState = workingState with
@@ -417,6 +434,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             OperationalState = WorkflowOperationalState.Waiting,
             WaitingReason = WaitingReason.PlanApproval,
             PlanRevision = planRevision,
+            BaseCommit = implementationBase,
             UpdatedAt = deps.Clock.UtcNow,
             PlanInputHash = PlanInputHasher.Compute(issueTitle, issueDescription),
         };
@@ -424,8 +442,10 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         var content = new CanonicalCommentContent(
             planningResult.PlanText,
             planningResult.DecisionsAndRationale,
-            ImplementationResult: null,
-            CanonicalStateSerializer.ToDocument(publishedState, pullOrMergeRequest: null));
+            ImplementationResult: preservesPublishedReview ? existingContent.ImplementationResult : null,
+            CanonicalStateSerializer.ToDocument(
+                publishedState,
+                preservesPublishedReview ? existingContent.State.PullOrMergeRequest : null));
 
         await UpsertCanonicalCommentAsync(config, issueNumber, content, cancellationToken).ConfigureAwait(false);
         await TransitionLabelsAsync(config, issueNumber, WorkflowPhase.Planned, WorkflowOperationalState.Waiting, [], cancellationToken)

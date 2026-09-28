@@ -472,6 +472,45 @@ public sealed class PlanningWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunReplanAsyncFromReviewPreservesPublishedHistoryAndMergeRequestForRecovery()
+    {
+        provider.AddIssue(Repository, 1, "Bug", "Description");
+        var reviewState = new WorkflowState(
+            WorkflowId.New(), WorkflowPhase.Review, WorkflowOperationalState.Waiting, WaitingReason.ReviewRequested,
+            1, 1, "session-1", "agent/issue-1-bug", "main", "abc123", clock.UtcNow.AddHours(-1),
+            PlanInputHash: PlanInputHasher.Compute("Bug", "Description"),
+            ExpectedImplementationHead: "def456",
+            PublicationStage: ImplementationPublicationStage.BranchPublished,
+            ReviewFeedbackCutoff: clock.UtcNow.AddHours(-1));
+        await provider.CreateIssueCommentAsync(
+            Repository,
+            1,
+            CanonicalCommentMarkdown.Render(new CanonicalCommentContent(
+                "Original plan.", [], "Published implementation.",
+                CanonicalStateSerializer.ToDocument(reviewState, $"{Repository.Id}#42"))),
+            CancellationToken.None);
+        provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] =
+            [WorkflowLabels.ReviewPhase, WorkflowLabels.WaitingState, WorkflowCommandLabels.Replan];
+        Directory.CreateDirectory(Path.Combine(workspaceRoot, reviewState.WorkflowId.ToString(), "worktree"));
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1", clock.UtcNow, """{"planText":"Revised plan.","decisions":[],"suggestedSlug":"replacement-branch"}"""));
+
+        var outcome = await CreateWorkflow().RunReplanAsync(CreateConfig(), 1, reviewState, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowPhase.Planned, outcome.State.Phase);
+        Assert.Equal(reviewState.Branch, outcome.State.Branch);
+        Assert.Equal("def456", outcome.State.BaseCommit);
+        Assert.Equal("def456", outcome.State.ExpectedImplementationHead);
+        Assert.Equal(ImplementationPublicationStage.BranchPublished, outcome.State.PublicationStage);
+        Assert.Empty(git.RenamedWorktreeBranches);
+        Assert.Equal("def456", Assert.Single(git.ResetWorktrees).Commit);
+
+        var persisted = CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body);
+        Assert.Equal("Published implementation.", persisted.ImplementationResult);
+        Assert.Equal($"{Repository.Id}#42", persisted.State.PullOrMergeRequest);
+    }
+
+    [Fact]
     public async Task RunReplanAsyncPersistsFailureWhenOmpResultViolatesContract()
     {
         provider.AddIssue(Repository, 1, "Bug", "Description");

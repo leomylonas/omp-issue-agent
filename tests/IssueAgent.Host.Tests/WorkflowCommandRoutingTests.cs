@@ -135,6 +135,24 @@ public sealed class WorkflowCommandRoutingTests
 
         Assert.Equal(WorkflowCommand.Revise, WorkflowCommandRouting.ContinueRoute(pausedRevision, pausedRevision));
     }
+    [Theory]
+    [InlineData(WorkflowPhase.Implementing, WaitingReason.MissingCredentials, WorkflowCommand.Implement)]
+    [InlineData(WorkflowPhase.Implementing, WaitingReason.ProtectedBranch, WorkflowCommand.Implement)]
+    [InlineData(WorkflowPhase.Revising, WaitingReason.MissingCredentials, WorkflowCommand.Revise)]
+    [InlineData(WorkflowPhase.Revising, WaitingReason.ProtectedBranch, WorkflowCommand.Revise)]
+    public void ContinueRouteRetriesPublicationBlockers(
+        WorkflowPhase phase,
+        WaitingReason waitingReason,
+        WorkflowCommand expectedCommand)
+    {
+        var paused = CreateState(phase, WorkflowOperationalState.Waiting) with
+        {
+            WaitingReason = waitingReason,
+        };
+
+        Assert.Equal(expectedCommand, WorkflowCommandRouting.ContinueRoute(paused, paused));
+    }
+
 
     [Fact]
     public void ContinueFromNewFeedbackDuringRevisionStartsFreshRevision()

@@ -36,11 +36,13 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
 
     public bool RemoteBranchIsDescendant { get; set; } = true;
 
+    public Func<string, string, bool>? IsAncestor { get; set; }
+
     public ValueTask<string?> TryResolveRemoteBranchCommitAsync(string repositoryId, string branchName, CancellationToken cancellationToken) =>
         ValueTask.FromResult(RemoteBranchCommitToReturn);
 
     public ValueTask<bool> IsAncestorAsync(string repositoryId, string ancestorCommit, string descendantCommit, CancellationToken cancellationToken) =>
-        ValueTask.FromResult(RemoteBranchIsDescendant);
+        ValueTask.FromResult(IsAncestor?.Invoke(ancestorCommit, descendantCommit) ?? RemoteBranchIsDescendant);
 
     public ValueTask CreateWorktreeAsync(string repositoryId, string worktreeId, string worktreePath, string branchName, string baseCommit, CancellationToken cancellationToken)
     {
@@ -117,7 +119,13 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask<bool> TryRebaseOntoAsync(string repositoryId, string worktreePath, string ontoCommit, GitIdentity identity, CancellationToken cancellationToken) => ValueTask.FromResult(true);
+    public int RebaseAttempts { get; private set; }
+
+    public ValueTask<bool> TryRebaseOntoAsync(string repositoryId, string worktreePath, string ontoCommit, GitIdentity identity, CancellationToken cancellationToken)
+    {
+        RebaseAttempts++;
+        return ValueTask.FromResult(true);
+    }
 
     public ValueTask<bool> TryMergeAsync(string repositoryId, string worktreePath, string commit, GitIdentity identity, CancellationToken cancellationToken)
     {
