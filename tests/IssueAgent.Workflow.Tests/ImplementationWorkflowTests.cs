@@ -52,7 +52,10 @@ public sealed class ImplementationWorkflowTests : IDisposable
         Assert.Contains("Fixes #1", provider.MergeRequests[1].Description, StringComparison.Ordinal);
         var updated = provider.UpdatedComments[^1];
         Assert.Contains("Added a guard clause.", updated.Body, StringComparison.Ordinal);
-        Assert.Contains("## Linked pull/merge request #1", updated.Body, StringComparison.Ordinal);
+        Assert.Contains(
+            "## Linked pull/merge request [#1](https://fake-provider.example/octo/widgets/merge_requests/1)",
+            updated.Body,
+            StringComparison.Ordinal);
         var publishedState = CanonicalCommentMarkdown.Parse(updated.Body).State;
         Assert.Equal(git.BranchCommitToReturn, publishedState.ExpectedImplementationHead);
         Assert.Equal("branch-published", publishedState.PublicationStage);

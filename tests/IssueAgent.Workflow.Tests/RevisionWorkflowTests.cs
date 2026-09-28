@@ -65,6 +65,26 @@ public sealed class RevisionWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsyncLoadsTheStoredRequestWhenItsBranchesWereRenamed()
+    {
+        var state = await SeedReviewStateAsync();
+        provider.MergeRequests[1] = provider.MergeRequests[1] with
+        {
+            SourceBranch = "renamed-agent-branch",
+            TargetBranch = "renamed-target",
+        };
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1", clock.UtcNow,
+            """{"summary":"Addressed the review.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
+        Assert.Single(omp.RunRequests);
+    }
+
+    [Fact]
     public async Task RevisionPromptIncludesAvailableAndOmittedReviewAttachments()
     {
         var state = await SeedReviewStateAsync();

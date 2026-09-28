@@ -71,6 +71,7 @@ public static partial class CanonicalStateSerializer
     private static readonly IDeserializer Deserializer = new DeserializerBuilder()
         .WithNamingConvention(CamelCaseNamingConvention.Instance)
         .WithTypeConverter(new DateTimeOffsetYamlConverter())
+        .WithDuplicateKeyChecking()
         .IgnoreUnmatchedProperties()
         .Build();
 

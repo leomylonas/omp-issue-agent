@@ -170,7 +170,8 @@ public sealed record ProviderMergeRequest(
     bool IsDraft,
     bool IsMerged,
     bool IsClosed,
-    AttachmentSource DescriptionSource);
+    AttachmentSource DescriptionSource,
+    Uri? WebUrl = null);
 
 public sealed record ProviderReviewThread(
     string Id,
@@ -193,12 +194,17 @@ public sealed record ProviderAttachment(
     long? SizeBytes,
     AttachmentSource Source,
     bool IsProviderOwnedEndpoint,
-    IReadOnlySet<System.Net.IPAddress>? ValidatedAddresses = null);
+    IReadOnlySet<System.Net.IPAddress>? ValidatedAddresses = null,
+    bool RequiresAttachmentContentDisposition = false);
 
 public sealed record DownloadedAttachment(
     string LocalPath,
     string SafeFileName,
     long SizeBytes);
+
+/// <summary>Thrown when an extensionless external download candidate is not explicitly identified
+/// as an attachment by its response headers.</summary>
+public sealed class AttachmentNotClassifiedException(string message) : Exception(message);
 
 /// <summary>Thrown when a downloaded attachment exceeds the caller-supplied size cap. The caller
 /// omits the attachment rather than failing the workflow.</summary>

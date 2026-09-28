@@ -12,13 +12,18 @@ public sealed class EndToEndLifecycleTests : IDisposable
     private readonly string workspaceRoot = Path.Combine(Path.GetTempPath(), "issueagent-e2e-tests", Guid.NewGuid().ToString("N"));
     private readonly FixedClock clock = new(DateTimeOffset.Parse("2024-06-01T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture));
 
-    [Theory]
-    [InlineData("github/octo/widgets")]
-    [InlineData("gitlab/octo/widgets")]
-    public async Task AssignmentThroughRepeatedConversationAndMergeCompletesWithoutDuplicateResources(string repositoryId)
+    [Fact]
+    public Task AssignmentThroughRepeatedConversationAndMergeCompletesWithoutDuplicateResources() =>
+        RunLifecycleAsync(includeLfsAsset: false);
+
+    [Fact]
+    public Task AssignmentLifecycleMaterializesLfsContentBeforePublication() =>
+        RunLifecycleAsync(includeLfsAsset: true);
+
+    private async Task RunLifecycleAsync(bool includeLfsAsset)
     {
-        var repository = new RepositoryRef(repositoryId, "octo", "widgets");
-        var remoteRepository = CreateBareRemoteRepository();
+        var repository = new RepositoryRef("test/octo/widgets", "octo", "widgets");
+        var remoteRepository = CreateBareRemoteRepository(includeLfsAsset);
         var provider = new FakeGitProvider();
         var git = new LibGit2SharpRepositoryManager(Path.Combine(workspaceRoot, "repos"));
         var notifier = new RecordingNotifier();
@@ -45,6 +50,13 @@ public sealed class EndToEndLifecycleTests : IDisposable
             .EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """{"summary":"Added title validation.","keyChanges":["Normalized titles"],"decisions":["Validate normalized input"],"checksRun":["tests"],"knownFailures":[],"deviations":[],"risks":[]}"""));
         var implementation = await new ImplementationWorkflow(dependencies)
             .RunAsync(config, WorkflowMode.Full, 1, replanned.State, implementationOmp, CancellationToken.None);
+        if (includeLfsAsset)
+        {
+            Assert.NotNull(expectedLfsAsset);
+            Assert.Equal(
+                expectedLfsAsset,
+                File.ReadAllBytes(Path.Combine(workspaceRoot, implementation.State.WorkflowId.ToString(), "worktree", "asset.bin")));
+        }
 
         provider.Labels[(repository.Id, ProviderWorkItemKind.Issue, 1)].Add(WorkflowCommandLabels.Revise);
         provider.MergeRequestComments[(repository.Id, 1)] =
@@ -91,7 +103,9 @@ public sealed class EndToEndLifecycleTests : IDisposable
         "plan",
         "task");
 
-    private string CreateBareRemoteRepository()
+    private byte[]? expectedLfsAsset;
+
+    private string CreateBareRemoteRepository(bool includeLfsAsset)
     {
         Directory.CreateDirectory(workspaceRoot);
         var remoteRepository = Path.Combine(workspaceRoot, "remote.git");
@@ -101,6 +115,16 @@ public sealed class EndToEndLifecycleTests : IDisposable
         RunGit(seedRepository, "config", "user.name", "IssueAgent Test");
         RunGit(seedRepository, "config", "user.email", "issue-agent-test@example.com");
         File.WriteAllText(Path.Combine(seedRepository, "README.md"), "# Test repository\n");
+        if (includeLfsAsset)
+        {
+            RunGit(seedRepository, "lfs", "install", "--local");
+            File.WriteAllText(Path.Combine(seedRepository, ".gitattributes"), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
+            expectedLfsAsset = new byte[4096];
+            Random.Shared.NextBytes(expectedLfsAsset);
+            File.WriteAllBytes(Path.Combine(seedRepository, "asset.bin"), expectedLfsAsset);
+            RunGit(seedRepository, "add", ".gitattributes", "asset.bin");
+        }
+
         RunGit(seedRepository, "add", "README.md");
         RunGit(seedRepository, "commit", "-m", "Initial commit");
         RunGit(seedRepository, "branch", "-M", "main");

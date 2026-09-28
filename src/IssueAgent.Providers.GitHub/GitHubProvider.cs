@@ -397,6 +397,13 @@ public sealed partial class GitHubProvider(
             },
             async (response, token) =>
             {
+                if (attachment.RequiresAttachmentContentDisposition &&
+                    !string.Equals(response.Content.Headers.ContentDisposition?.DispositionType, "attachment", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new AttachmentNotClassifiedException(
+                        $"Extensionless attachment candidate '{attachment.Url}' did not return Content-Disposition: attachment.");
+                }
+
                 if (response.Content.Headers.ContentLength is { } declaredLength && declaredLength > maxSizeBytes)
                 {
                     throw new AttachmentTooLargeException(
@@ -673,5 +680,9 @@ public sealed partial class GitHubProvider(
         pullRequest.Draft,
         pullRequest.Merged,
         pullRequest.State.Value == ItemState.Closed && !pullRequest.Merged,
-        new AttachmentSource("merge-request-description", pullRequest.Number.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        new AttachmentSource("merge-request-description", pullRequest.Number.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+        ParseWebUrl(pullRequest.HtmlUrl));
+
+    private static Uri? ParseWebUrl(string? webUrl) =>
+        Uri.TryCreate(webUrl, UriKind.Absolute, out var uri) ? uri : null;
 }

@@ -51,6 +51,27 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
 
         Assert.Equal(ReconciliationDisposition.ResumeAllowed, result.Disposition);
         Assert.Equal(state.WorkflowId, result.State!.WorkflowId);
+        Assert.Equal(7, result.MergeRequest!.Number);
+    }
+
+    [Fact]
+    public async Task MalformedStoredRequestIdentityIsEscalatedAsCorruptState()
+    {
+        var (state, canonical) = SeedWorkflow(WorkflowPhase.Review, WorkflowOperationalState.Waiting, WaitingReason.ReviewRequested);
+        canonical = canonical with
+        {
+            Body = CanonicalCommentMarkdown.Render(CanonicalCommentMarkdown.Parse(canonical.Body) with
+            {
+                State = CanonicalStateSerializer.ToDocument(state, "not-a-request-identity"),
+            }),
+        };
+
+        var result = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
+
+        Assert.Equal(ReconciliationDisposition.Corrupt, result.Disposition);
+        Assert.Null(result.State);
+        Assert.Single(provider.UpdatedComments);
+        Assert.Contains("corruption-warning", provider.UpdatedComments[0].Body, StringComparison.Ordinal);
     }
 
 

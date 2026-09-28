@@ -245,9 +245,11 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         var currentPlan = new PlanContext(existingContent.State.PlanRevision, existingContent.PlanText, existingContent.DecisionsAndRationale);
         var hasVerifiedPublishedCheckpoint = HasVerifiedPublishedCheckpoint(currentState, existingContent);
         var mergeRequest = hasVerifiedPublishedCheckpoint
-            ? await deps.Provider
-                .FindMergeRequestAsync(config.Repository, currentState.Branch, currentState.TargetBranch, cancellationToken)
-                .ConfigureAwait(false)
+            ? await StoredMergeRequestIdentity.FindAsync(
+                deps.Provider,
+                config.Repository,
+                existingContent.State.PullOrMergeRequest,
+                cancellationToken).ConfigureAwait(false)
             : null;
 
         var planningInput = await CaptureInputSnapshotAsync(config, issueNumber, mergeRequest, cancellationToken).ConfigureAwait(false);

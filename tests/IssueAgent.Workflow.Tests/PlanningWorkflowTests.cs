@@ -550,6 +550,9 @@ public sealed class PlanningWorkflowTests : IDisposable
         provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] =
             [WorkflowLabels.FailedPhase, WorkflowLabels.WaitingState, WorkflowCommandLabels.Continue];
         Directory.CreateDirectory(Path.Combine(workspaceRoot, failedState.WorkflowId.ToString(), "worktree"));
+        provider.MergeRequests[42] = new ProviderMergeRequest(
+            Repository, 42, failedState.Branch, failedState.TargetBranch, "Bug", "Review description", true, false, false,
+            new AttachmentSource("merge-request-description", "42"));
         var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
             "session-1", clock.UtcNow, """{"planText":"Recovered plan.","decisions":[]}"""));
 

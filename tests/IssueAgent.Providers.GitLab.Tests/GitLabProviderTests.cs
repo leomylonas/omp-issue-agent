@@ -325,18 +325,33 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     }
 
     [Fact]
+    public async Task FindMergeRequestAsyncMapsProviderWebUrl()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/123/merge_requests").UsingGet())
+            .RespondWith(JsonResponse("""
+                [{"iid":9,"web_url":"https://gitlab.example/octo/widgets/-/merge_requests/9","source_branch":"agent/issue-7","target_branch":"main","title":"Fix bug","description":"Implements the plan","draft":true,"state":"opened","labels":[]}]
+                """));
+
+        var result = await fixture.Provider.FindMergeRequestAsync(Repository, "agent/issue-7", "main", CancellationToken.None);
+
+        Assert.Equal(new Uri("https://gitlab.example/octo/widgets/-/merge_requests/9"), result!.WebUrl);
+    }
+
+    [Fact]
     public async Task CreateDraftMergeRequestAsyncPrefixesTitleAndParsesDraftFlag()
     {
         fixture.Server
             .Given(Request.Create().WithPath("/api/v4/projects/123/merge_requests").UsingPost()
                 .WithBody(b => b != null && b.Contains("\"title\":\"Draft: Fix bug\"", StringComparison.Ordinal)))
-            .RespondWith(JsonResponse("""{"iid":9,"source_branch":"agent/issue-7-fix","target_branch":"main","title":"Draft: Fix bug","description":"Implements the plan","draft":true,"state":"opened","labels":[]}"""));
+            .RespondWith(JsonResponse("""{"iid":9,"web_url":"https://gitlab.example/octo/widgets/-/merge_requests/9","source_branch":"agent/issue-7-fix","target_branch":"main","title":"Draft: Fix bug","description":"Implements the plan","draft":true,"state":"opened","labels":[]}"""));
 
         var result = await fixture.Provider.CreateDraftMergeRequestAsync(
             new CreateMergeRequestRequest(Repository, "agent/issue-7-fix", "main", "Fix bug", "Implements the plan", true, 7),
             CancellationToken.None);
 
         Assert.Equal(9, result.Number);
+        Assert.Equal(new Uri("https://gitlab.example/octo/widgets/-/merge_requests/9"), result.WebUrl);
         Assert.True(result.IsDraft);
     }
 

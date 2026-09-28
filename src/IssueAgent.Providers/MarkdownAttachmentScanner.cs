@@ -9,9 +9,9 @@ namespace IssueAgent.Providers;
 /// </summary>
 public static partial class MarkdownAttachmentScanner
 {
-    // A filename extension is the direct-file signal, regardless of the particular file format.
-    // Attachment handling is deliberately content-agnostic (§15): archives and unknown types are
-    // retained as files, never extracted or interpreted.
+    // Extensions are an unambiguous direct-file signal. Extensionless links must use a bounded
+    // download-shaped path and later prove an attachment Content-Disposition; this admits unknown
+    // file types without treating arbitrary webpages as files.
 
     public static IEnumerable<Uri> ScanLinks(string body)
     {
@@ -41,6 +41,22 @@ public static partial class MarkdownAttachmentScanner
         return !string.IsNullOrWhiteSpace(fileName) &&
                !fileName.EndsWith('.') &&
                Path.GetExtension(fileName).Length > 1;
+    }
+
+    /// <summary>Returns whether an extensionless URL has a deliberately narrow download route
+    /// shape and therefore may be fetched only if the response says it is an attachment.</summary>
+    public static bool IsContentDispositionAttachmentCandidate(Uri uri)
+    {
+        ArgumentNullException.ThrowIfNull(uri);
+        if (uri.Scheme is not ("http" or "https") || IsDirectFileLink(uri))
+        {
+            return false;
+        }
+
+        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return segments.Length is > 0 and <= 8 &&
+            segments.Any(segment => segment.Equals("download", StringComparison.OrdinalIgnoreCase) ||
+                                    segment.Equals("downloads", StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool TryCreateAttachmentUri(string candidate, out Uri uri)

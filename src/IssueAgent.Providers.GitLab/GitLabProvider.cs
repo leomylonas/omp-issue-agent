@@ -331,6 +331,13 @@ public sealed partial class GitLabProvider(
             },
             async (response, token) =>
             {
+                if (attachment.RequiresAttachmentContentDisposition &&
+                    !string.Equals(response.Content.Headers.ContentDisposition?.DispositionType, "attachment", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new AttachmentNotClassifiedException(
+                        $"Extensionless attachment candidate '{attachment.Url}' did not return Content-Disposition: attachment.");
+                }
+
                 if (response.Content.Headers.ContentLength is { } declaredLength && declaredLength > maxSizeBytes)
                 {
                     throw new AttachmentTooLargeException(
@@ -419,5 +426,9 @@ public sealed partial class GitLabProvider(
         mergeRequest.Draft || mergeRequest.Title.StartsWith(DraftTitlePrefix, StringComparison.OrdinalIgnoreCase),
         mergeRequest.State == "merged",
         mergeRequest.State == "closed",
-        new AttachmentSource("merge-request-description", mergeRequest.Iid.ToString(CultureInfo.InvariantCulture)));
+        new AttachmentSource("merge-request-description", mergeRequest.Iid.ToString(CultureInfo.InvariantCulture)),
+        ParseWebUrl(mergeRequest.WebUrl));
+
+    private static Uri? ParseWebUrl(string? webUrl) =>
+        Uri.TryCreate(webUrl, UriKind.Absolute, out var uri) ? uri : null;
 }

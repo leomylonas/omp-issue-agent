@@ -45,6 +45,73 @@ public sealed class AttachmentPipelineTests
     }
 
     [Fact]
+    public async Task ProcessAsyncDownloadsExtensionlessDownloadRouteOnlyWithAttachmentClassification()
+    {
+        var candidateUrl = "https://untrusted.example/releases/download";
+        provider.AttachmentDownloadOverride = (attachment, directory, _) =>
+        {
+            Assert.True(attachment.RequiresAttachmentContentDisposition);
+            Directory.CreateDirectory(directory);
+            var localPath = Path.Combine(directory, "release-artifact");
+            File.WriteAllBytes(localPath, [1]);
+            return new DownloadedAttachment(localPath, "release-artifact", 1);
+        };
+        var pipeline = new AttachmentPipeline(
+            provider,
+            new AttachmentLimits(),
+            (_, _) => Task.FromResult(new[] { IPAddress.Parse("8.8.8.8") }));
+
+        var results = await pipeline.ProcessAsync(
+            $"[release artifact]({candidateUrl})",
+            new AttachmentSource("issue-description", "1"),
+            destination,
+            new RemainingBudget(100 * 1024 * 1024),
+            CancellationToken.None);
+
+        var attachment = Assert.Single(results);
+        Assert.False(attachment.IsOmitted);
+        Assert.Equal(candidateUrl, attachment.SourceUrl);
+    }
+
+    [Fact]
+    public async Task ProcessAsyncDoesNotDownloadExtensionlessOrdinaryWebpage()
+    {
+        provider.AttachmentDownloadOverride = (_, _, _) => throw new InvalidOperationException("ordinary pages must not be fetched");
+        var pipeline = new AttachmentPipeline(provider, new AttachmentLimits());
+
+        var results = await pipeline.ProcessAsync(
+            "[guide](https://example.com/guide)",
+            new AttachmentSource("issue-description", "1"),
+            destination,
+            new RemainingBudget(100 * 1024 * 1024),
+            CancellationToken.None);
+
+        Assert.Empty(results);
+    }
+
+    [Fact]
+    public async Task ProcessAsyncOmitsExtensionlessDownloadRouteWhenItLacksAttachmentDisposition()
+    {
+        provider.AttachmentDownloadOverride = (attachment, _, _) =>
+        {
+            Assert.True(attachment.RequiresAttachmentContentDisposition);
+            throw new AttachmentNotClassifiedException("Content-Disposition was not attachment.");
+        };
+        var pipeline = new AttachmentPipeline(provider, new AttachmentLimits());
+
+        var results = await pipeline.ProcessAsync(
+            "[guide export](https://example.com/download)",
+            new AttachmentSource("issue-description", "1"),
+            destination,
+            new RemainingBudget(100 * 1024 * 1024),
+            CancellationToken.None);
+
+        var attachment = Assert.Single(results);
+        Assert.True(attachment.IsOmitted);
+        Assert.Contains("not marked as an attachment", attachment.OmissionReason, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task ProcessAsyncSkipsRelativeLinksWhenProviderDoesNotResolveThem()
     {
         var pipeline = new AttachmentPipeline(provider, new AttachmentLimits());

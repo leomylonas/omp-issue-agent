@@ -61,15 +61,24 @@ public sealed class AttachmentPipeline(
             }
 
             var isTrusted = provider.IsTrustedAttachmentHost(url);
-            if (!isTrusted && !MarkdownAttachmentScanner.IsDirectFileLink(url))
+            var isDirectFile = MarkdownAttachmentScanner.IsDirectFileLink(url);
+            var requiresContentDisposition = !isTrusted && !isDirectFile;
+            if (requiresContentDisposition && !MarkdownAttachmentScanner.IsContentDispositionAttachmentCandidate(url))
             {
-                // Not a provider-owned attachment and not an obvious direct-file link: this is an
-                // ordinary webpage reference IssueAgent must not crawl.
+                // Not a provider-owned attachment, an obvious direct-file link, or a narrowly
+                // shaped extensionless download link: this is an ordinary webpage reference
+                // IssueAgent must not crawl.
                 continue;
             }
 
             var suggestedFileName = Path.GetFileName(url.AbsolutePath) is { Length: > 0 } name ? name : "attachment";
-            var providerAttachment = new ProviderAttachment(url, suggestedFileName, SizeBytes: null, source, isTrusted);
+            var providerAttachment = new ProviderAttachment(
+                url,
+                suggestedFileName,
+                SizeBytes: null,
+                source,
+                isTrusted,
+                RequiresAttachmentContentDisposition: requiresContentDisposition);
 
             if (TryGetCachedAttachment(CacheKey(url), out var cached))
             {
@@ -137,6 +146,11 @@ public sealed class AttachmentPipeline(
                     downloaded.LocalPath,
                     DescribeProvenance(source),
                     downloaded.SizeBytes));
+            }
+            catch (AttachmentNotClassifiedException)
+            {
+                DeletePartialFile(partialPath);
+                results.Add(Omitted(providerAttachment, "Attachment download response was not marked as an attachment."));
             }
             catch (AttachmentTooLargeException)
             {

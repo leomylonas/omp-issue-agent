@@ -109,6 +109,20 @@ public sealed class GitLfsCredentialScopingTests : IDisposable
             startInfo.ArgumentList);
     }
 
+    [Theory]
+    [InlineData("ssh://remote-user@git.trusted.example:2222/octo/widgets.git", "https://git.trusted.example/octo/widgets.git/info/lfs")]
+    [InlineData("remote-user@git.trusted.example:octo/widgets.git", "https://git.trusted.example/octo/widgets.git/info/lfs")]
+    public void SshRemoteResolvesToActualHttpsLfsEndpointForTlsPinning(string remote, string expectedEndpoint)
+    {
+        var resolveEndpoint = typeof(GitLfsRunner).GetMethod(
+            "TryGetHttpsLfsEndpoint",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+        var arguments = new object?[] { remote, null };
+
+        Assert.True((bool)resolveEndpoint.Invoke(null, arguments)!);
+        Assert.Equal(expectedEndpoint, Assert.IsType<Uri>(arguments[1]).AbsoluteUri);
+    }
+
     [Fact]
     public void ApplyAuthenticationBundlesSystemAndPemAdditionalCaForHttpsLfs()
     {

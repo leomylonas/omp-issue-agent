@@ -17,7 +17,8 @@ public sealed record WorkflowReconciliationResult(
     WorkflowState? State,
     CanonicalCommentContent? Content,
     ProviderComment CanonicalComment,
-    string Explanation);
+    string Explanation,
+    ProviderMergeRequest? MergeRequest = null);
 
 /// <summary>Reconstructs the durable workflow snapshot from provider and local Git state before an
 /// existing workflow is resumed. Unsafe or ambiguous state is preserved and escalated instead of
@@ -57,7 +58,27 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
                 explanation);
         }
 
-        var mergeRequest = await FindMergeRequestAsync(config, state, content, cancellationToken).ConfigureAwait(false);
+        ProviderMergeRequest? mergeRequest;
+        try
+        {
+            mergeRequest = await FindMergeRequestAsync(config, state, content, cancellationToken).ConfigureAwait(false);
+        }
+        catch (CanonicalStateException exception)
+        {
+            var explanation = $"Canonical workflow state is corrupt and could not be reconstructed safely ({exception.GetType().Name}).";
+            await EscalateCorruptionAsync(
+                config,
+                issueNumber,
+                canonicalComment,
+                explanation,
+                cancellationToken).ConfigureAwait(false);
+            return new WorkflowReconciliationResult(
+                ReconciliationDisposition.Corrupt,
+                State: null,
+                Content: null,
+                canonicalComment,
+                explanation);
+        }
         if (mergeRequest is not null && !HasWorkflowMarker(state, mergeRequest))
         {
             return await PauseForHumanAsync(
@@ -285,7 +306,8 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
             state,
             content,
             canonicalComment,
-            decision.Explanation);
+            decision.Explanation,
+            mergeRequest);
     }
 
     private async Task<ProviderMergeRequest?> FindMergeRequestAsync(
@@ -295,21 +317,11 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
         CancellationToken cancellationToken)
     {
         var identity = content.State.PullOrMergeRequest;
-        if (identity is null)
-        {
-            return await dependencies.Provider.FindMergeRequestAsync(
-                config.Repository, state.Branch, state.TargetBranch, cancellationToken).ConfigureAwait(false);
-        }
-
-        var prefix = $"{config.Repository.Id}#";
-        if (!identity.StartsWith(prefix, StringComparison.Ordinal) ||
-            !long.TryParse(identity[prefix.Length..], out var number) ||
-            number <= 0)
-        {
-            throw new CanonicalStateException("Canonical state pullOrMergeRequest is not a valid repository request identity.");
-        }
-
-        return await dependencies.Provider.GetMergeRequestAsync(config.Repository, number, cancellationToken).ConfigureAwait(false);
+        return identity is null
+            ? await dependencies.Provider.FindMergeRequestAsync(
+                config.Repository, state.Branch, state.TargetBranch, cancellationToken).ConfigureAwait(false)
+            : await StoredMergeRequestIdentity.FindAsync(
+                dependencies.Provider, config.Repository, identity, cancellationToken).ConfigureAwait(false);
     }
 
     private static bool HasWorkflowMarker(WorkflowState state, ProviderMergeRequest mergeRequest) =>

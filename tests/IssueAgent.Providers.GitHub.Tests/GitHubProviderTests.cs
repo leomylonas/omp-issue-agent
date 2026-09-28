@@ -645,13 +645,27 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
+    public async Task FindMergeRequestAsyncMapsProviderWebUrl()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls").UsingGet())
+            .RespondWith(JsonResponse("""
+                [{"number":9,"html_url":"https://github.example/octo/widgets/pull/9","head":{"ref":"agent/issue-7"},"base":{"ref":"main"},"title":"Fix bug","body":"Implements the plan","draft":true,"merged":false,"state":"open"}]
+                """));
+
+        var result = await fixture.Provider.FindMergeRequestAsync(Repository, "agent/issue-7", "main", CancellationToken.None);
+
+        Assert.Equal(new Uri("https://github.example/octo/widgets/pull/9"), result!.WebUrl);
+    }
+
+    [Fact]
     public async Task CreateDraftMergeRequestAsyncSendsDraftFlagAndMapsResult()
     {
         fixture.Server
             .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls").UsingPost()
                 .WithBody(b => b != null && b.Contains("\"draft\":true", StringComparison.Ordinal)))
             .RespondWith(JsonResponse("""
-                {"number":9,"head":{"ref":"agent/issue-7-fix"},"base":{"ref":"main"},"title":"Fix bug","body":"Implements the plan","draft":true,"merged":false,"state":"open"}
+                {"number":9,"html_url":"https://github.example/octo/widgets/pull/9","head":{"ref":"agent/issue-7-fix"},"base":{"ref":"main"},"title":"Fix bug","body":"Implements the plan","draft":true,"merged":false,"state":"open"}
                 """));
 
         var result = await fixture.Provider.CreateDraftMergeRequestAsync(
@@ -659,6 +673,7 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
             CancellationToken.None);
 
         Assert.Equal(9, result.Number);
+        Assert.Equal(new Uri("https://github.example/octo/widgets/pull/9"), result.WebUrl);
         Assert.True(result.IsDraft);
         Assert.False(result.IsMerged);
         Assert.False(result.IsClosed);
@@ -891,6 +906,55 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
 
         Assert.Equal(9, downloaded.SizeBytes);
         Assert.Equal(2, fixture.Server.LogEntries.Count(entry => entry.RequestMessage!.Path == "/files/retry.pdf"));
+    }
+
+    [Fact]
+    public async Task DownloadAttachmentAsyncRequiresAttachmentDispositionForExtensionlessExternalDownload()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/releases/download").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("not-an-attachment"));
+        var serverUri = new Uri(fixture.Server.Url!);
+        var attachment = new ProviderAttachment(
+            new Uri(fixture.Server.Url! + "/releases/download"),
+            "download",
+            null,
+            new AttachmentSource("issue-description", "7"),
+            false,
+            System.Net.Dns.GetHostAddresses(serverUri.Host).ToHashSet(),
+            RequiresAttachmentContentDisposition: true);
+
+        await Assert.ThrowsAsync<AttachmentNotClassifiedException>(() =>
+            fixture.Provider.DownloadAttachmentAsync(
+                attachment,
+                Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")),
+                1024,
+                CancellationToken.None).AsTask());
+    }
+
+    [Fact]
+    public async Task DownloadAttachmentAsyncAcceptsExtensionlessExternalDownloadWithAttachmentDisposition()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/releases/download").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Disposition", "attachment; filename=release").WithBody("artifact"));
+        var serverUri = new Uri(fixture.Server.Url!);
+        var attachment = new ProviderAttachment(
+            new Uri(fixture.Server.Url! + "/releases/download"),
+            "download",
+            null,
+            new AttachmentSource("issue-description", "7"),
+            false,
+            System.Net.Dns.GetHostAddresses(serverUri.Host).ToHashSet(),
+            RequiresAttachmentContentDisposition: true);
+
+        var downloaded = await fixture.Provider.DownloadAttachmentAsync(
+            attachment,
+            Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")),
+            1024,
+            CancellationToken.None);
+
+        Assert.Equal(8, downloaded.SizeBytes);
     }
 
     [Fact]

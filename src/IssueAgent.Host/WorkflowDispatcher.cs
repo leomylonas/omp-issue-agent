@@ -305,11 +305,8 @@ public sealed partial class WorkflowDispatcher(
         }
 
         var state = reconciled.State!;
-        ProviderMergeRequest? mergeRequest = null;
+        var mergeRequest = reconciled.MergeRequest;
         LabelSnapshot? mergeRequestCommandSnapshot = null;
-        mergeRequest = await runtime.Provider
-            .FindMergeRequestAsync(runtime.Repository, state.Branch, state.TargetBranch, cancellationToken)
-            .ConfigureAwait(false);
         if (mergeRequest is not null)
         {
             var mergeRequestLabels = await runtime.Provider.GetLabelsAsync(
@@ -548,6 +545,17 @@ public sealed partial class WorkflowDispatcher(
                 .RejectPlanOnlyAsync(runtime.Config, issueNumber, state, cancellationToken)
                 .ConfigureAwait(false);
             RecordDurableWorkflowFailure(outcome, metrics.ImplementationErrors, runtime.Tags);
+            if (handedOffContinue)
+            {
+                await ConsumeCommandAsync(
+                    runtime.Provider,
+                    runtime.Repository,
+                    issueNumber,
+                    mergeRequest?.Number,
+                    commandResolution.Sources,
+                    WorkflowCommand.Continue,
+                    cancellationToken).ConfigureAwait(false);
+            }
             return;
         }
 

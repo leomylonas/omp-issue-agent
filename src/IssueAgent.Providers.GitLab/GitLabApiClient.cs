@@ -269,7 +269,8 @@ public sealed record GitLabMergeRequest(
     [property: JsonPropertyName("description")] string? Description,
     [property: JsonPropertyName("draft")] bool Draft,
     [property: JsonPropertyName("state")] string State,
-    [property: JsonPropertyName("labels")] IReadOnlyList<string> Labels);
+    [property: JsonPropertyName("labels")] IReadOnlyList<string> Labels,
+    [property: JsonPropertyName("web_url")] string? WebUrl = null);
 
 public sealed record GitLabCreateMergeRequestRequest(
     [property: JsonPropertyName("source_branch")] string SourceBranch,

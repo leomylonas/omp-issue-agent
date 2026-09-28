@@ -114,6 +114,15 @@ public sealed class CanonicalCommentMarkdownTests
     }
 
     [Fact]
+    public void ParseClassifiesDuplicateYamlKeysAsCorruption()
+    {
+        var body = CanonicalCommentMarkdown.Render(CreateContent("Plan.", [], null))
+            .Replace("phase: planned", "phase: planned\nphase: review", StringComparison.Ordinal);
+
+        Assert.Throws<CanonicalCommentCorruptException>(() => CanonicalCommentMarkdown.Parse(body));
+    }
+
+    [Fact]
     public void ParseClassifiesMissingRequiredStateFieldAsCorruption()
     {
         var body = CanonicalCommentMarkdown.Render(CreateContent("Plan.", [], null))

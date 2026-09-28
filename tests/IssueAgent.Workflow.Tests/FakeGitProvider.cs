@@ -172,7 +172,9 @@ public sealed class FakeGitProvider : IGitProvider
         var number = MergeRequests.Count + 1;
         var mergeRequest = new ProviderMergeRequest(
             request.Repository, number, request.SourceBranch, request.TargetBranch, request.Title, request.Body,
-            request.IsDraft, IsMerged: false, IsClosed: false, new AttachmentSource("merge-request-description", number.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            request.IsDraft, IsMerged: false, IsClosed: false,
+            new AttachmentSource("merge-request-description", number.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+            new Uri($"https://fake-provider.example/{request.Repository.OwnerOrNamespace}/{request.Repository.Name}/merge_requests/{number}"));
         MergeRequests[number] = mergeRequest;
         return ValueTask.FromResult(CreatedMergeRequestResponse?.Invoke(mergeRequest) ?? mergeRequest);
     }

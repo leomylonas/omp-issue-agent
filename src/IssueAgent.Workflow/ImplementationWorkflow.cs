@@ -742,7 +742,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         };
         var content = checkpointContent with
         {
-            ImplementationResult = $"{implementationResult.TrimEnd()}\n\n## Linked pull/merge request #{mergeRequest.Number}",
+            ImplementationResult = $"{implementationResult.TrimEnd()}\n\n## Linked pull/merge request {FormatMergeRequestReference(mergeRequest)}",
             State = CanonicalStateSerializer.ToDocument(
                 publishedState,
                 $"{config.Repository.Id}#{mergeRequest.Number}"),
@@ -836,6 +836,11 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
 
     private static bool HasWorkflowMarker(ProviderMergeRequest mergeRequest, WorkflowState state) =>
         mergeRequest.Description.Contains($"<!-- issue-agent:workflow:{state.WorkflowId} -->", StringComparison.Ordinal);
+
+    private static string FormatMergeRequestReference(ProviderMergeRequest mergeRequest) =>
+        mergeRequest.WebUrl is { IsAbsoluteUri: true } webUrl
+            ? $"[#{mergeRequest.Number}]({webUrl.AbsoluteUri})"
+            : $"#{mergeRequest.Number}";
 
     /// <summary>The plan is stale when the issue's title/description content no longer matches
     /// what the currently published plan was written against. A missing hash is also stale rather

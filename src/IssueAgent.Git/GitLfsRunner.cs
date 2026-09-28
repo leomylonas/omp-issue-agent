@@ -202,12 +202,12 @@ public static class GitLfsRunner
                 // so apply the same HTTPS CA policy before git-lfs starts.
                 if (canonicalHttpsRemote is null)
                 {
-                    if (!TryGetLfsRemoteUri(canonicalRemoteUrl, out var lfsRemote))
+                    if (!TryGetHttpsLfsEndpoint(canonicalRemoteUrl, out var lfsEndpoint))
                     {
-                        throw new InvalidOperationException("Could not resolve the canonical LFS endpoint for SSH authentication.");
+                        throw new InvalidOperationException("Could not resolve the HTTPS LFS endpoint for SSH authentication.");
                     }
 
-                    await ApplyHttpsTlsTrustAsync(startInfo, authentication.TlsTrust, isolatedHome, lfsRemote, cancellationToken).ConfigureAwait(false);
+                    await ApplyHttpsTlsTrustAsync(startInfo, authentication.TlsTrust, isolatedHome, lfsEndpoint, cancellationToken).ConfigureAwait(false);
                 }
 
                 var remoteUrl = canonicalRemoteUrl;
@@ -259,6 +259,42 @@ public static class GitLfsRunner
 
         remote = null!;
         return false;
+    }
+
+    /// <summary>
+    /// Resolves the HTTPS LFS API endpoint used after an SSH LFS authentication handshake. Pinning
+    /// the SSH authority itself would probe port 22 as TLS and leave the real object transfer
+    /// endpoint unpinned.
+    /// </summary>
+    private static bool TryGetHttpsLfsEndpoint(string url, out Uri endpoint)
+    {
+        if (!TryGetLfsRemoteUri(url, out var remote))
+        {
+            endpoint = null!;
+            return false;
+        }
+
+        if (remote.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            endpoint = new Uri(remote.GetLeftPart(UriPartial.Path).TrimEnd('/') + "/info/lfs");
+            return true;
+        }
+
+        if (!remote.Scheme.Equals("ssh", StringComparison.OrdinalIgnoreCase))
+        {
+            endpoint = null!;
+            return false;
+        }
+
+        var httpsRepository = new UriBuilder(remote)
+        {
+            Scheme = Uri.UriSchemeHttps,
+            Port = -1,
+            UserName = string.Empty,
+            Password = string.Empty,
+        }.Uri.GetLeftPart(UriPartial.Path).TrimEnd('/');
+        endpoint = new Uri(httpsRepository + "/info/lfs");
+        return true;
     }
 
     private static bool TryNormalizeScpLikeSshRemote(string url, out Uri remote)
