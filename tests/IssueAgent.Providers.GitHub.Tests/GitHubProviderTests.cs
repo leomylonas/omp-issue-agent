@@ -128,6 +128,54 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
+    public async Task GitHubRestRetryEmitsAttemptMetricBeforeRetryingTransientFailure()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7").UsingGet())
+            .InScenario("github-retry-telemetry")
+            .WillSetStateTo("recovered")
+            .RespondWith(Response.Create().WithStatusCode(500).WithBody("""{"message":"server error"}"""));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7").UsingGet())
+            .InScenario("github-retry-telemetry")
+            .WhenStateIs("recovered")
+            .RespondWith(JsonResponse("""{"number":7,"title":"Bug","body":"","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","labels":[],"assignees":[]}"""));
+        var provider = GitHubProviderFactory.Create(new GitHubProviderConfiguration(
+            "github",
+            new Uri(fixture.Server.Url! + "/"),
+            null,
+            ["github.example"],
+            Retry: new IssueAgent.Domain.RetryPolicy
+            {
+                MaxAttempts = 2,
+                InitialDelay = TimeSpan.Zero,
+                MaxJitter = TimeSpan.Zero,
+            }));
+        long retries = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Meter.Name == "IssueAgent" && instrument.Name == "issueagent.retry.attempts")
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, _, _) =>
+        {
+            if (instrument.Name == "issueagent.retry.attempts")
+            {
+                Interlocked.Add(ref retries, measurement);
+            }
+        });
+        listener.Start();
+
+        var issue = await provider.GetIssueAsync(Repository, 7, CancellationToken.None);
+
+        Assert.Equal(7, issue.Number);
+        Assert.True(Interlocked.Read(ref retries) >= 1);
+    }
+
+    [Fact]
     public async Task DiscoverAssignedOpenIssuesAsyncDefersPollingWhenSuccessfulResponseExhaustsQuotaUntilFutureReset()
     {
         var resetAt = DateTimeOffset.UtcNow.AddMinutes(2).ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);

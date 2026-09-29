@@ -93,10 +93,10 @@ public sealed class AgentContextBuilderTests
 
         var context = await BuildAsync(provider, 1, depth: 2);
 
-        Assert.Collection(
-            context.RelatedIssues,
-            first => Assert.Equal(["blocks"], first.RelationshipPath),
-            second => Assert.Equal(["blocks", "blocked-by"], second.RelationshipPath));
+        Assert.Equal(
+            [($"{Repository.Id}#2", "blocks"), ($"{Repository.Id}#3", "blocks -> blocked-by")],
+            context.RelatedIssues.Select(related =>
+                ($"{related.Issue.RepositoryId}#{related.Issue.Number}", string.Join(" -> ", related.RelationshipPath))));
     }
 
     [Fact]

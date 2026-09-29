@@ -374,7 +374,7 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
         var mergeRequestStamps = new List<string>();
         if (mergeRequest is not null)
         {
-            mergeRequestStamps.Add($"{mergeRequest.Number}:{mergeRequest.Title}:{mergeRequest.Description}:{SourceStamp(mergeRequest.DescriptionSource)}");
+            mergeRequestStamps.Add($"{mergeRequest.Number}:{mergeRequest.Title}:{mergeRequest.Description}:{mergeRequest.SourceBranch}:{mergeRequest.TargetBranch}:{mergeRequest.IsDraft}:{mergeRequest.IsMerged}:{mergeRequest.IsClosed}:{SourceStamp(mergeRequest.DescriptionSource)}");
             await foreach (var comment in deps.Provider.GetMergeRequestCommentsAsync(
                                config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false))
             {
@@ -409,6 +409,17 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
                 }
             }
         }
+
+        var relatedIssueStamps = new List<string>();
+        await foreach (var relationship in deps.Provider.GetIssueRelationshipsAsync(
+                           config.Repository, issueNumber, cancellationToken).ConfigureAwait(false))
+        {
+            var related = await deps.Provider.GetIssueAsync(
+                relationship.Repository, relationship.IssueNumber, cancellationToken).ConfigureAwait(false);
+            relatedIssueStamps.Add(
+                $"{relationship.Relationship}:{relationship.Repository.Id}:{relationship.IssueNumber}:{related.Title}:{related.Description}:{related.UpdatedAt:O}:{string.Join(',', related.Labels.OrderBy(label => label, StringComparer.Ordinal))}");
+        }
+        commentStamps.AddRange(relatedIssueStamps.OrderBy(stamp => stamp, StringComparer.Ordinal));
 
         var digest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('|', commentStamps))));
         var mergeRequestDigest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('|', mergeRequestStamps))));

@@ -309,6 +309,26 @@ public sealed class StartupValidatorTests
 
     [System.Runtime.Versioning.SupportedOSPlatform("linux")]
     [Fact]
+    public async Task ValidateAsyncFailsForConfiguredTargetBranchMissingFromRepositoryCache()
+    {
+        var workspace = Path.Combine(Path.GetTempPath(), $"issue-agent-startup-{Guid.NewGuid():N}");
+        try
+        {
+            var validator = CreateValidator(workspace, new GitReferenceNotFoundException("main was not found"));
+
+            await Assert.ThrowsAsync<GitReferenceNotFoundException>(() => validator.ValidateAsync(CancellationToken.None));
+        }
+        finally
+        {
+            if (Directory.Exists(workspace))
+            {
+                Directory.Delete(workspace, recursive: true);
+            }
+        }
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
+    [Fact]
     public async Task ValidateAsyncPropagatesOperationCancellationRequestedByTheCaller()
     {
         var workspace = Path.Combine(Path.GetTempPath(), $"issue-agent-startup-{Guid.NewGuid():N}");
@@ -331,7 +351,7 @@ public sealed class StartupValidatorTests
     [System.Runtime.Versioning.SupportedOSPlatform("linux")]
     private static StartupValidator CreateValidator(
         string workspace,
-        OperationCanceledException exception,
+        Exception exception,
         CancellationTokenSource? cancellation = null)
     {
         var source = new ProviderOptions
@@ -446,7 +466,7 @@ public sealed class StartupValidatorTests
 #pragma warning disable CA1852 // DispatchProxy generates a derived type at runtime.
     private class ThrowingGitRepositoryManager : DispatchProxy
     {
-        public OperationCanceledException Exception { get; set; } = null!;
+        public Exception Exception { get; set; } = null!;
         public CancellationTokenSource? Cancellation { get; set; }
 
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)

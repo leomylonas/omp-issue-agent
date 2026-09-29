@@ -7,7 +7,7 @@ namespace IssueAgent.Workflow.Tests;
 /// plumbing is covered by IssueAgent.Git.Tests.</summary>
 public sealed class FakeGitRepositoryManager : IGitRepositoryManager
 {
-    public string BranchCommitToReturn { get; set; } = "abc123";
+    public string BranchCommitToReturn { get; set; } = "0123456789abcdef0123456789abcdef01234567";
 
     public List<(string WorktreeId, string WorktreePath, string BranchName, string BaseCommit)> CreatedWorktrees { get; } = [];
     public Dictionary<string, string> WorktreeBranches { get; } = [];
@@ -32,7 +32,7 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
     public ValueTask<string> ResolveBranchCommitAsync(string repositoryId, string branchName, CancellationToken cancellationToken) =>
         ValueTask.FromResult(BranchCommitToReturn);
 
-    public string? RemoteBranchCommitToReturn { get; set; } = "abc123";
+    public string? RemoteBranchCommitToReturn { get; set; } = "0123456789abcdef0123456789abcdef01234567";
 
     public bool RemoteBranchIsDescendant { get; set; } = true;
 

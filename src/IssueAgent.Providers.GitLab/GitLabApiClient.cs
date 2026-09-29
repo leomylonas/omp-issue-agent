@@ -143,6 +143,7 @@ public sealed partial class GitLabApiClient(HttpClient httpClient, RetryPolicy r
             response.EnsureSuccessStatusCode();
             var page = await response.Content.ReadFromJsonAsync(typeInfo, cancellationToken).ConfigureAwait(false) ?? [];
             results.AddRange(page);
+            ProviderRetryPolicy.DeferSuccessfulQuotaExhaustion(response);
             nextUrl = GetNextPageUrl(response, httpClient.BaseAddress);
         }
 
@@ -268,6 +269,7 @@ public sealed record GitLabMergeRequest(
     [property: JsonPropertyName("draft")] bool Draft,
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("labels")] IReadOnlyList<string> Labels,
+    [property: JsonPropertyName("source_project_id")] long SourceProjectId,
     [property: JsonPropertyName("web_url")] string? WebUrl = null);
 
 public sealed record GitLabCreateMergeRequestRequest(

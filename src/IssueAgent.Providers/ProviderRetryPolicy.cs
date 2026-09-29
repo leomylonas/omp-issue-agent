@@ -37,7 +37,6 @@ public static class ProviderRetryPolicy
                 var rateLimited = IsDefinitiveRateLimitRejection(response);
                 if (!retryable)
                 {
-                    DeferSuccessfulQuotaExhaustion(response);
                     return response;
                 }
 
@@ -158,10 +157,11 @@ public static class ProviderRetryPolicy
                 }
 
                 response.EnsureSuccessStatusCode();
-                DeferSuccessfulQuotaExhaustion(response);
                 try
                 {
-                    return await materialize(response, cancellationToken).ConfigureAwait(false);
+                    var result = await materialize(response, cancellationToken).ConfigureAwait(false);
+                    DeferSuccessfulQuotaExhaustion(response);
+                    return result;
                 }
                 catch (HttpRequestException)
                 {
@@ -225,7 +225,7 @@ public static class ProviderRetryPolicy
     /// <summary>Discovery can consume the final available request without receiving a rejection.
     /// When the provider supplies an exhausted quota and a future reset, release polling capacity
     /// for the whole provider before another repository starts an immediately doomed request.</summary>
-    private static void DeferSuccessfulQuotaExhaustion(HttpResponseMessage response)
+    public static void DeferSuccessfulQuotaExhaustion(HttpResponseMessage response)
     {
         if (!PollingRateLimitScheduling.IsEnabled ||
             !HasExhaustedQuota(response) ||

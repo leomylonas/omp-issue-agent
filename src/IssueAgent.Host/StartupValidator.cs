@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Text;
-
 using IssueAgent.Configuration;
+using IssueAgent.Git;
 using IssueAgent.Omp;
 using Microsoft.Extensions.Options;
 
@@ -53,6 +53,11 @@ public sealed partial class StartupValidator(
                         .ConfigureAwait(false);
                     _ = await git.ResolveBranchCommitAsync(repositoryOptions.Id, targetBranch, cancellationToken).ConfigureAwait(false);
                 }
+                catch (Exception exception) when (!cancellationToken.IsCancellationRequested &&
+                    IsPermanentRepositoryConfigurationOrCacheFailure(exception))
+                {
+                    throw;
+                }
                 catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
                 {
                     LogRepositoryValidationWarning(logger, provider.Name, repositoryOptions.Id, exception.GetType().Name);
@@ -64,6 +69,11 @@ public sealed partial class StartupValidator(
     [LoggerMessage(EventId = 5, Level = LogLevel.Warning,
         Message = "Repository startup validation failed for {Provider}/{Repository} with {ExceptionType}")]
     private static partial void LogRepositoryValidationWarning(ILogger logger, string provider, string repository, string exceptionType);
+
+    private static bool IsPermanentRepositoryConfigurationOrCacheFailure(Exception exception) =>
+        exception is ArgumentException or GitReferenceNotFoundException or GitHooksPresentException ||
+        exception is InvalidOperationException invalidOperation &&
+        invalidOperation.Message.StartsWith("Cached bare repository ", StringComparison.Ordinal);
 
     internal static void ValidateWorkspace(string rootPath)
     {

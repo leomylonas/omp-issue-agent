@@ -55,6 +55,25 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     }
 
     [Fact]
+    public async Task DiscoverAssignedOpenIssuesAsyncMaterializesAnExhaustedQuotaPageBeforeDeferring()
+    {
+        var resetAt = DateTimeOffset.UtcNow.AddMinutes(2).ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/123/issues").UsingGet())
+            .RespondWith(Response.Create()
+                .WithStatusCode(200)
+                .WithHeader("Content-Type", "application/json")
+                .WithHeader("X-RateLimit-Remaining", "0")
+                .WithHeader("X-RateLimit-Reset", resetAt)
+                .WithBody("{"));
+        using var scope = PollingRateLimitScheduling.Enter();
+
+        await Assert.ThrowsAsync<System.Text.Json.JsonException>(() => CollectAsync(
+            fixture.Provider.DiscoverAssignedOpenIssuesAsync(
+                Repository, "issue-agent-bot", DateTimeOffset.MinValue, CancellationToken.None)));
+    }
+
+    [Fact]
     public async Task DiscoverAssignedOpenIssuesAsyncExcludesIssuesBeforeStartDate()
     {
         fixture.Server
@@ -368,12 +387,29 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
         fixture.Server
             .Given(Request.Create().WithPath("/api/v4/projects/123/merge_requests").UsingGet())
             .RespondWith(JsonResponse("""
-                [{"iid":9,"web_url":"https://gitlab.example/octo/widgets/-/merge_requests/9","source_branch":"agent/issue-7","target_branch":"main","title":"Fix bug","description":"Implements the plan","draft":true,"state":"opened","labels":[]}]
+                [{"iid":9,"web_url":"https://gitlab.example/octo/widgets/-/merge_requests/9","source_branch":"agent/issue-7","target_branch":"main","title":"Fix bug","description":"Implements the plan","draft":true,"state":"opened","labels":[],"source_project_id":123}]
                 """));
 
         var result = await fixture.Provider.FindMergeRequestAsync(Repository, "agent/issue-7", "main", CancellationToken.None);
 
         Assert.Equal(new Uri("https://gitlab.example/octo/widgets/-/merge_requests/9"), result!.WebUrl);
+    }
+
+    [Fact]
+    public async Task FindMergeRequestAsyncExcludesMatchingBranchFromAFork()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/123/merge_requests").UsingGet())
+            .RespondWith(JsonResponse("""
+                [
+                  {"iid":8,"source_branch":"agent/issue-7","target_branch":"main","title":"Fork","description":"","draft":false,"state":"opened","labels":[],"source_project_id":456},
+                  {"iid":9,"source_branch":"agent/issue-7","target_branch":"main","title":"Configured project","description":"","draft":false,"state":"opened","labels":[],"source_project_id":123}
+                ]
+                """));
+
+        var result = await fixture.Provider.FindMergeRequestAsync(Repository, "agent/issue-7", "main", CancellationToken.None);
+
+        Assert.Equal(9, result!.Number);
     }
 
     [Fact]
@@ -402,7 +438,8 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
                 [
                   {"id":"disc-1","individual_note":false,"notes":[{"id":501,"body":"fixed now","author":{"username":"alice"},"created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","system":false,"resolvable":true,"resolved":true}]},
                   {"id":"disc-2","individual_note":false,"notes":[{"id":502,"body":"please address","author":{"username":"bob"},"created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","system":false,"resolvable":true,"resolved":false}]},
-                  {"id":"disc-3","individual_note":true,"notes":[{"id":503,"body":"note only","author":{"username":"carol"},"created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","system":false,"resolvable":false,"resolved":false}]}
+                  {"id":"disc-3","individual_note":true,"notes":[{"id":503,"body":"note only","author":{"username":"carol"},"created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","system":false,"resolvable":false,"resolved":false}]},
+                  {"id":"disc-4","individual_note":false,"notes":[{"id":501,"body":"fixed now","author":{"username":"alice"},"created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","system":false,"resolvable":true,"resolved":true}]}
                 ]
                 """));
 
@@ -411,6 +448,7 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
         Assert.Equal(2, threads.Count);
         Assert.True(threads.Single(t => t.Id == "disc-1").IsResolved);
         Assert.False(threads.Single(t => t.Id == "disc-2").IsResolved);
+        Assert.Equal(2, threads.SelectMany(thread => thread.Comments).Select(comment => comment.Id).Distinct().Count());
     }
 
     [Fact]
@@ -558,10 +596,10 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
             .RespondWith(JsonResponse("""{"id":100,"body":"<!-- issue-agent:state -->\nreview ready","author":{"username":"issue-agent-bot"},"created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-02T00:00:00Z","system":false}"""));
         fixture.Server
             .Given(Request.Create().WithPath("/api/v4/projects/123/merge_requests").UsingPost())
-            .RespondWith(JsonResponse("""{"iid":9,"web_url":"https://gitlab.example/octo/widgets/-/merge_requests/9","source_branch":"agent/issue-7","target_branch":"main","title":"Draft: Fix","description":"body","draft":true,"state":"opened","labels":[]}"""));
+            .RespondWith(JsonResponse("""{"iid":9,"web_url":"https://gitlab.example/octo/widgets/-/merge_requests/9","source_branch":"agent/issue-7","target_branch":"main","title":"Draft: Fix","description":"body","draft":true,"state":"opened","labels":[],"source_project_id":123}"""));
         fixture.Server
             .Given(Request.Create().WithPath("/api/v4/projects/123/merge_requests").UsingGet())
-            .RespondWith(JsonResponse("""[{"iid":9,"web_url":"https://gitlab.example/octo/widgets/-/merge_requests/9","source_branch":"agent/issue-7","target_branch":"main","title":"Draft: Fix","description":"body","draft":true,"state":"opened","labels":[]}]"""));
+            .RespondWith(JsonResponse("""[{"iid":9,"web_url":"https://gitlab.example/octo/widgets/-/merge_requests/9","source_branch":"agent/issue-7","target_branch":"main","title":"Draft: Fix","description":"body","draft":true,"state":"opened","labels":[],"source_project_id":123}]"""));
 
         _ = await fixture.Provider.CreateIssueCommentAsync(Repository, 7, canonicalBody, CancellationToken.None);
         _ = await fixture.Provider.CreateDraftMergeRequestAsync(

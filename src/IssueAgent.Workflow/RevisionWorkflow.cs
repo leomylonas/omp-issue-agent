@@ -112,6 +112,21 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             return await EscalateAsync(
                 config, issueNumber, workingState, existingContent, "Cannot revise: no merge request was found for this workflow's branch.", cancellationToken).ConfigureAwait(false);
         }
+
+        if (mergeRequest.IsMerged)
+        {
+            return await new CancellationWorkflow(deps)
+                .CompleteOnMergeAsync(config, issueNumber, currentState, existingContent, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (mergeRequest.IsClosed)
+        {
+            return await new CancellationWorkflow(deps)
+                .CompleteOnCloseWithoutMergeAsync(config, issueNumber, currentState, existingContent, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         await ConsumeMergeRequestCommandAsync(
             config,
             mergeRequest.Number,
@@ -209,10 +224,9 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             cancellationToken).ConfigureAwait(false)
             ?? throw new WorkflowContractException("Cannot publish revision: no merge request was found for this workflow's branch.");
 
-        // The checkpoint includes both the result and the revising/working state. A restart between
-        // recording the result and pushing can therefore only resume this retained revision.
+        // The durable checkpoint must bind the result to the final post-merge head. Recording it
+        // earlier could authorize recovery of a different revision after target integration.
         var publicationCheckpoint = workingContent with { ImplementationResult = resultMarkdown };
-        await UpsertCanonicalCommentAsync(config, issueNumber, publicationCheckpoint, cancellationToken).ConfigureAwait(false);
 
         await deps.Git.FetchAsync(config.Repository.Id, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
         var latestTargetCommit = await deps.Git
@@ -258,14 +272,11 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             if (conflictResult.IsMaterialDeviation)
             {
                 return await PauseForMaterialDeviationAsync(
-                    config, issueNumber, workingState, publicationCheckpoint, conflictResult, cancellationToken).ConfigureAwait(false);
+                    config, issueNumber, workingState, workingContent, conflictResult, cancellationToken).ConfigureAwait(false);
             }
 
             resultMarkdown = conflictResult.RenderMarkdown();
-            publicationCheckpoint = publicationCheckpoint with { ImplementationResult = resultMarkdown };
-            // A crash during feedback observation, LFS upload, or push must resume the resolved
-            // conflict result rather than the superseded pre-conflict revision result.
-            await UpsertCanonicalCommentAsync(config, issueNumber, publicationCheckpoint, cancellationToken).ConfigureAwait(false);
+            publicationCheckpoint = workingContent with { ImplementationResult = resultMarkdown };
         }
 
         var feedbackAfterRevision = await CaptureFeedbackSnapshotAsync(config, config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
@@ -302,6 +313,15 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 "Resolved worktree does not contain the latest target commit; publication was not attempted.",
                 cancellationToken).ConfigureAwait(false);
         }
+
+        publicationCheckpoint = publicationCheckpoint with
+        {
+            State = CanonicalStateSerializer.ToDocument(
+                workingState with { ExpectedImplementationHead = headCommit },
+                workingContent.State.PullOrMergeRequest),
+        };
+        await UpsertCanonicalCommentAsync(config, issueNumber, publicationCheckpoint, cancellationToken).ConfigureAwait(false);
+
 
         try
         {
@@ -342,6 +362,25 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 cancellationToken).ConfigureAwait(false);
         }
 
+        await deps.Git.FetchAsync(config.Repository.Id, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+        var remoteHead = await deps.Git
+            .TryResolveRemoteBranchCommitAsync(config.Repository.Id, workingState.Branch, cancellationToken)
+            .ConfigureAwait(false);
+        if (remoteHead is null)
+        {
+            return await PauseForNewFeedbackAsync(
+                config, issueNumber, workingState, publicationCheckpoint, resultMarkdown,
+                "Cannot publish revision: the remote agent branch is missing.", cancellationToken,
+                WaitingReason.MissingRemoteRevisionBranch).ConfigureAwait(false);
+        }
+        if (!await deps.Git.IsAncestorAsync(config.Repository.Id, remoteHead, headCommit, cancellationToken).ConfigureAwait(false))
+        {
+            return await PauseForNewFeedbackAsync(
+                config, issueNumber, workingState, publicationCheckpoint, resultMarkdown,
+                "Cannot publish revision: the remote agent branch has unexpected history. Local and remote histories were preserved for human review.",
+                cancellationToken, WaitingReason.RemoteHistoryRewrite).ConfigureAwait(false);
+        }
+
         try
         {
             mergeRequest = await StoredMergeRequestIdentity.FindAsync(
@@ -359,6 +398,20 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 config, issueNumber, workingState, publicationCheckpoint, resultMarkdown,
                 exception.Message, cancellationToken, WaitingReason.ManualIntervention).ConfigureAwait(false);
         }
+        if (mergeRequest.IsMerged)
+        {
+            return await new CancellationWorkflow(deps)
+                .CompleteOnMergeAsync(config, issueNumber, workingState, publicationCheckpoint, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (mergeRequest.IsClosed)
+        {
+            return await new CancellationWorkflow(deps)
+                .CompleteOnCloseWithoutMergeAsync(config, issueNumber, workingState, publicationCheckpoint, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         try
         {
             await deps.Git.PushAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);

@@ -1,6 +1,8 @@
+using System.Collections.Concurrent;
 using System.Net;
-
 using System.Globalization;
+
+
 using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using IssueAgent.Providers;
@@ -180,8 +182,9 @@ public sealed partial class GitLabProvider(
 
     public async ValueTask<ProviderMergeRequest?> FindMergeRequestAsync(RepositoryRef repository, string sourceBranch, string targetBranch, CancellationToken cancellationToken)
     {
+        var sourceProjectId = await GetProjectIdAsync(repository, cancellationToken).ConfigureAwait(false);
         var mergeRequests = await client.FindMergeRequestsAsync(ProjectAddress(repository), sourceBranch, targetBranch, cancellationToken).ConfigureAwait(false);
-        var match = mergeRequests.Count > 0 ? mergeRequests[0] : null;
+        var match = mergeRequests.FirstOrDefault(mergeRequest => mergeRequest.SourceProjectId == sourceProjectId);
         return match is null ? null : ToProviderMergeRequest(repository, match);
     }
 
@@ -223,6 +226,7 @@ public sealed partial class GitLabProvider(
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var discussions = await client.GetMergeRequestDiscussionsAsync(ProjectAddress(repository), number, cancellationToken).ConfigureAwait(false);
+        var emittedNoteIds = new HashSet<long>();
         foreach (var discussion in discussions)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -231,13 +235,19 @@ public sealed partial class GitLabProvider(
                 continue;
             }
 
-            var resolvableNotes = discussion.Notes.Where(n => n.Resolvable).ToList();
-            var isResolved = resolvableNotes.Count > 0 && resolvableNotes.All(n => n.Resolved);
+            var notes = discussion.Notes.Where(note => emittedNoteIds.Add(note.Id)).ToList();
+            if (notes.Count == 0)
+            {
+                continue;
+            }
+
+            var resolvableNotes = notes.Where(note => note.Resolvable).ToList();
+            var isResolved = resolvableNotes.Count > 0 && resolvableNotes.All(note => note.Resolved);
 
             yield return new ProviderReviewThread(
                 discussion.Id,
                 isResolved,
-                discussion.Notes.Select(n => ToProviderComment(n, "merge-request-review-comment", number, discussion.Id)).ToList());
+                notes.Select(note => ToProviderComment(note, "merge-request-review-comment", number, discussion.Id)).ToList());
         }
     }
 
@@ -430,6 +440,25 @@ public sealed partial class GitLabProvider(
     /// local workspace keys and must never be forwarded as provider project addresses.</summary>
     private static string ProjectAddress(RepositoryRef repository) =>
         $"{repository.OwnerOrNamespace}/{repository.Name}".Trim('/');
+
+    private async ValueTask<long> GetProjectIdAsync(RepositoryRef repository, CancellationToken cancellationToken)
+    {
+        if (long.TryParse(repository.Id, CultureInfo.InvariantCulture, out var configuredProjectId))
+        {
+            return configuredProjectId;
+        }
+
+        var projectAddress = ProjectAddress(repository);
+        if (projectIds.TryGetValue(projectAddress, out var projectId))
+        {
+            return projectId;
+        }
+
+        var project = await client.GetProjectAsync(projectAddress, cancellationToken).ConfigureAwait(false);
+        return projectIds.GetOrAdd(projectAddress, project.Id);
+    }
+
+    private readonly ConcurrentDictionary<string, long> projectIds = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Resolves the repository a linked GitLab issue belongs to. Returns
     /// <paramref name="rootRepository"/> unchanged for a same-project link — matched first by

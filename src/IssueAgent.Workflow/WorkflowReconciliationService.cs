@@ -273,7 +273,33 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
             };
             await PersistCanonicalStateAsync(
                 config, issueNumber, canonicalComment, content, state, cancellationToken).ConfigureAwait(false);
-            await dependencies.Git.ResetWorktreeAsync(config.Repository.Id, worktreePath, remoteHead!, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await dependencies.Git.ResetWorktreeAsync(config.Repository.Id, worktreePath, remoteHead!, cancellationToken).ConfigureAwait(false);
+                await dependencies.Git.UpdateSubmodulesAsync(
+                    config.Repository.Id,
+                    worktreePath,
+                    config.SubmoduleAuthenticationResolver ?? (_ => null),
+                    cancellationToken).ConfigureAwait(false);
+                await dependencies.Git.MaterializeLfsContentAsync(
+                    config.Repository.Id,
+                    worktreePath,
+                    config.GitAuthentication,
+                    config.SubmoduleAuthenticationResolver ?? (_ => null),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                return await PauseForHumanAsync(
+                    config,
+                    issueNumber,
+                    canonicalComment,
+                    content,
+                    state,
+                    WaitingReason.ManualIntervention,
+                    $"The remote agent branch was adopted, but its submodules or LFS content could not be refreshed safely: {exception.Message}",
+                    cancellationToken).ConfigureAwait(false);
+            }
             localHead = remoteHead;
             localHeadIsAncestorOfRemote = false;
         }

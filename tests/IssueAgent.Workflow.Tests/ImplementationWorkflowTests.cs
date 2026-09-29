@@ -17,6 +17,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
     private readonly FakeGitRepositoryManager git = new();
     private readonly RecordingNotifier notifier = new();
     private readonly FixedClock clock = new(DateTimeOffset.Parse("2024-06-01T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture));
+    private const string InitialCommit = "0123456789abcdef0123456789abcdef01234567";
 
     [Fact]
     public async Task RunAsyncInPlanOnlyModeRejectsImplementCommandAndRestoresWaiting()
@@ -64,7 +65,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
         Assert.Equal(git.BranchCommitToReturn, publishedState.ExpectedImplementationHead);
         Assert.Equal("branch-published", publishedState.PublicationStage);
         Assert.Matches("^[0-9a-f]{64}$", publishedState.ImplementationInputDigest);
-        Assert.Equal("abc123", publishedState.RebasedPublicationBase);
+        Assert.Equal(InitialCommit, publishedState.RebasedPublicationBase);
         Assert.Contains(provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)], l => l == "agent:phase:review");
         Assert.Equal(1, git.PublishChangedSubmodulesCallCount);
     }
@@ -186,7 +187,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
         var outcome = await CreateWorkflow().RunAsync(CreateConfig(), WorkflowMode.Full, 1, state, omp, CancellationToken.None);
 
         Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
-        Assert.Equal(3, changes);
+        Assert.Equal(8, changes);
     }
 
     [Fact]
@@ -784,12 +785,15 @@ public sealed class ImplementationWorkflowTests : IDisposable
     public async Task RunAsyncContinuationPausesBeforePushWhenLinkedRequestDescriptionChangesDuringLfsUpload()
     {
         var plannedState = await SeedApprovedPlanAsync();
+        git.BranchCommitToReturn = InitialCommit;
+        git.RemoteBranchCommitToReturn = InitialCommit;
         var state = plannedState with
         {
             Phase = WorkflowPhase.Implementing,
             OperationalState = WorkflowOperationalState.Waiting,
             WaitingReason = WaitingReason.NewInputDuringImplementation,
             PublicationStage = ImplementationPublicationStage.BranchPublished,
+            ExpectedImplementationHead = git.BranchCommitToReturn,
         };
         var canonical = Assert.Single(provider.IssueComments[(Repository.Id, 1)]);
         var content = CanonicalCommentMarkdown.Parse(canonical.Body);
@@ -1036,6 +1040,24 @@ public sealed class ImplementationWorkflowTests : IDisposable
         Assert.Equal(WorkflowNotificationKind.HumanActionRequired, Assert.Single(notifier.Notifications).Kind);
     }
 
+    [Fact]
+    public async Task RunAsyncPausesBeforeFirstPublicationWhenRemoteBranchHasUnexpectedHead()
+    {
+        var state = await SeedApprovedPlanAsync();
+        git.RemoteBranchCommitToReturn = "unexpected-remote-head";
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"summary":"Implemented.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await CreateWorkflow().RunAsync(CreateConfig(), WorkflowMode.Full, 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WaitingReason.RemoteHistoryRewrite, outcome.State.WaitingReason);
+        Assert.Equal(0, git.PushCallCount);
+        Assert.Empty(provider.MergeRequests);
+    }
+
 
     private static string ImplementationInputDigest()
     {
@@ -1050,7 +1072,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
         var workflowId = WorkflowId.New();
         var state = new WorkflowState(
             workflowId, WorkflowPhase.Planned, WorkflowOperationalState.Waiting, WaitingReason.PlanApproval,
-            1, 1, "session-1", "agent/issue-1-bug", "main", "abc123", clock.UtcNow.AddHours(-1),
+            1, 1, "session-1", "agent/issue-1-bug", "main", InitialCommit, clock.UtcNow.AddHours(-1),
             PlanInputHash: PlanInputHasher.Compute("Bug", "Original description"));
         var document = CanonicalStateSerializer.ToDocument(state, null);
         var content = new CanonicalCommentContent("Approved plan text.", ["Decision one."], null, document);

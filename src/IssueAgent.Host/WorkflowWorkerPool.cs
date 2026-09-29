@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using IssueAgent.Configuration;
 using IssueAgent.Domain;
+using IssueAgent.Providers;
 using IssueAgent.Observability;
 using Microsoft.Extensions.Options;
 
@@ -16,7 +17,9 @@ public sealed partial class WorkflowWorkerPool(
 {
     private readonly FairWorkAdmission admission = new();
     private readonly ConcurrentDictionary<WorkflowWorkKey, WorkflowCandidate> deferredCancellations = new();
+    private readonly ConcurrentDictionary<WorkflowWorkKey, WorkflowCandidate> deferredRateLimits = new();
     private readonly ConcurrentDictionary<WorkflowWorkKey, CancellationTokenSource> activeAttemptCancellations = new();
+    private readonly CancellationTokenSource deferralCancellation = new();
     private readonly SemaphoreSlim available = new(0);
     private volatile bool accepting = true;
 
@@ -87,8 +90,10 @@ public sealed partial class WorkflowWorkerPool(
     public int StopAdmission()
     {
         accepting = false;
-        var deferred = deferredCancellations.Count;
+        deferralCancellation.Cancel();
+        var deferred = deferredCancellations.Count + deferredRateLimits.Count;
         deferredCancellations.Clear();
+        deferredRateLimits.Clear();
         return admission.DiscardQueued() + deferred;
     }
 
@@ -126,6 +131,7 @@ public sealed partial class WorkflowWorkerPool(
             using var activeOperation = metrics.BeginActiveOperation();
             try
             {
+                using var rateLimitScheduling = PollingRateLimitScheduling.Enter();
                 await candidate!.ExecuteAsync(attemptCancellation.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -136,6 +142,10 @@ public sealed partial class WorkflowWorkerPool(
             {
                 // An explicit cancel command interrupted this admitted attempt; its durable
                 // cancellation candidate is queued in the finally block below.
+            }
+            catch (PollingRateLimitedException exception)
+            {
+                DeferRateLimitedCandidate(candidate!, exception.RetryAfter);
             }
             catch (Exception exception)
             {
@@ -164,7 +174,41 @@ public sealed partial class WorkflowWorkerPool(
             attemptCancellation.Cancel();
         }
     }
-    public void Dispose() => available.Dispose();
+
+    private void DeferRateLimitedCandidate(WorkflowCandidate candidate, TimeSpan retryAfter)
+    {
+        if (!accepting)
+        {
+            return;
+        }
+
+        deferredRateLimits[candidate.Key] = candidate;
+        _ = RequeueRateLimitedCandidateAsync(candidate.Key, retryAfter);
+    }
+
+    private async Task RequeueRateLimitedCandidateAsync(WorkflowWorkKey key, TimeSpan retryAfter)
+    {
+        try
+        {
+            await Task.Delay(retryAfter <= TimeSpan.Zero ? TimeSpan.FromMilliseconds(1) : retryAfter, deferralCancellation.Token).ConfigureAwait(false);
+            if (accepting &&
+                deferredRateLimits.TryRemove(key, out var candidate) &&
+                admission.TryEnqueue(candidate))
+            {
+                available.Release();
+            }
+        }
+        catch (OperationCanceledException) when (deferralCancellation.IsCancellationRequested)
+        {
+        }
+    }
+
+    public void Dispose()
+    {
+        deferralCancellation.Cancel();
+        deferralCancellation.Dispose();
+        available.Dispose();
+    }
 
     [LoggerMessage(EventId = 13, Level = LogLevel.Error,
         Message = "Workflow execution failed for issue {IssueNumber} in {Provider}/{Repository}")]

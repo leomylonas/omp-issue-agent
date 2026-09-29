@@ -123,6 +123,18 @@ public sealed class CanonicalCommentMarkdownTests
     }
 
     [Fact]
+    public void ParseClassifiesInvalidTimestampConverterFailureAsCorruption()
+    {
+        var content = CreateContent("Plan.", [], null);
+        var yaml = CanonicalStateSerializer.Serialize(content.State)
+            .Replace("updatedAt: ", "updatedAt: not-a-timestamp #", StringComparison.Ordinal);
+        var body = CanonicalCommentMarkdown.Render(content)
+            .Replace(CanonicalStateSerializer.Serialize(content.State), yaml, StringComparison.Ordinal);
+
+        Assert.Throws<CanonicalCommentCorruptException>(() => CanonicalCommentMarkdown.Parse(body));
+    }
+
+    [Fact]
     public void ParseClassifiesMissingRequiredStateFieldAsCorruption()
     {
         var body = CanonicalCommentMarkdown.Render(CreateContent("Plan.", [], null))

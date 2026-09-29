@@ -135,6 +135,7 @@ public static partial class CanonicalCommentMarkdown
         try
         {
             state = CanonicalStateSerializer.Deserialize(stateMatch.Groups["yaml"].Value);
+            _ = CanonicalStateSerializer.ToWorkflowState(state);
         }
         catch (CanonicalStateException ex)
         {

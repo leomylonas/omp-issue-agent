@@ -78,7 +78,8 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
                     : new RepositoryOptions { Id = "group/widgets", OwnerOrNamespace = "group", Name = "widgets", CloneUrl = remote, TargetBranch = "main" },
             ],
         };
-        var options = new IssueAgentOptions { Workspace = new WorkspaceOptions { RootPath = root }, Omp = new OmpOptions { ExecutablePath = "/bin/false" }, Concurrency = new ConcurrencyOptions { Agent = 1, Polling = 1 }, Retry = new RetryOptions { MaxAttempts = 1, InitialDelay = TimeSpan.Zero, MaxJitter = TimeSpan.Zero }, Providers = [provider] };
+        var ompExecutable = CreatePlanningOmpExecutable();
+        var options = new IssueAgentOptions { Workspace = new WorkspaceOptions { RootPath = root }, Omp = new OmpOptions { ExecutablePath = ompExecutable }, Concurrency = new ConcurrencyOptions { Agent = 1, Polling = 1 }, Retry = new RetryOptions { MaxAttempts = 1, InitialDelay = TimeSpan.Zero, MaxJitter = TimeSpan.Zero }, Providers = [provider] };
         var effective = EffectiveConfigurationResolver.Resolve(options, _ => null, _ => throw new InvalidOperationException());
         var metrics = new IssueAgentMetrics();
         var registry = new ProviderRegistry(effective, options.Retry.ToPolicy(), metrics, NullLoggerFactory.Instance);
@@ -163,6 +164,7 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
             }
         }
 
+
         public object CommentCollection()
         {
             lock (gate)
@@ -193,6 +195,56 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
                     : new { id = 10, body = commentBody, created_at = "2024-06-01T00:00:00Z", updated_at = "2024-06-01T00:00:00Z", author = new { username = "issue-agent", bot = true } };
             }
         }
+    }
+
+    private string CreatePlanningOmpExecutable()
+    {
+        Directory.CreateDirectory(root);
+        var executable = Path.Combine(root, "deterministic-omp.py");
+        File.WriteAllText(executable, """
+            #!/usr/bin/env python3
+            import json
+            import os
+            import sys
+
+            session_dir = sys.argv[sys.argv.index("--session-dir") + 1]
+            session_file = os.path.join(session_dir, "session.jsonl")
+            session_id = "lifecycle-session"
+
+            def send(value):
+                print(json.dumps(value), flush=True)
+
+            def response(request, data):
+                send({"type": "response", "id": request["id"], "command": request["type"], "success": True, "data": data})
+
+            os.makedirs(session_dir, exist_ok=True)
+            open(session_file, "a").close()
+            send({"type": "ready", "protocolVersion": 1, "supportedProtocolVersions": [1]})
+            for line in sys.stdin:
+                request = json.loads(line)
+                command = request["type"]
+                if command == "new_session":
+                    response(request, {"cancelled": False})
+                elif command == "switch_session":
+                    response(request, {"cancelled": False})
+                elif command == "get_state":
+                    response(request, {"sessionId": session_id, "sessionFile": session_file, "model": {"provider": "configured", "id": "plan"}})
+                elif command == "set_model":
+                    response(request, {"provider": request["provider"], "id": request["modelId"]})
+                elif command == "prompt":
+                    response(request, {"agentInvoked": True})
+                    send({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "{\"planText\":\"Validate titles at the boundary.\",\"decisions\":[\"Keep validation deterministic.\"]}"}})
+                    send({"type": "agent_end", "messages": [], "isTerminal": True})
+                elif command == "abort":
+                    response(request, {"cancelled": True})
+            """);
+        if (!OperatingSystem.IsLinux())
+        {
+            throw new PlatformNotSupportedException("The deterministic OMP test server requires a Unix executable bit.");
+        }
+        File.SetUnixFileMode(executable,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        return executable;
     }
 
     private async Task<string> CreateRemoteAsync()

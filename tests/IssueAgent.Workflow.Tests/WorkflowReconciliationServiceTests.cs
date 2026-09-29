@@ -14,6 +14,8 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
     private readonly FakeGitRepositoryManager git = new();
     private readonly RecordingNotifier notifier = new();
     private readonly FixedClock clock = new(DateTimeOffset.Parse("2024-06-01T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture));
+    private const string InitialCommit = "0123456789abcdef0123456789abcdef01234567";
+    private const string AcceptedRemoteCommit = "89abcdef0123456789abcdef0123456789abcdef";
 
     [Fact]
     public async Task ConsistentWaitingStateAllowsCommandDispatchWithoutRemoteMutation()
@@ -468,16 +470,16 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
             canonical,
             content,
             state,
-            "accepted-remote-head",
+            AcceptedRemoteCommit,
             CancellationToken.None);
 
         var persisted = CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body);
         Assert.Equal(WorkflowPhase.Planned, accepted.Phase);
         Assert.Equal(WaitingReason.PlanApproval, accepted.WaitingReason);
-        Assert.Equal("accepted-remote-head", accepted.BaseCommit);
+        Assert.Equal(AcceptedRemoteCommit, accepted.BaseCommit);
         Assert.Equal("Implement the fix.", persisted.PlanText);
         Assert.Null(persisted.ImplementationResult);
-        Assert.Equal("accepted-remote-head", persisted.State.BaseCommit);
+        Assert.Equal(AcceptedRemoteCommit, persisted.State.BaseCommit);
         Assert.Equal("plan-approval", persisted.State.WaitingReason);
         Assert.Contains(WorkflowLabels.PlannedPhase, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
         Assert.Contains(WorkflowLabels.WaitingState, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
@@ -493,7 +495,7 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
         {
             ReviewFeedbackCutoff = clock.UtcNow.AddHours(-1),
             ReviewFeedbackVersions = new HashSet<string> { "comment:1:version" },
-            ExpectedImplementationHead = "feedface",
+            ExpectedImplementationHead = "fedcba9876543210fedcba9876543210fedcba98",
             PublicationStage = ImplementationPublicationStage.BranchPublished,
         };
         var content = CanonicalCommentMarkdown.Parse(canonical.Body) with
@@ -503,14 +505,14 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
         };
 
         var accepted = await CreateService().AcceptRemoteHistoryAsync(
-            CreateConfig(), 1, canonical, content, state, "accepted-remote-head", CancellationToken.None);
+            CreateConfig(), 1, canonical, content, state, AcceptedRemoteCommit, CancellationToken.None);
 
         var persisted = CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body);
         Assert.Equal(WorkflowPhase.Review, accepted.Phase);
         Assert.Equal(WaitingReason.ReviewRequested, accepted.WaitingReason);
         Assert.Equal("Published implementation result.", persisted.ImplementationResult);
-        Assert.Equal("accepted-remote-head", persisted.State.BaseCommit);
-        Assert.Equal("accepted-remote-head", accepted.ExpectedImplementationHead);
+        Assert.Equal(AcceptedRemoteCommit, persisted.State.BaseCommit);
+        Assert.Equal(AcceptedRemoteCommit, accepted.ExpectedImplementationHead);
 
         Assert.Equal(state.ReviewFeedbackCutoff, persisted.State.ReviewFeedbackCutoff);
         Assert.Equal(state.ReviewFeedbackVersions!.Order(), persisted.State.ReviewFeedbackVersions!);
@@ -801,7 +803,7 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
             "session-1",
             "agent/issue-1-bug",
             "main",
-            "abc123",
+            InitialCommit,
             clock.UtcNow.AddHours(-1),
             PlanInputHash: PlanInputHasher.Compute("Bug", "Description"));
         Directory.CreateDirectory(WorktreePath(state));

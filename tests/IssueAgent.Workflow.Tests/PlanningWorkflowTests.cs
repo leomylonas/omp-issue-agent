@@ -255,7 +255,7 @@ public sealed class PlanningWorkflowTests : IDisposable
             var state = CanonicalCommentMarkdown.Parse(checkpoint.Body).State;
             Assert.Equal("planning", state.Phase);
             Assert.Equal("working", state.State);
-            Assert.Equal("abc123", state.BaseCommit);
+            Assert.Equal("0123456789abcdef0123456789abcdef01234567", state.BaseCommit);
         };
         var omp = new FakeOmpClient()
             .EnqueueSessionId("session-1")

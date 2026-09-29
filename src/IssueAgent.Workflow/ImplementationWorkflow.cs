@@ -144,6 +144,21 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             }
         }
 
+        if (linkedMergeRequest?.IsMerged == true)
+        {
+            return await new CancellationWorkflow(deps)
+                .CompleteOnMergeAsync(config, issueNumber, currentState, existingContent, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (linkedMergeRequest is { IsClosed: true })
+        {
+            return await new CancellationWorkflow(deps)
+                .CompleteOnCloseWithoutMergeAsync(config, issueNumber, currentState, existingContent, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+
         if (currentState.Phase == WorkflowPhase.Implementing)
         {
             if (currentState.WaitingReason is WaitingReason.NewInputDuringImplementation or WaitingReason.MaterialPlanDeviation)
@@ -520,8 +535,43 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                 cancellationToken).ConfigureAwait(false);
         }
 
+        if (workingState.PublicationStage is null)
+        {
+            await deps.Git.FetchAsync(config.Repository.Id, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+            var branchBeforeFirstPublication = await deps.Git
+                .TryResolveRemoteBranchCommitAsync(config.Repository.Id, workingState.Branch, cancellationToken)
+                .ConfigureAwait(false);
+            if (branchBeforeFirstPublication is not null &&
+                !string.Equals(branchBeforeFirstPublication, headCommit, StringComparison.Ordinal))
+            {
+                return await PauseAsync(
+                    config,
+                    issueNumber,
+                    checkpointState,
+                    checkpointContent,
+                    resultMarkdown,
+                    WaitingReason.RemoteHistoryRewrite,
+                    "Cannot publish the initial implementation: the agent branch already exists remotely and is not leased by this workflow.",
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+
         mergeRequest = await RefreshLinkedMergeRequestAsync(
             config, checkpointState, checkpointContent, cancellationToken).ConfigureAwait(false);
+        if (mergeRequest?.IsMerged == true)
+        {
+            return await new CancellationWorkflow(deps)
+                .CompleteOnMergeAsync(config, issueNumber, checkpointState, checkpointContent, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (mergeRequest is { IsClosed: true })
+        {
+            return await new CancellationWorkflow(deps)
+                .CompleteOnCloseWithoutMergeAsync(config, issueNumber, checkpointState, checkpointContent, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         try
         {
             await deps.Git.PushAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
@@ -687,6 +737,23 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                     implementationResult,
                     WaitingReason.NewInputDuringImplementation,
                     "New or edited human input arrived during publication recovery. The current worktree was retained; choose continue, replan, or cancel.",
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            await deps.Git.FetchAsync(config.Repository.Id, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+            var branchBeforeRecoveryPush = await deps.Git
+                .TryResolveRemoteBranchCommitAsync(config.Repository.Id, currentState.Branch, cancellationToken)
+                .ConfigureAwait(false);
+            if (branchBeforeRecoveryPush is not null)
+            {
+                return await PauseAsync(
+                    config,
+                    issueNumber,
+                    currentState,
+                    existingContent,
+                    implementationResult,
+                    WaitingReason.RemoteHistoryRewrite,
+                    "Cannot recover initial implementation publication: the agent branch appeared remotely after its checkpoint.",
                     cancellationToken).ConfigureAwait(false);
             }
 
@@ -1106,7 +1173,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
         var requestStamps = new List<string>();
         if (mergeRequest is not null)
         {
-            requestStamps.Add($"{mergeRequest.Number}:{mergeRequest.Title}:{mergeRequest.Description}");
+            requestStamps.Add($"{mergeRequest.Number}:{mergeRequest.Title}:{mergeRequest.Description}:{mergeRequest.SourceBranch}:{mergeRequest.TargetBranch}:{mergeRequest.IsDraft}:{mergeRequest.IsMerged}:{mergeRequest.IsClosed}");
             await foreach (var comment in deps.Provider.GetMergeRequestCommentsAsync(config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false))
             {
                 if (!config.IgnoreBotComments || !comment.IsBot)
@@ -1126,6 +1193,17 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                 }
             }
         }
+
+        var relatedIssueStamps = new List<string>();
+        await foreach (var relationship in deps.Provider.GetIssueRelationshipsAsync(
+                           config.Repository, issueNumber, cancellationToken).ConfigureAwait(false))
+        {
+            var related = await deps.Provider.GetIssueAsync(
+                relationship.Repository, relationship.IssueNumber, cancellationToken).ConfigureAwait(false);
+            relatedIssueStamps.Add(
+                $"{relationship.Relationship}:{relationship.Repository.Id}:{relationship.IssueNumber}:{related.Title}:{related.Description}:{related.UpdatedAt:O}:{string.Join(',', related.Labels.OrderBy(label => label, StringComparer.Ordinal))}");
+        }
+        commentStamps.AddRange(relatedIssueStamps.OrderBy(stamp => stamp, StringComparer.Ordinal));
 
         return new InputSnapshot(
             issue.Title,

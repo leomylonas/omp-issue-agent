@@ -60,7 +60,13 @@ public sealed class RevisionWorkflowTests : IDisposable
         Assert.Equal("revising", checkpoint.State.Phase);
         Assert.Equal("working", checkpoint.State.State);
         Assert.Contains(provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)], l => l == "agent:phase:review");
-        Assert.Equal(clock.UtcNow, CanonicalCommentMarkdown.Parse(checkpoints[2].Body).State.ReviewFeedbackCutoff);
+        var publishedCheckpoint = CanonicalCommentMarkdown.Parse(checkpoints[2].Body).State;
+        Assert.Equal(clock.UtcNow, publishedCheckpoint.ReviewFeedbackCutoff);
+        Assert.Equal(
+            ["comment:1:2024-06-01T00:00:00.0000000+00:00:757E7119D1C00D8C550AF13798B5AF8549B6674AB561F9F31599A7ECC2B6B5A2",
+             "thread:thread-1:2:2024-06-01T00:00:00.0000000+00:00:59C5AE315EFFE42CAC3801A766ED7BEEB77D9A7A1E764312DDCC0AB3AD426F22",
+             "thread:thread-1:resolved=True"],
+            publishedCheckpoint.ReviewFeedbackVersions);
         Assert.DoesNotContain("agent:cmd:revise", provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
     }
 
@@ -776,6 +782,21 @@ public sealed class RevisionWorkflowTests : IDisposable
 
         Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
         Assert.Equal(WaitingReason.ManualIntervention, outcome.State.WaitingReason);
+        Assert.Equal(0, git.PushCallCount);
+    }
+
+    [Fact]
+    public async Task RunAsyncCompletesInsteadOfRevisingMergedRequest()
+    {
+        var state = await SeedReviewStateAsync();
+        provider.MergeRequests[1] = provider.MergeRequests[1] with { IsMerged = true };
+
+        var outcome = await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, state, new FakeOmpClient(), CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Progressed, outcome.Status);
+        Assert.Equal(WorkflowPhase.Done, outcome.State.Phase);
+        Assert.Empty(git.PublishedSubmoduleBaseCommits);
         Assert.Equal(0, git.PushCallCount);
     }
 

@@ -78,6 +78,45 @@ public sealed class ProviderRetryPolicyTests
     }
 
     [Fact]
+    public async Task SendAndMaterializeAsyncEmitsRetryAttemptMetricForStreamingFailure()
+    {
+        long retries = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Meter.Name == "IssueAgent" && instrument.Name == "issueagent.retry.attempts")
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, _, _) =>
+        {
+            if (instrument.Name == "issueagent.retry.attempts")
+            {
+                Interlocked.Add(ref retries, measurement);
+            }
+        });
+        listener.Start();
+
+        var materializations = 0;
+        var result = await ProviderRetryPolicy.SendAndMaterializeAsync(
+            _ => Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)),
+            (_, _) => ++materializations == 1
+                ? Task.FromException<string>(new IOException("body connection reset"))
+                : Task.FromResult("downloaded"),
+            CancellationToken.None,
+            retryPolicy: new RetryPolicy
+            {
+                MaxAttempts = 2,
+                InitialDelay = TimeSpan.Zero,
+                MaxJitter = TimeSpan.Zero,
+            });
+
+        Assert.Equal("downloaded", result);
+        Assert.True(Interlocked.Read(ref retries) >= 1);
+    }
+
+    [Fact]
     public async Task SendAsyncEmitsExhaustionMetricForTerminalTransportFailure()
     {
         long exhausted = 0;

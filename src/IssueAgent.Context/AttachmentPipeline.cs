@@ -388,7 +388,9 @@ public sealed class AttachmentPipeline(
     /// literal or DNS-rebinding attacker can otherwise reach: <c>0.0.0.0</c>/<c>::</c> (this host),
     /// <c>100.64.0.0/10</c> (CGNAT, routes to the host's own network on many cloud providers),
     /// <c>192.0.0.0/24</c> (IETF protocol assignments, includes cloud metadata relay ranges on some
-    /// platforms), <c>198.18.0.0/15</c> (benchmarking), and IPv6 multicast (<c>ff00::/8</c>).</summary>
+    /// platforms), <c>198.18.0.0/15</c> (benchmarking), IPv6 site-local (<c>fec0::/10</c>),
+    /// unspecified/reserved (<c>::/8</c>, <c>100::/64</c>, <c>2001:db8::/32</c>), and multicast
+    /// (<c>ff00::/8</c>).</summary>
     private static bool IsUnsafeDestination(IPAddress address)
     {
         if (address.IsIPv4MappedToIPv6)
@@ -412,8 +414,13 @@ public sealed class AttachmentPipeline(
                 (bytes[0] == 100 && bytes[1] is >= 64 and <= 127) ||
                 (bytes[0] == 192 && bytes[1] == 0 && bytes[2] == 0) ||
                 (bytes[0] == 198 && bytes[1] is 18 or 19),
-            AddressFamily.InterNetworkV6 => (bytes[0] & 0xfe) == 0xfc ||
+            AddressFamily.InterNetworkV6 => address.IsIPv6SiteLocal ||
+                bytes[0] == 0 ||
+                (bytes[0] & 0xfe) == 0xfc ||
                 (bytes[0] == 0xfe && (bytes[1] & 0xc0) == 0x80) ||
+                (bytes[0] == 0x01 && bytes[1] == 0x00 && bytes[2] == 0x00 && bytes[3] == 0x00 &&
+                 bytes[4] == 0x00 && bytes[5] == 0x00 && bytes[6] == 0x00 && bytes[7] == 0x00) ||
+                (bytes[0] == 0x20 && bytes[1] == 0x01 && bytes[2] == 0x0d && bytes[3] == 0xb8) ||
                 bytes[0] == 0xff,
             _ => true,
         };

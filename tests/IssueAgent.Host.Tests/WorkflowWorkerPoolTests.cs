@@ -1,5 +1,6 @@
 using IssueAgent.Configuration;
 using IssueAgent.Domain;
+using IssueAgent.Providers;
 using IssueAgent.Observability;
 using IssueAgent.Omp;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -40,6 +41,39 @@ public sealed class WorkflowWorkerPoolTests
         await fixture.StartAndDrainAsync();
 
         Assert.True(completed);
+    }
+
+    [Fact]
+    public async Task RateLimitedCandidateRequeuesAfterDeferralWithoutOccupyingAgentCapacity()
+    {
+        using var fixture = new PoolFixture(agentConcurrency: 1);
+        var laterCandidateRan = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var retried = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = 0;
+        await fixture.Pool.AdmitAsync(
+        [
+            Candidate(1, WorkflowWorkPriority.NewPlanning, null, 1, _ =>
+            {
+                if (Interlocked.Increment(ref attempts) == 1)
+                {
+                    throw new PollingRateLimitedException(TimeSpan.FromMilliseconds(50));
+                }
+
+                retried.SetResult();
+                return Task.CompletedTask;
+            }),
+            Candidate(2, WorkflowWorkPriority.NewPlanning, null, 2, _ =>
+            {
+                laterCandidateRan.SetResult();
+                return Task.CompletedTask;
+            }),
+        ], CancellationToken.None);
+        fixture.Start();
+
+        await laterCandidateRan.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+        await retried.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+        Assert.True(await fixture.Pool.WaitForDrainAsync(TimeSpan.FromSeconds(2), CancellationToken.None));
+        await fixture.StopAsync();
     }
 
     [Fact]

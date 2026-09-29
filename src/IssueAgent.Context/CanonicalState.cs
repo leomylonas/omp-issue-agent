@@ -200,7 +200,7 @@ public static partial class CanonicalStateSerializer
             return Deserializer.Deserialize<CanonicalStateDocument>(yaml)
                 ?? throw new CanonicalStateException("Canonical state YAML deserialized to an empty document.");
         }
-        catch (YamlException ex)
+        catch (Exception ex) when (ex is YamlException or FormatException or OverflowException or ArgumentException or InvalidCastException)
         {
             throw new CanonicalStateException($"Canonical state YAML is malformed: {ex.Message}", ex);
         }

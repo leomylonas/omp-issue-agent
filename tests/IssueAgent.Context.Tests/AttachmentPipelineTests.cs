@@ -254,6 +254,10 @@ public sealed class AttachmentPipelineTests
     [InlineData("192.0.0.8")]
     [InlineData("198.18.0.1")]
     [InlineData("::")]
+    [InlineData("::2")]
+    [InlineData("100::1")]
+    [InlineData("2001:db8::1")]
+    [InlineData("fec0::1")]
     [InlineData("ff02::1")]
     public async Task ProcessAsyncOmitsDirectFileLinkResolvingToUnsafeAddress(string resolvedAddress)
     {
