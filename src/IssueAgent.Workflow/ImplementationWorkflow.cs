@@ -541,8 +541,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             var branchBeforeFirstPublication = await deps.Git
                 .TryResolveRemoteBranchCommitAsync(config.Repository.Id, workingState.Branch, cancellationToken)
                 .ConfigureAwait(false);
-            if (branchBeforeFirstPublication is not null &&
-                !string.Equals(branchBeforeFirstPublication, headCommit, StringComparison.Ordinal))
+            if (branchBeforeFirstPublication is not null)
             {
                 return await PauseAsync(
                     config,
@@ -757,8 +756,21 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                     cancellationToken).ConfigureAwait(false);
             }
 
-            await RefreshLinkedMergeRequestAsync(
+            linkedMergeRequest = await RefreshLinkedMergeRequestAsync(
                 config, currentState, existingContent, cancellationToken).ConfigureAwait(false);
+            if (linkedMergeRequest?.IsMerged == true)
+            {
+                return await new CancellationWorkflow(deps)
+                    .CompleteOnMergeAsync(config, issueNumber, currentState, existingContent, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            if (linkedMergeRequest is { IsClosed: true })
+            {
+                return await new CancellationWorkflow(deps)
+                    .CompleteOnCloseWithoutMergeAsync(config, issueNumber, currentState, existingContent, cancellationToken)
+                    .ConfigureAwait(false);
+            }
             try
             {
                 await deps.Git.PushAsync(
@@ -1194,16 +1206,9 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
             }
         }
 
-        var relatedIssueStamps = new List<string>();
-        await foreach (var relationship in deps.Provider.GetIssueRelationshipsAsync(
-                           config.Repository, issueNumber, cancellationToken).ConfigureAwait(false))
-        {
-            var related = await deps.Provider.GetIssueAsync(
-                relationship.Repository, relationship.IssueNumber, cancellationToken).ConfigureAwait(false);
-            relatedIssueStamps.Add(
-                $"{relationship.Relationship}:{relationship.Repository.Id}:{relationship.IssueNumber}:{related.Title}:{related.Description}:{related.UpdatedAt:O}:{string.Join(',', related.Labels.OrderBy(label => label, StringComparer.Ordinal))}");
-        }
-        commentStamps.AddRange(relatedIssueStamps.OrderBy(stamp => stamp, StringComparer.Ordinal));
+        commentStamps.AddRange(await deps.ContextBuilder
+            .CaptureRelatedIssueSnapshotAsync(config.Repository, issueNumber, cancellationToken)
+            .ConfigureAwait(false));
 
         return new InputSnapshot(
             issue.Title,

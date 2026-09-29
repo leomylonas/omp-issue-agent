@@ -31,16 +31,8 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
         var remote = await CreateRemoteAsync();
         var fixture = ConfigureProvider(server, kind);
 
-        await using var first = CreateHost(kind, server, remote);
-        using var workerCancellation = new CancellationTokenSource();
-        var workers = first.Scheduler.RunWorkersAsync(workerCancellation.Token);
-        await first.Scheduler.PollOnceAsync(TestContext.Current.CancellationToken);
-        Assert.True(await first.Scheduler.WaitForDrainAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
-        workerCancellation.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => workers);
+        await RunPollAsync(kind, server, remote);
 
-        // The first host creates the durable workflow record through the production provider adapter.
-        // The fixture retains comment mutations so the restarted host reads the record it created.
         Assert.Contains(server.LogEntries, entry => entry.RequestMessage is { } request &&
             request.Method == "GET" &&
             (request.Path.Contains("issues", StringComparison.OrdinalIgnoreCase) ||
@@ -51,16 +43,21 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
         Assert.True(fixture.HasPersistedComment);
         var persistedCommentReadsBeforeRestart = fixture.PersistedCommentReadCount;
 
-        await using var restarted = CreateHost(kind, server, remote);
-        using var restartCancellation = new CancellationTokenSource();
-        var restartWorkers = restarted.Scheduler.RunWorkersAsync(restartCancellation.Token);
-        await restarted.Scheduler.PollOnceAsync(TestContext.Current.CancellationToken);
-        Assert.True(await restarted.Scheduler.WaitForDrainAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
-        restartCancellation.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => restartWorkers);
+        await RunPollAsync(kind, server, remote);
 
         Assert.True(fixture.PersistedCommentReadCount > persistedCommentReadsBeforeRestart);
         Assert.Equal(0, CountCanonicalCommentCreates(server) - firstHostCanonicalCommentCreates);
+    }
+
+    private async Task RunPollAsync(ProviderKind kind, WireMockServer server, string remote)
+    {
+        await using var host = CreateHost(kind, server, remote);
+        using var workerCancellation = new CancellationTokenSource();
+        var workers = host.Scheduler.RunWorkersAsync(workerCancellation.Token);
+        await host.Scheduler.PollOnceAsync(TestContext.Current.CancellationToken);
+        Assert.True(await host.Scheduler.WaitForDrainAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        workerCancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => workers);
     }
 
     private HostParts CreateHost(ProviderKind kind, WireMockServer server, string remote)
@@ -142,51 +139,23 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
         private string? commentBody;
         private int persistedCommentReadCount;
 
-        public bool HasPersistedComment
-        {
-            get
-            {
-                lock (gate)
-                {
-                    return commentBody is not null;
-                }
-            }
-        }
-
-        public int PersistedCommentReadCount
-        {
-            get
-            {
-                lock (gate)
-                {
-                    return persistedCommentReadCount;
-                }
-            }
-        }
-
-
+        public bool HasPersistedComment { get { lock (gate) return commentBody is not null; } }
+        public int PersistedCommentReadCount { get { lock (gate) return persistedCommentReadCount; } }
         public object CommentCollection()
         {
             lock (gate)
             {
-                if (commentBody is null)
-                {
-                    return Array.Empty<object>();
-                }
-
+                if (commentBody is null) return Array.Empty<object>();
                 persistedCommentReadCount++;
                 return kind == ProviderKind.GitHub
                     ? new[] { new { id = 10, body = commentBody, created_at = "2024-06-01T00:00:00Z", updated_at = "2024-06-01T00:00:00Z", user = new { login = "issue-agent", type = "Bot" } } }
                     : new[] { new { id = 10, body = commentBody, created_at = "2024-06-01T00:00:00Z", updated_at = "2024-06-01T00:00:00Z", author = new { username = "issue-agent", bot = true } } };
             }
         }
-
         public object PersistComment(string requestBody)
         {
             using var document = JsonDocument.Parse(requestBody);
-            var body = document.RootElement.GetProperty("body").GetString()
-                ?? throw new InvalidOperationException("Provider comment mutation omitted its body.");
-
+            var body = document.RootElement.GetProperty("body").GetString() ?? throw new InvalidOperationException("Provider comment mutation omitted its body.");
             lock (gate)
             {
                 commentBody = body;

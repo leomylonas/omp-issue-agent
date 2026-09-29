@@ -21,6 +21,8 @@ public sealed partial class WorkflowWorkerPool(
     private readonly ConcurrentDictionary<WorkflowWorkKey, CancellationTokenSource> activeAttemptCancellations = new();
     private readonly CancellationTokenSource deferralCancellation = new();
     private readonly SemaphoreSlim available = new(0);
+
+    private static readonly TimeSpan MaxDeferralDelay = TimeSpan.FromMinutes(5);
     private volatile bool accepting = true;
 
     public int QueuedCount => admission.QueuedCount;
@@ -190,7 +192,7 @@ public sealed partial class WorkflowWorkerPool(
     {
         try
         {
-            await Task.Delay(retryAfter <= TimeSpan.Zero ? TimeSpan.FromMilliseconds(1) : retryAfter, deferralCancellation.Token).ConfigureAwait(false);
+            await DelayForRequeueAsync(retryAfter, deferralCancellation.Token).ConfigureAwait(false);
             if (accepting &&
                 deferredRateLimits.TryRemove(key, out var candidate) &&
                 admission.TryEnqueue(candidate))
@@ -201,6 +203,18 @@ public sealed partial class WorkflowWorkerPool(
         catch (OperationCanceledException) when (deferralCancellation.IsCancellationRequested)
         {
         }
+    }
+
+    private static async Task DelayForRequeueAsync(TimeSpan retryAfter, CancellationToken cancellationToken)
+    {
+        var remaining = retryAfter <= TimeSpan.Zero ? TimeSpan.FromMilliseconds(1) : retryAfter;
+        while (remaining > MaxDeferralDelay)
+        {
+            await Task.Delay(MaxDeferralDelay, cancellationToken).ConfigureAwait(false);
+            remaining -= MaxDeferralDelay;
+        }
+
+        await Task.Delay(remaining, cancellationToken).ConfigureAwait(false);
     }
 
     public void Dispose()

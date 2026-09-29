@@ -92,6 +92,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
                 CredentialsProvider = CredentialsHandlerFor(authentication, TryGetTransportAuthority(remote.Url)),
                 CertificateCheck = CertificateCheckHandlerFor(authentication.TlsTrust),
                 OnTransferProgress = _ => !cancellationToken.IsCancellationRequested,
+                Prune = true,
             }, logMessage: null);
         }
 

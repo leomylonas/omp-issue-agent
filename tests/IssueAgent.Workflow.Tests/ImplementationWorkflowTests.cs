@@ -432,12 +432,13 @@ public sealed class ImplementationWorkflowTests : IDisposable
     public async Task RunAsyncRecoversPublishedBranchWithoutRepeatingImplementationWhenResultIsDurablyRecorded()
     {
         var plannedState = await SeedApprovedPlanAsync();
+        git.RemoteBranchCommitToReturn = git.BranchCommitToReturn;
         var interruptedState = plannedState with
         {
             Phase = WorkflowPhase.Implementing,
             OperationalState = WorkflowOperationalState.Waiting,
             WaitingReason = WaitingReason.ManualIntervention,
-            ExpectedImplementationHead = git.RemoteBranchCommitToReturn,
+            ExpectedImplementationHead = git.BranchCommitToReturn,
             PublicationStage = ImplementationPublicationStage.BranchPublished,
         };
         var canonical = Assert.Single(provider.IssueComments[(Repository.Id, 1)]);
@@ -519,12 +520,13 @@ public sealed class ImplementationWorkflowTests : IDisposable
     public async Task RunAsyncRecoversReviewPublicationWhenRemoteMatchesResultCheckpoint()
     {
         var plannedState = await SeedApprovedPlanAsync();
+        git.RemoteBranchCommitToReturn = git.BranchCommitToReturn;
         var interruptedState = plannedState with
         {
             Phase = WorkflowPhase.Implementing,
             OperationalState = WorkflowOperationalState.Waiting,
             WaitingReason = WaitingReason.ManualIntervention,
-            ExpectedImplementationHead = git.RemoteBranchCommitToReturn,
+            ExpectedImplementationHead = git.BranchCommitToReturn,
             PublicationStage = ImplementationPublicationStage.ResultCheckpointed,
             ImplementationInputDigest = ImplementationInputDigest(),
             RebasedPublicationBase = "feedface",
@@ -726,9 +728,9 @@ public sealed class ImplementationWorkflowTests : IDisposable
             CancellationToken.None);
         provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] =
             ["agent:phase:implementing", "agent:state:waiting", "agent:cmd:continue"];
-        // A remote branch happens to exist, but no durable implementation result was ever recorded
-        // and no MR exists: this must never be trusted as a completed, published implementation.
-        git.RemoteBranchCommitToReturn = git.BranchCommitToReturn;
+        // The earlier unleased remote branch is not adopted. It must be absent before this fresh
+        // first publication can safely proceed.
+        git.RemoteBranchCommitToReturn = null;
         var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent("session-1", clock.UtcNow, """{"summary":"Redone from scratch.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
 
         var outcome = await CreateWorkflow().RunAsync(
@@ -959,6 +961,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
     public async Task RunAsyncRecoveryPreservesReviewSnapshotAndExposesUnobservedFeedback()
     {
         var plannedState = await SeedApprovedPlanAsync();
+        git.RemoteBranchCommitToReturn = git.BranchCommitToReturn;
         var checkpointCutoff = clock.UtcNow;
         var interruptedState = plannedState with
         {
@@ -967,7 +970,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
             WaitingReason = WaitingReason.ManualIntervention,
             ReviewFeedbackCutoff = checkpointCutoff,
             ReviewFeedbackVersions = new HashSet<string>(StringComparer.Ordinal) { "comment:1" },
-            ExpectedImplementationHead = git.RemoteBranchCommitToReturn,
+            ExpectedImplementationHead = git.BranchCommitToReturn,
             PublicationStage = ImplementationPublicationStage.BranchPublished,
         };
         AddPublishedMergeRequest(interruptedState);
@@ -1058,6 +1061,23 @@ public sealed class ImplementationWorkflowTests : IDisposable
         Assert.Empty(provider.MergeRequests);
     }
 
+    [Fact]
+    public async Task RunAsyncRejectsAnUnleasedFirstPublicationBranchEvenWhenItsHeadMatchesLocal()
+    {
+        var state = await SeedApprovedPlanAsync();
+        git.RemoteBranchCommitToReturn = git.BranchCommitToReturn;
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"summary":"Implemented.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await CreateWorkflow().RunAsync(CreateConfig(), WorkflowMode.Full, 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WaitingReason.RemoteHistoryRewrite, outcome.State.WaitingReason);
+        Assert.Equal(0, git.PushCallCount);
+        Assert.Empty(provider.MergeRequests);
+    }
+
 
     private static string ImplementationInputDigest()
     {
@@ -1068,6 +1088,7 @@ public sealed class ImplementationWorkflowTests : IDisposable
 
     private async Task<WorkflowState> SeedApprovedPlanAsync()
     {
+        git.RemoteBranchCommitToReturn = null;
         provider.AddIssue(Repository, 1, "Bug", "Original description");
         var workflowId = WorkflowId.New();
         var state = new WorkflowState(

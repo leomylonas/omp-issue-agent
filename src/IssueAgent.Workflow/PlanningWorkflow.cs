@@ -410,16 +410,9 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             }
         }
 
-        var relatedIssueStamps = new List<string>();
-        await foreach (var relationship in deps.Provider.GetIssueRelationshipsAsync(
-                           config.Repository, issueNumber, cancellationToken).ConfigureAwait(false))
-        {
-            var related = await deps.Provider.GetIssueAsync(
-                relationship.Repository, relationship.IssueNumber, cancellationToken).ConfigureAwait(false);
-            relatedIssueStamps.Add(
-                $"{relationship.Relationship}:{relationship.Repository.Id}:{relationship.IssueNumber}:{related.Title}:{related.Description}:{related.UpdatedAt:O}:{string.Join(',', related.Labels.OrderBy(label => label, StringComparer.Ordinal))}");
-        }
-        commentStamps.AddRange(relatedIssueStamps.OrderBy(stamp => stamp, StringComparer.Ordinal));
+        commentStamps.AddRange(await deps.ContextBuilder
+            .CaptureRelatedIssueSnapshotAsync(config.Repository, issueNumber, cancellationToken)
+            .ConfigureAwait(false));
 
         var digest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('|', commentStamps))));
         var mergeRequestDigest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('|', mergeRequestStamps))));

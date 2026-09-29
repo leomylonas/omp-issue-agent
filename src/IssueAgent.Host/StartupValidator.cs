@@ -23,7 +23,15 @@ public sealed partial class StartupValidator(
         var configuration = options.Value;
         ValidateWorkspace(configuration.Workspace.RootPath);
         ValidateOmp(configuration.Omp.ExecutablePath);
-        await ProbeOmpAsync(configuration, effectiveConfiguration.Omp, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await ProbeOmpAsync(configuration, effectiveConfiguration.Omp, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested &&
+            IsTransientOmpStartupDependencyFailure(exception))
+        {
+            LogOmpValidationWarning(logger, exception);
+        }
 
         foreach (var providerOptions in effectiveConfiguration.Providers)
         {
@@ -69,6 +77,18 @@ public sealed partial class StartupValidator(
     [LoggerMessage(EventId = 5, Level = LogLevel.Warning,
         Message = "Repository startup validation failed for {Provider}/{Repository} with {ExceptionType}")]
     private static partial void LogRepositoryValidationWarning(ILogger logger, string provider, string repository, string exceptionType);
+
+    [LoggerMessage(EventId = 6, Level = LogLevel.Warning,
+        Message = "OMP startup dependency validation failed; workflow execution will retry at runtime")]
+    private static partial void LogOmpValidationWarning(ILogger logger, Exception exception);
+
+    private static bool IsTransientOmpStartupDependencyFailure(Exception exception) =>
+        exception switch
+        {
+            TimeoutException or HttpRequestException or OmpRpcException => true,
+            _ when exception.InnerException is not null => IsTransientOmpStartupDependencyFailure(exception.InnerException),
+            _ => false,
+        };
 
     private static bool IsPermanentRepositoryConfigurationOrCacheFailure(Exception exception) =>
         exception is ArgumentException or GitReferenceNotFoundException or GitHooksPresentException ||

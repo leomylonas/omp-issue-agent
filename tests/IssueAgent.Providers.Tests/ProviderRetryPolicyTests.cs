@@ -425,4 +425,30 @@ public sealed class ProviderRetryPolicyTests
         Assert.Equal(TimeSpan.FromMinutes(2), exception.RetryAfter);
     }
 
+    [Fact]
+    public async Task SendAndMaterializeAsyncDefersAnExhaustedSuccessfulQuotaBeforeMaterialization()
+    {
+        using var scope = PollingRateLimitScheduling.Enter();
+        var materializations = 0;
+
+        var exception = await Assert.ThrowsAsync<PollingRateLimitedException>(() => ProviderRetryPolicy.SendAndMaterializeAsync(
+            _ =>
+            {
+                var response = new HttpResponseMessage(System.Net.HttpStatusCode.OK);
+                response.Headers.Add("X-RateLimit-Remaining", "0");
+                response.Headers.Add("X-RateLimit-Reset", DateTimeOffset.UtcNow.AddMinutes(2).ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture));
+                return Task.FromResult(response);
+            },
+            (_, _) =>
+            {
+                materializations++;
+                return Task.FromResult("must not materialize");
+            },
+            CancellationToken.None,
+            retryPolicy: new RetryPolicy { MaxAttempts = 1 }));
+
+        Assert.True(exception.RetryAfter > TimeSpan.Zero);
+        Assert.Equal(0, materializations);
+    }
+
 }

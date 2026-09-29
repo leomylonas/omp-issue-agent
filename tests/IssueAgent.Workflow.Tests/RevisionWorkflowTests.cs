@@ -62,13 +62,47 @@ public sealed class RevisionWorkflowTests : IDisposable
         Assert.Contains(provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)], l => l == "agent:phase:review");
         var publishedCheckpoint = CanonicalCommentMarkdown.Parse(checkpoints[2].Body).State;
         Assert.Equal(clock.UtcNow, publishedCheckpoint.ReviewFeedbackCutoff);
-        Assert.Equal(
+        Assert.All(
             ["comment:1:2024-06-01T00:00:00.0000000+00:00:757E7119D1C00D8C550AF13798B5AF8549B6674AB561F9F31599A7ECC2B6B5A2",
              "thread:thread-1:2:2024-06-01T00:00:00.0000000+00:00:59C5AE315EFFE42CAC3801A766ED7BEEB77D9A7A1E764312DDCC0AB3AD426F22",
              "thread:thread-1:resolved=True"],
-            publishedCheckpoint.ReviewFeedbackVersions);
+            expected => Assert.Contains(expected, publishedCheckpoint.ReviewFeedbackVersions!));
+        Assert.Contains(publishedCheckpoint.ReviewFeedbackVersions!, version =>
+            version.StartsWith("merge-request:1:metadata:", StringComparison.Ordinal));
         Assert.DoesNotContain("agent:cmd:revise", provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
     }
+    [Fact]
+    public async Task RunAsyncPausesWhenMergeRequestMetadataChangesDuringRevision()
+    {
+        var state = await SeedReviewStateAsync();
+        var changed = false;
+        provider.OnReviewThreadsEnumeration = () =>
+        {
+            if (changed)
+            {
+                return;
+            }
+
+            changed = true;
+            provider.MergeRequests[1] = provider.MergeRequests[1] with
+            {
+                Description = "Updated while OMP was revising.",
+            };
+        };
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"summary":"Revision.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Waiting, outcome.Status);
+        Assert.Equal(WaitingReason.NewFeedbackDuringRevision, outcome.State.WaitingReason);
+        Assert.Equal(0, git.PushCallCount);
+        Assert.Single(omp.RunRequests);
+    }
+
 
     [Fact]
     public async Task RunAsyncPausesWhenStoredRequestWasRetargeted()
@@ -809,7 +843,8 @@ public sealed class RevisionWorkflowTests : IDisposable
         var state = new WorkflowState(
             workflowId, WorkflowPhase.Review, WorkflowOperationalState.Waiting, WaitingReason.ReviewRequested,
             1, 1, "session-1", "agent/issue-1-bug", "main", "abc123", clock.UtcNow,
-            ReviewFeedbackCutoff: clock.UtcNow.AddHours(-1));
+            ReviewFeedbackCutoff: clock.UtcNow.AddHours(-1),
+            ExpectedImplementationHead: git.BranchCommitToReturn);
         var document = CanonicalStateSerializer.ToDocument(state, "github/octo/widgets#1");
         var content = new CanonicalCommentContent("Plan text.", ["Decision."], "Initial implementation summary.", document);
         await provider.CreateIssueCommentAsync(Repository, 1, CanonicalCommentMarkdown.Render(content), CancellationToken.None);

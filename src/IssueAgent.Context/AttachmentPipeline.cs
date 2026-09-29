@@ -415,6 +415,10 @@ public sealed class AttachmentPipeline(
                 (bytes[0] == 192 && bytes[1] == 0 && bytes[2] == 0) ||
                 (bytes[0] == 198 && bytes[1] is 18 or 19),
             AddressFamily.InterNetworkV6 => address.IsIPv6SiteLocal ||
+                // Only 2000::/3 is globally-routable IPv6 unicast. Reject every other
+                // non-special case as reserved rather than relying on platform-specific
+                // IPAddress classifications for deprecated site-local and future ranges.
+                (bytes[0] & 0xe0) != 0x20 ||
                 bytes[0] == 0 ||
                 (bytes[0] & 0xfe) == 0xfc ||
                 (bytes[0] == 0xfe && (bytes[1] & 0xc0) == 0x80) ||

@@ -1108,6 +1108,27 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task FetchAsyncPrunesDeletedHttpsRemoteTrackingBranches()
+    {
+        var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out var baseCommit));
+        await manager.EnsureBareRepositoryAsync("prune-https-refs", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        RunGitCli(remotePath, "branch", "stale", baseCommit);
+
+        await manager.FetchAsync("prune-https-refs", TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var barePath = Path.Combine(reposRoot, "prune-https-refs");
+        using (var repository = new Repository(barePath))
+        {
+            Assert.NotNull(repository.Branches["origin/stale"]);
+        }
+
+        RunGitCli(remotePath, "branch", "-D", "stale");
+        await manager.FetchAsync("prune-https-refs", TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+
+        using var prunedRepository = new Repository(barePath);
+        Assert.Null(prunedRepository.Branches["origin/stale"]);
+    }
+
+    [Fact]
     public async Task EnsureBareRepositoryAsyncMigratesLegacyOriginRefspecBeforeReuse()
     {
         var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out _));

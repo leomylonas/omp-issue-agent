@@ -137,8 +137,11 @@ public static partial class CanonicalCommentMarkdown
             state = CanonicalStateSerializer.Deserialize(stateMatch.Groups["yaml"].Value);
             _ = CanonicalStateSerializer.ToWorkflowState(state);
         }
-        catch (CanonicalStateException ex)
+        catch (Exception ex) when (ex is not CanonicalCommentCorruptException)
         {
+            // YAML conversion has several parser and reflection paths. Every failure in this
+            // untrusted, human-editable machine-state block has the same workflow meaning:
+            // corruption that must be reconciled conservatively, never an unnormalized exception.
             throw new CanonicalCommentCorruptException($"Canonical comment state YAML is invalid: {ex.Message}", ex);
         }
 

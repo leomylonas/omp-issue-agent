@@ -153,7 +153,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
 
             var feedbackBeforePublication = await CaptureFeedbackSnapshotAsync(config, config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
             return await PublishRevisionAsync(
-                config, issueNumber, workingState, workingContent, retainedResult, mergeRequest, feedbackBeforePublication, omp, cancellationToken)
+                config, issueNumber, workingState, workingContent, existingContent, retainedResult, mergeRequest, feedbackBeforePublication, omp, cancellationToken)
                 .ConfigureAwait(false);
         }
         var feedbackBeforeRevision = await CaptureFeedbackSnapshotAsync(config, config.Repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false);
@@ -200,7 +200,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
 
         var resultMarkdown = result.RenderMarkdown();
         return await PublishRevisionAsync(
-            config, issueNumber, workingState, workingContent, resultMarkdown, mergeRequest, feedbackBeforeRevision, omp, cancellationToken)
+            config, issueNumber, workingState, workingContent, existingContent, resultMarkdown, mergeRequest, feedbackBeforeRevision, omp, cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -209,6 +209,7 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         long issueNumber,
         WorkflowState workingState,
         CanonicalCommentContent workingContent,
+        CanonicalCommentContent lastPublishedContent,
         string resultMarkdown,
         ProviderMergeRequest mergeRequest,
         FeedbackSnapshot feedbackBeforeRevision,
@@ -316,8 +317,10 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
 
         publicationCheckpoint = publicationCheckpoint with
         {
+            // Until push succeeds the durable head remains the canonical remote head that this
+            // revision was based on. A local revision head is not publication evidence.
             State = CanonicalStateSerializer.ToDocument(
-                workingState with { ExpectedImplementationHead = headCommit },
+                workingState,
                 workingContent.State.PullOrMergeRequest),
         };
         await UpsertCanonicalCommentAsync(config, issueNumber, publicationCheckpoint, cancellationToken).ConfigureAwait(false);
@@ -373,6 +376,15 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 "Cannot publish revision: the remote agent branch is missing.", cancellationToken,
                 WaitingReason.MissingRemoteRevisionBranch).ConfigureAwait(false);
         }
+        if (workingState.PublicationStage == ImplementationPublicationStage.BranchPublished &&
+            (workingState.ExpectedImplementationHead is not { Length: > 0 } expectedPublishedHead ||
+             !string.Equals(remoteHead, expectedPublishedHead, StringComparison.Ordinal)))
+        {
+            return await PauseForNewFeedbackAsync(
+                config, issueNumber, workingState, publicationCheckpoint, resultMarkdown,
+                "Cannot publish revision: the remote agent branch no longer matches this workflow's last published head. Local and remote histories were preserved for human review.",
+                cancellationToken, WaitingReason.RemoteHistoryRewrite).ConfigureAwait(false);
+        }
         if (!await deps.Git.IsAncestorAsync(config.Repository.Id, remoteHead, headCommit, cancellationToken).ConfigureAwait(false))
         {
             return await PauseForNewFeedbackAsync(
@@ -401,14 +413,14 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         if (mergeRequest.IsMerged)
         {
             return await new CancellationWorkflow(deps)
-                .CompleteOnMergeAsync(config, issueNumber, workingState, publicationCheckpoint, cancellationToken)
+                .CompleteOnMergeAsync(config, issueNumber, workingState, lastPublishedContent, cancellationToken)
                 .ConfigureAwait(false);
         }
 
         if (mergeRequest.IsClosed)
         {
             return await new CancellationWorkflow(deps)
-                .CompleteOnCloseWithoutMergeAsync(config, issueNumber, workingState, publicationCheckpoint, cancellationToken)
+                .CompleteOnCloseWithoutMergeAsync(config, issueNumber, workingState, lastPublishedContent, cancellationToken)
                 .ConfigureAwait(false);
         }
 
@@ -483,9 +495,17 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         CancellationToken cancellationToken)
     {
         // Record the observation boundary before enumerating provider pages. Feedback that arrives
-        // after it cannot be advanced past by a concurrent publication checkpoint.
+        // after it cannot be advanced past by a concurrent publication checkpoint. PR/MR metadata
+        // is review input too: a changed title, description, branch, or lifecycle state must not be
+        // published as though OMP had seen the previous snapshot.
         var cutoff = deps.Clock.UtcNow;
-        var versions = new HashSet<string>(StringComparer.Ordinal);
+        var mergeRequest = await deps.Provider
+            .GetMergeRequestAsync(repository, mergeRequestNumber, cancellationToken)
+            .ConfigureAwait(false);
+        var versions = new HashSet<string>(StringComparer.Ordinal)
+        {
+            MergeRequestMetadataEntry(mergeRequest),
+        };
         string? authoritativeAuthor = null;
         await foreach (var comment in deps.Provider.GetMergeRequestCommentsAsync(repository, mergeRequestNumber, cancellationToken).ConfigureAwait(false))
         {
@@ -537,6 +557,17 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             .ResolveAuthoritativeIdentityAsync(deps.Provider, config.CanonicalCommentAuthor, cancellationToken)
             .ConfigureAwait(false);
 
+        var mergeRequest = await deps.Provider
+            .GetMergeRequestAsync(config.Repository, mergeRequestNumber, cancellationToken)
+            .ConfigureAwait(false);
+        var metadataVersion = MergeRequestMetadataEntry(mergeRequest);
+        if (observedFeedbackVersions?.Any(version =>
+                version.StartsWith($"merge-request:{mergeRequestNumber}:metadata:", StringComparison.Ordinal)) == true &&
+            !observedFeedbackVersions.Contains(metadataVersion))
+        {
+            return true;
+        }
+
         await foreach (var comment in deps.Provider.GetMergeRequestCommentsAsync(
                            config.Repository,
                            mergeRequestNumber,
@@ -576,6 +607,20 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         }
 
         return false;
+    }
+
+    private static string MergeRequestMetadataEntry(ProviderMergeRequest mergeRequest)
+    {
+        var metadata = string.Join(
+            '\n',
+            mergeRequest.Number,
+            mergeRequest.Title,
+            mergeRequest.Description,
+            mergeRequest.IsDraft,
+            mergeRequest.DescriptionSource.Surface,
+            mergeRequest.DescriptionSource.SourceId,
+            mergeRequest.DescriptionSource.ThreadId);
+        return $"merge-request:{mergeRequest.Number}:metadata:{Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(metadata)))}";
     }
 
     private static bool IsHumanFeedback(

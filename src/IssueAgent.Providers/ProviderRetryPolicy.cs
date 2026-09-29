@@ -54,8 +54,9 @@ public static class ProviderRetryPolicy
                 }
 
                 response.Dispose();
-                if (rateLimited)
+                if (rateLimited && PollingRateLimitScheduling.IsEnabled)
                 {
+                    RetryTelemetry.RecordAttempt();
                     PollingRateLimitScheduling.ThrowIfEnabled(delay);
                 }
 
@@ -147,8 +148,9 @@ public static class ProviderRetryPolicy
                 if (retryable && attempt < retryPolicy.MaxAttempts)
                 {
                     var delay = GetRetryDelay(response, attempt, retryPolicy);
-                    if (rateLimited)
+                    if (rateLimited && PollingRateLimitScheduling.IsEnabled)
                     {
+                        RetryTelemetry.RecordAttempt();
                         PollingRateLimitScheduling.ThrowIfEnabled(delay);
                     }
 
@@ -157,10 +159,13 @@ public static class ProviderRetryPolicy
                 }
 
                 response.EnsureSuccessStatusCode();
+                // A successful response can exhaust a polling quota. Deferral must happen before
+                // materialization: streaming an attachment writes a local file, and rescheduling
+                // after that side effect would rerun the workflow against changed local state.
+                DeferSuccessfulQuotaExhaustion(response);
                 try
                 {
                     var result = await materialize(response, cancellationToken).ConfigureAwait(false);
-                    DeferSuccessfulQuotaExhaustion(response);
                     return result;
                 }
                 catch (HttpRequestException)
