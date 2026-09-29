@@ -347,8 +347,8 @@ public sealed partial class GitLabProvider(
         return new DownloadedAttachment(destinationPath, Path.GetFileName(destinationPath), totalRead);
     }
 
-    /// <summary>Authentication follows only documented provider attachment redirects. Redirects to
-    /// arbitrary paths or hosts are rejected before a second credential-bearing request is sent.</summary>
+    /// <summary>Follows a bounded redirect chain without forwarding provider credentials. Every
+    /// destination is revalidated before the anonymous attachment client connects to it.</summary>
     private async Task<HttpResponseMessage> SendAttachmentRequestAsync(
         ProviderAttachment attachment,
         HttpClient initialClient,
@@ -356,12 +356,14 @@ public sealed partial class GitLabProvider(
     {
         var url = attachment.Url;
         var client = initialClient;
+        var validatedAddresses = attachment.ValidatedAddresses;
         for (var redirects = 0; ; redirects++)
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             if (client == anonymousAttachmentClient)
             {
-                request.Options.Set(IssueAgent.Git.TlsHttpHandlerFactory.ValidatedAddressesOptionKey, attachment.ValidatedAddresses!);
+                request.Options.Set(IssueAgent.Git.TlsHttpHandlerFactory.ValidatedAddressesOptionKey, validatedAddresses
+                    ?? throw new AttachmentRedirectRejectedException($"Attachment redirect to '{url}' was not safely validated."));
             }
 
             var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
@@ -371,16 +373,33 @@ public sealed partial class GitLabProvider(
             }
 
             var location = response.Headers.Location;
-            if (client != authenticatedAttachmentClient ||
-                location is null ||
-                redirects == 4 ||
-                !IsTrustedAttachmentHost(url = new Uri(url, location)))
+            if (location is null || redirects == 4)
             {
                 response.Dispose();
-                throw new AttachmentRedirectRejectedException(
-                    $"Attachment redirect from '{attachment.Url}' was not a trusted provider attachment URL.");
+                throw new AttachmentRedirectRejectedException($"Attachment redirect from '{attachment.Url}' was invalid or exceeded the redirect limit.");
             }
 
+            var destination = new Uri(url, location);
+            if (!destination.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                !destination.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                response.Dispose();
+                throw new AttachmentRedirectRejectedException($"Attachment redirect from '{attachment.Url}' used an unsupported scheme.");
+            }
+
+            validatedAddresses = attachment.ValidateRedirectDestinationAsync is null
+                ? null
+                : await attachment.ValidateRedirectDestinationAsync(destination, cancellationToken).ConfigureAwait(false);
+            if (validatedAddresses is null)
+            {
+                response.Dispose();
+                throw new AttachmentRedirectRejectedException($"Attachment redirect from '{attachment.Url}' was not a safe anonymous destination.");
+            }
+
+            // Redirects never inherit provider credentials, including provider-to-provider paths.
+            // This permits signed CDN/object-storage download URLs after validation.
+            client = anonymousAttachmentClient;
+            url = destination;
             response.Dispose();
         }
     }

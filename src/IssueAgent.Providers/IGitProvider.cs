@@ -200,7 +200,8 @@ public sealed record ProviderAttachment(
     AttachmentSource Source,
     bool IsProviderOwnedEndpoint,
     IReadOnlySet<System.Net.IPAddress>? ValidatedAddresses = null,
-    bool RequiresAttachmentContentDisposition = false);
+    bool RequiresAttachmentContentDisposition = false,
+    Func<Uri, CancellationToken, Task<IReadOnlySet<System.Net.IPAddress>?>>? ValidateRedirectDestinationAsync = null);
 
 public sealed record DownloadedAttachment(
     string LocalPath,

@@ -29,14 +29,7 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
     {
         using var server = WireMockServer.Start();
         var remote = await CreateRemoteAsync();
-        var head = await GitAsync(root, "--git-dir", remote, "rev-parse", "main");
-        var canonical = CanonicalCommentMarkdown.Render(new CanonicalCommentContent(
-            "Planning is in progress.", [], null,
-            CanonicalStateSerializer.ToDocument(new WorkflowState(
-                new WorkflowId(Guid.Parse("11111111-1111-1111-1111-111111111111")), WorkflowPhase.Planning,
-                WorkflowOperationalState.Working, null, 0, null, string.Empty, "agent/1-guard-titles", "main", head,
-                DateTimeOffset.UtcNow.Subtract(TimeSpan.FromHours(1)), null), null)));
-        ConfigureProvider(server, kind, canonical);
+        var fixture = ConfigureProvider(server, kind);
 
         await using var first = CreateHost(kind, server, remote);
         using var workerCancellation = new CancellationTokenSource();
@@ -46,14 +39,17 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
         workerCancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => workers);
 
-        // The WireMock assignment is an external boundary input. Both host instances route it
-        // through classification without creating a second canonical comment.
+        // The first host creates the durable workflow record through the production provider adapter.
+        // The fixture retains comment mutations so the restarted host reads the record it created.
         Assert.Contains(server.LogEntries, entry => entry.RequestMessage is { } request &&
             request.Method == "GET" &&
             (request.Path.Contains("issues", StringComparison.OrdinalIgnoreCase) ||
              request.Path.Contains("comments", StringComparison.OrdinalIgnoreCase) ||
              request.Path.Contains("notes", StringComparison.OrdinalIgnoreCase)));
-        var createsBeforeRestart = server.LogEntries.Count(entry => entry.RequestMessage is { } request && request.Method == "POST" && (request.Path.Contains("comments", StringComparison.OrdinalIgnoreCase) || request.Path.Contains("notes", StringComparison.OrdinalIgnoreCase)));
+        var firstHostCanonicalCommentCreates = CountCanonicalCommentCreates(server);
+        Assert.True(firstHostCanonicalCommentCreates == 1, DescribeRequests(server));
+        Assert.True(fixture.HasPersistedComment);
+        var persistedCommentReadsBeforeRestart = fixture.PersistedCommentReadCount;
 
         await using var restarted = CreateHost(kind, server, remote);
         using var restartCancellation = new CancellationTokenSource();
@@ -63,17 +59,24 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
         restartCancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => restartWorkers);
 
-        Assert.Equal(createsBeforeRestart, server.LogEntries.Count(entry => entry.RequestMessage is { } request && request.Method == "POST" && (request.Path.Contains("comments", StringComparison.OrdinalIgnoreCase) || request.Path.Contains("notes", StringComparison.OrdinalIgnoreCase))));
+        Assert.True(fixture.PersistedCommentReadCount > persistedCommentReadsBeforeRestart);
+        Assert.Equal(0, CountCanonicalCommentCreates(server) - firstHostCanonicalCommentCreates);
     }
 
     private HostParts CreateHost(ProviderKind kind, WireMockServer server, string remote)
     {
+        var isGitHub = kind == ProviderKind.GitHub;
         var provider = new ProviderOptions
         {
             Name = "provider", Kind = kind,
-            BaseUri = new Uri(server.Url! + (kind == ProviderKind.GitLab ? "/api/v4/" : "/")),
+            BaseUri = new Uri(server.Url! + (isGitHub ? "/" : "/api/v4/")),
             IdentityOverride = "issue-agent",
-            Repositories = [new RepositoryOptions { Id = kind == ProviderKind.GitHub ? "octo/widgets" : "123", OwnerOrNamespace = kind == ProviderKind.GitHub ? "octo" : "123", Name = kind == ProviderKind.GitHub ? "widgets" : "", CloneUrl = remote, TargetBranch = "main" }]
+            Repositories =
+            [
+                isGitHub
+                    ? new RepositoryOptions { Id = "octo/widgets", OwnerOrNamespace = "octo", Name = "widgets", CloneUrl = remote, TargetBranch = "main" }
+                    : new RepositoryOptions { Id = "group/widgets", OwnerOrNamespace = "group", Name = "widgets", CloneUrl = remote, TargetBranch = "main" },
+            ],
         };
         var options = new IssueAgentOptions { Workspace = new WorkspaceOptions { RootPath = root }, Omp = new OmpOptions { ExecutablePath = "/bin/false" }, Concurrency = new ConcurrencyOptions { Agent = 1, Polling = 1 }, Retry = new RetryOptions { MaxAttempts = 1, InitialDelay = TimeSpan.Zero, MaxJitter = TimeSpan.Zero }, Providers = [provider] };
         var effective = EffectiveConfigurationResolver.Resolve(options, _ => null, _ => throw new InvalidOperationException());
@@ -84,23 +87,111 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
         var pool = new WorkflowWorkerPool(Options.Create(options), sessions, metrics, NullLogger<WorkflowWorkerPool>.Instance);
         return new(new PollingScheduler(Options.Create(options), effective, registry, dispatcher, pool, metrics, NullLogger<PollingScheduler>.Instance), pool, metrics);
     }
-    private static void ConfigureProvider(WireMockServer server, ProviderKind kind, string canonical)
+    private static ProviderFixtureState ConfigureProvider(WireMockServer server, ProviderKind kind)
     {
-        var comment = JsonSerializer.Serialize(canonical);
+        var fixture = new ProviderFixtureState(kind);
         if (kind == ProviderKind.GitHub)
         {
-            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues").UsingGet()).RespondWith(Response.Create().WithBody("[{\"number\":1,\"title\":\"Guard titles\",\"body\":\"Empty titles fail.\",\"created_at\":\"2024-06-01T00:00:00Z\",\"updated_at\":\"2024-06-01T00:00:00Z\",\"state\":\"open\",\"assignees\":[{\"login\":\"issue-agent\"}],\"labels\":[]}]"));
-            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/comments").UsingGet()).RespondWith(Response.Create().WithBody($"[{{\"id\":10,\"body\":{comment},\"created_at\":\"2024-06-01T00:00:00Z\",\"updated_at\":\"2024-06-01T00:00:00Z\",\"user\":{{\"login\":\"issue-agent\",\"type\":\"Bot\"}}}}]"));
-            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/labels").UsingGet()).RespondWith(Response.Create().WithBody("[]"));
-            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/labels").UsingPut()).RespondWith(Response.Create().WithBody("[]"));
-            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/comments/10").UsingPatch()).RespondWith(Response.Create().WithBody($"{{\"id\":10,\"body\":{comment},\"user\":{{\"login\":\"issue-agent\",\"type\":\"Bot\"}}}}"));
+            const string issue = """{"number":1,"title":"Guard titles","body":"Empty titles fail.","created_at":"2024-06-01T00:00:00Z","updated_at":"2024-06-01T00:00:00Z","state":"open","assignees":[{"login":"issue-agent"}],"labels":[]}""";
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody($"[{issue}]"));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody(issue));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/comments").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBodyAsJson(_ => fixture.CommentCollection()));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/comments").UsingPost()).RespondWith(Response.Create().WithStatusCode(201).WithHeader("Content-Type", "application/json").WithBodyAsJson(request => fixture.PersistComment(request.Body!)));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/labels").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody("[]"));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/labels").UsingPut()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody("[]"));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/comments/10").UsingPatch()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBodyAsJson(request => fixture.PersistComment(request.Body!)));
         }
         else
         {
-            server.Given(Request.Create().WithPath("/api/v4/projects/123/issues").UsingGet()).RespondWith(Response.Create().WithBody("[{\"iid\":1,\"title\":\"Guard titles\",\"description\":\"Empty titles fail.\",\"created_at\":\"2024-06-01T00:00:00Z\",\"updated_at\":\"2024-06-01T00:00:00Z\",\"state\":\"opened\",\"assignees\":[{\"username\":\"issue-agent\"}],\"labels\":[]}]"));
-            server.Given(Request.Create().WithPath("/api/v4/projects/123/issues/1/notes").UsingGet()).RespondWith(Response.Create().WithBody($"[{{\"id\":10,\"body\":{comment},\"created_at\":\"2024-06-01T00:00:00Z\",\"updated_at\":\"2024-06-01T00:00:00Z\",\"author\":{{\"username\":\"issue-agent\",\"bot\":true}}}}]"));
-            server.Given(Request.Create().WithPath("/api/v4/projects/123/issues/1").UsingPut()).RespondWith(Response.Create().WithBody("{}"));
-            server.Given(Request.Create().WithPath("/api/v4/projects/123/issues/1/notes/10").UsingPut()).RespondWith(Response.Create().WithBody($"{{\"id\":10,\"body\":{comment},\"author\":{{\"username\":\"issue-agent\",\"bot\":true}}}}"));
+            const string issue = """{"iid":1,"title":"Guard titles","description":"Empty titles fail.","created_at":"2024-06-01T00:00:00Z","updated_at":"2024-06-01T00:00:00Z","state":"opened","assignees":[{"username":"issue-agent"}],"labels":[]}""";
+            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/issues").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody($"[{issue}]"));
+            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/issues/1").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody(issue));
+            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/issues/1/notes").UsingGet()).RespondWith(Response.Create().WithBodyAsJson(_ => fixture.CommentCollection()));
+            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/issues/1/notes").UsingPost()).RespondWith(Response.Create().WithStatusCode(201).WithBodyAsJson(request => fixture.PersistComment(request.Body!)));
+            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/issues/1").UsingPut()).RespondWith(Response.Create().WithBody("{}"));
+            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/issues/1/notes/10").UsingPut()).RespondWith(Response.Create().WithBodyAsJson(request => fixture.PersistComment(request.Body!)));
+        }
+
+        return fixture;
+    }
+
+    private static int CountCanonicalCommentCreates(WireMockServer server) =>
+        server.LogEntries.Count(entry => entry.RequestMessage is { } request &&
+            request.Method == "POST" &&
+            (request.Path.Contains("comments", StringComparison.OrdinalIgnoreCase) ||
+             request.Path.Contains("notes", StringComparison.OrdinalIgnoreCase)) &&
+            request.Body is { } requestBody &&
+            IsCanonicalCommentMutation(requestBody));
+
+    private static string DescribeRequests(WireMockServer server) =>
+        string.Join(Environment.NewLine, server.LogEntries.Select(entry =>
+            $"{entry.RequestMessage?.Method} {entry.RequestMessage?.Path} {entry.RequestMessage?.Body}"));
+
+    private static bool IsCanonicalCommentMutation(string requestBody)
+    {
+        using var document = JsonDocument.Parse(requestBody);
+        return document.RootElement.TryGetProperty("body", out var body) &&
+            body.GetString() is { } markdown &&
+            CanonicalCommentMarkdown.IsCanonicalComment(markdown);
+    }
+
+    private sealed class ProviderFixtureState(ProviderKind kind)
+    {
+        private readonly object gate = new();
+        private string? commentBody;
+        private int persistedCommentReadCount;
+
+        public bool HasPersistedComment
+        {
+            get
+            {
+                lock (gate)
+                {
+                    return commentBody is not null;
+                }
+            }
+        }
+
+        public int PersistedCommentReadCount
+        {
+            get
+            {
+                lock (gate)
+                {
+                    return persistedCommentReadCount;
+                }
+            }
+        }
+
+        public object CommentCollection()
+        {
+            lock (gate)
+            {
+                if (commentBody is null)
+                {
+                    return Array.Empty<object>();
+                }
+
+                persistedCommentReadCount++;
+                return kind == ProviderKind.GitHub
+                    ? new[] { new { id = 10, body = commentBody, created_at = "2024-06-01T00:00:00Z", updated_at = "2024-06-01T00:00:00Z", user = new { login = "issue-agent", type = "Bot" } } }
+                    : new[] { new { id = 10, body = commentBody, created_at = "2024-06-01T00:00:00Z", updated_at = "2024-06-01T00:00:00Z", author = new { username = "issue-agent", bot = true } } };
+            }
+        }
+
+        public object PersistComment(string requestBody)
+        {
+            using var document = JsonDocument.Parse(requestBody);
+            var body = document.RootElement.GetProperty("body").GetString()
+                ?? throw new InvalidOperationException("Provider comment mutation omitted its body.");
+
+            lock (gate)
+            {
+                commentBody = body;
+                return kind == ProviderKind.GitHub
+                    ? new { id = 10, body = commentBody, created_at = "2024-06-01T00:00:00Z", updated_at = "2024-06-01T00:00:00Z", user = new { login = "issue-agent", type = "Bot" } }
+                    : new { id = 10, body = commentBody, created_at = "2024-06-01T00:00:00Z", updated_at = "2024-06-01T00:00:00Z", author = new { username = "issue-agent", bot = true } };
+            }
         }
     }
 

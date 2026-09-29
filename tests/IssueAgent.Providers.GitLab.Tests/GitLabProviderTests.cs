@@ -34,6 +34,27 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     }
 
     [Fact]
+    public async Task DiscoverAssignedOpenIssuesAsyncDefersPollingWhenSuccessfulResponseExhaustsQuotaUntilFutureReset()
+    {
+        var resetAt = DateTimeOffset.UtcNow.AddMinutes(2).ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/123/issues").UsingGet())
+            .RespondWith(Response.Create()
+                .WithStatusCode(200)
+                .WithHeader("Content-Type", "application/json")
+                .WithHeader("X-RateLimit-Remaining", "0")
+                .WithHeader("X-RateLimit-Reset", resetAt)
+                .WithBody("[]"));
+        using var scope = PollingRateLimitScheduling.Enter();
+
+        var exception = await Assert.ThrowsAsync<PollingRateLimitedException>(() => CollectAsync(
+            fixture.Provider.DiscoverAssignedOpenIssuesAsync(
+                Repository, "issue-agent-bot", DateTimeOffset.MinValue, CancellationToken.None)));
+
+        Assert.True(exception.RetryAfter > TimeSpan.Zero);
+    }
+
+    [Fact]
     public async Task DiscoverAssignedOpenIssuesAsyncExcludesIssuesBeforeStartDate()
     {
         fixture.Server
@@ -674,6 +695,39 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
 
         Assert.Equal(1, authenticated.RequestCount);
         Assert.Equal(0, anonymous.RequestCount);
+    }
+
+    [Fact]
+    public async Task DownloadAttachmentAsyncFollowsValidatedProviderRedirectAnonymously()
+    {
+        var authenticated = new RedirectingHttpMessageHandler(
+            HttpStatusCode.Found,
+            new Uri("https://cdn.example/object/file.png"));
+        var anonymous = new RecordingHttpMessageHandler();
+        var provider = new GitLabProvider(
+            new GitLabApiClient(new HttpClient(), RetryPolicy.Default),
+            new HttpClient(authenticated),
+            new HttpClient(anonymous),
+            ["gitlab.example"],
+            string.Empty,
+            "gitlab");
+        var attachment = new ProviderAttachment(
+            new Uri("https://gitlab.example/uploads/0123456789abcdef0123456789abcdef/file.png"),
+            "file.png",
+            null,
+            new AttachmentSource("issue-description", "7"),
+            true,
+            ValidateRedirectDestinationAsync: (_, _) =>
+                Task.FromResult<IReadOnlySet<IPAddress>?>(new HashSet<IPAddress> { IPAddress.Loopback }));
+
+        _ = await provider.DownloadAttachmentAsync(
+            attachment,
+            Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")),
+            1024,
+            CancellationToken.None);
+
+        Assert.Equal(1, authenticated.RequestCount);
+        Assert.Equal(1, anonymous.RequestCount);
     }
 
     private static WireMock.ResponseBuilders.IResponseBuilder JsonResponse(string body) =>

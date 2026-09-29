@@ -78,7 +78,9 @@ public sealed class AttachmentPipeline(
                 SizeBytes: null,
                 source,
                 isTrusted,
-                RequiresAttachmentContentDisposition: requiresContentDisposition);
+                RequiresAttachmentContentDisposition: requiresContentDisposition,
+                ValidateRedirectDestinationAsync: (redirectUrl, token) =>
+                    ValidateAnonymousDestinationAsync(redirectUrl, resolveHostAddressesAsync, token));
 
             if (TryGetCachedAttachment(CacheKey(url), out var cached))
             {
@@ -157,7 +159,7 @@ public sealed class AttachmentPipeline(
             catch (AttachmentRedirectRejectedException)
             {
                 DeletePartialFile(partialPath);
-                results.Add(Omitted(providerAttachment, "Attachment redirect was rejected because its destination was not a trusted provider attachment URL."));
+                results.Add(Omitted(providerAttachment, "Attachment redirect was rejected because its destination was unsafe or exceeded the redirect limit."));
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -176,10 +178,9 @@ public sealed class AttachmentPipeline(
             }
             catch (HttpRequestException exception)
             {
-                // Includes a blocked redirect (AllowAutoRedirect is disabled for the anonymous
-                // attachment client precisely so an unvalidated 3xx to an internal/loopback/cloud-
-                // metadata endpoint is never followed — specification §15) and any other transport
-                // failure. Omitted, not fatal: one bad link must not abort the whole context.
+                // The anonymous client still has auto-redirect disabled: redirects are followed only
+                // by the provider after each destination passes SSRF validation and address pinning.
+                // Other transport failures omit this one link without aborting the workflow context.
                 DeletePartialFile(partialPath);
                 results.Add(Omitted(providerAttachment, $"Attachment download failed: {exception.StatusCode?.ToString() ?? exception.GetType().Name}."));
             }

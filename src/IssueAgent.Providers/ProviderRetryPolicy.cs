@@ -37,6 +37,7 @@ public static class ProviderRetryPolicy
                 var rateLimited = IsDefinitiveRateLimitRejection(response);
                 if (!retryable)
                 {
+                    DeferSuccessfulQuotaExhaustion(response);
                     return response;
                 }
 
@@ -157,6 +158,7 @@ public static class ProviderRetryPolicy
                 }
 
                 response.EnsureSuccessStatusCode();
+                DeferSuccessfulQuotaExhaustion(response);
                 try
                 {
                     return await materialize(response, cancellationToken).ConfigureAwait(false);
@@ -219,6 +221,29 @@ public static class ProviderRetryPolicy
         (response.StatusCode == HttpStatusCode.Forbidden &&
          ((response.Headers.TryGetValues("X-RateLimit-Remaining", out var remaining) && remaining.Any(value => value == "0")) ||
           response.Headers.RetryAfter is not null));
+
+    /// <summary>Discovery can consume the final available request without receiving a rejection.
+    /// When the provider supplies an exhausted quota and a future reset, release polling capacity
+    /// for the whole provider before another repository starts an immediately doomed request.</summary>
+    private static void DeferSuccessfulQuotaExhaustion(HttpResponseMessage response)
+    {
+        if (!PollingRateLimitScheduling.IsEnabled ||
+            !HasExhaustedQuota(response) ||
+            GetResetDelay(response, "X-RateLimit-Reset", DateTimeOffset.UtcNow) is not { } delay ||
+            delay <= TimeSpan.Zero)
+        {
+            return;
+        }
+
+        response.Dispose();
+        PollingRateLimitScheduling.ThrowIfEnabled(delay);
+    }
+
+    private static bool HasExhaustedQuota(HttpResponseMessage response) =>
+        (response.Headers.TryGetValues("X-RateLimit-Remaining", out var xRemaining) &&
+         xRemaining.Any(value => value == "0")) ||
+        (response.Headers.TryGetValues("RateLimit-Remaining", out var remaining) &&
+         remaining.Any(value => value == "0"));
 
     private static TimeSpan GetRetryDelay(HttpResponseMessage response, int attempt, RetryPolicy retryPolicy)
     {

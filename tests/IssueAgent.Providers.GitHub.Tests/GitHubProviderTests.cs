@@ -126,6 +126,27 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
 
         Assert.True(Interlocked.Read(ref exhausted) >= 1);
     }
+
+    [Fact]
+    public async Task DiscoverAssignedOpenIssuesAsyncDefersPollingWhenSuccessfulResponseExhaustsQuotaUntilFutureReset()
+    {
+        var resetAt = DateTimeOffset.UtcNow.AddMinutes(2).ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues").UsingGet())
+            .RespondWith(Response.Create()
+                .WithStatusCode(200)
+                .WithHeader("Content-Type", "application/json")
+                .WithHeader("X-RateLimit-Remaining", "0")
+                .WithHeader("X-RateLimit-Reset", resetAt)
+                .WithBody("[]"));
+        using var scope = PollingRateLimitScheduling.Enter();
+
+        var exception = await Assert.ThrowsAsync<PollingRateLimitedException>(() => CollectAsync(
+            fixture.Provider.DiscoverAssignedOpenIssuesAsync(
+                Repository, "issue-agent-bot", DateTimeOffset.MinValue, CancellationToken.None)));
+
+        Assert.True(exception.RetryAfter > TimeSpan.Zero);
+    }
     [Fact]
     public async Task DiscoverAssignedOpenIssuesAsyncExcludesPullRequestsAndIssuesBeforeStartDate()
     {
@@ -1130,6 +1151,61 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
         Assert.Equal(0, anonymous.RequestCount);
     }
 
+    [Fact]
+    public async Task DownloadAttachmentAsyncFollowsValidatedProviderRedirectAnonymously()
+    {
+        var authenticated = new RedirectingHttpMessageHandler(
+            HttpStatusCode.Found,
+            new Uri("https://cdn.example/object/file.png"));
+        var anonymous = new RecordingHttpMessageHandler();
+        var provider = new GitHubProvider(
+            null!, null!, null!, new HttpClient(), new HttpClient(authenticated), new HttpClient(anonymous),
+            ["github.example"], false, string.Empty, "github");
+        var attachment = new ProviderAttachment(
+            new Uri("https://github.example/user-attachments/files/1/file.png"),
+            "file.png",
+            null,
+            new AttachmentSource("issue-description", "7"),
+            true,
+            ValidateRedirectDestinationAsync: (_, _) =>
+                Task.FromResult<IReadOnlySet<IPAddress>?>(new HashSet<IPAddress> { IPAddress.Loopback }));
+
+        _ = await provider.DownloadAttachmentAsync(
+            attachment,
+            Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")),
+            1024,
+            CancellationToken.None);
+
+        Assert.Equal(1, authenticated.RequestCount);
+        Assert.Equal(1, anonymous.RequestCount);
+    }
+
+    [Fact]
+    public async Task DownloadAttachmentAsyncFollowsValidatedDirectFileRedirectAnonymously()
+    {
+        var anonymous = new RedirectThenSuccessHttpMessageHandler(new Uri("https://cdn.example/object/file.png"));
+        var provider = new GitHubProvider(
+            null!, null!, null!, new HttpClient(), new HttpClient(new RecordingHttpMessageHandler()), new HttpClient(anonymous),
+            ["github.example"], false, string.Empty, "github");
+        var attachment = new ProviderAttachment(
+            new Uri("https://files.example/original.png"),
+            "original.png",
+            null,
+            new AttachmentSource("issue-description", "7"),
+            false,
+            new HashSet<IPAddress> { IPAddress.Loopback },
+            ValidateRedirectDestinationAsync: (_, _) =>
+                Task.FromResult<IReadOnlySet<IPAddress>?>(new HashSet<IPAddress> { IPAddress.Loopback }));
+
+        _ = await provider.DownloadAttachmentAsync(
+            attachment,
+            Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")),
+            1024,
+            CancellationToken.None);
+
+        Assert.Equal(2, anonymous.RequestCount);
+    }
+
     private static WireMock.ResponseBuilders.IResponseBuilder JsonResponse(string body) =>
         Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/json").WithBody(body);
 
@@ -1169,6 +1245,19 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
             {
                 Headers = { Location = location },
             });
+        }
+    }
+
+    private sealed class RedirectThenSuccessHttpMessageHandler(Uri location) : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            return Task.FromResult(RequestCount == 1
+                ? new HttpResponseMessage(HttpStatusCode.Found) { Headers = { Location = location } }
+                : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("attachment") });
         }
     }
 }

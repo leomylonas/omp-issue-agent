@@ -433,8 +433,8 @@ public sealed partial class GitHubProvider(
         return new DownloadedAttachment(destinationPath, Path.GetFileName(destinationPath), totalRead);
     }
 
-    /// <summary>Authentication follows only documented provider attachment redirects. Redirects to
-    /// arbitrary paths or hosts are rejected before a second credential-bearing request is sent.</summary>
+    /// <summary>Follows a bounded redirect chain without forwarding provider credentials. Every
+    /// destination is revalidated before the anonymous attachment client connects to it.</summary>
     private async Task<HttpResponseMessage> SendAttachmentRequestAsync(
         ProviderAttachment attachment,
         HttpClient initialClient,
@@ -442,12 +442,14 @@ public sealed partial class GitHubProvider(
     {
         var url = attachment.Url;
         var client = initialClient;
+        var validatedAddresses = attachment.ValidatedAddresses;
         for (var redirects = 0; ; redirects++)
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             if (client == anonymousAttachmentClient)
             {
-                request.Options.Set(IssueAgent.Git.TlsHttpHandlerFactory.ValidatedAddressesOptionKey, attachment.ValidatedAddresses!);
+                request.Options.Set(IssueAgent.Git.TlsHttpHandlerFactory.ValidatedAddressesOptionKey, validatedAddresses
+                    ?? throw new AttachmentRedirectRejectedException($"Attachment redirect to '{url}' was not safely validated."));
             }
 
             var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
@@ -457,16 +459,34 @@ public sealed partial class GitHubProvider(
             }
 
             var location = response.Headers.Location;
-            if (client != authenticatedAttachmentClient ||
-                location is null ||
-                redirects == 4 ||
-                !IsTrustedAttachmentHost(url = new Uri(url, location)))
+            if (location is null || redirects == 4)
             {
                 response.Dispose();
-                throw new AttachmentRedirectRejectedException(
-                    $"Attachment redirect from '{attachment.Url}' was not a trusted provider attachment URL.");
+                throw new AttachmentRedirectRejectedException($"Attachment redirect from '{attachment.Url}' was invalid or exceeded the redirect limit.");
             }
 
+            var destination = new Uri(url, location);
+            if (!destination.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                !destination.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                response.Dispose();
+                throw new AttachmentRedirectRejectedException($"Attachment redirect from '{attachment.Url}' used an unsupported scheme.");
+            }
+
+            validatedAddresses = attachment.ValidateRedirectDestinationAsync is null
+                ? null
+                : await attachment.ValidateRedirectDestinationAsync(destination, cancellationToken).ConfigureAwait(false);
+            if (validatedAddresses is null)
+            {
+                response.Dispose();
+                throw new AttachmentRedirectRejectedException($"Attachment redirect from '{attachment.Url}' was not a safe anonymous destination.");
+            }
+
+            // Redirects never inherit provider credentials, including provider-to-provider paths.
+            // This permits signed CDN/object-storage download URLs after validation.
+            client = anonymousAttachmentClient;
+
+            url = destination;
             response.Dispose();
         }
     }
@@ -477,6 +497,7 @@ public sealed partial class GitHubProvider(
         var response = await ExecuteWithRetryAsync(
             () => execute(cancellationToken),
             cancellationToken).ConfigureAwait(false);
+        DeferSuccessfulQuotaExhaustion(response.HttpResponse.Headers);
         return response.Body;
     }
 
@@ -496,6 +517,7 @@ public sealed partial class GitHubProvider(
             var response = await ExecuteWithRetryAsync(
                 () => client.Connection.Get<IReadOnlyList<T>>(nextUri, null, null, cancellationToken),
                 cancellationToken).ConfigureAwait(false);
+            DeferSuccessfulQuotaExhaustion(response.HttpResponse.Headers);
             results.AddRange(response.Body);
             nextUri = GetNextPageUri(response.HttpResponse.Headers, client.Connection.BaseAddress);
         }
@@ -732,6 +754,28 @@ public sealed partial class GitHubProvider(
         exception.HttpResponse?.Headers is { } headers && headers.TryGetValue(name, out _);
 
     private TimeSpan GetRateLimitFallbackDelay(int attempt) => retryPolicy.GetRateLimitFallbackDelay(attempt);
+
+    /// <summary>Octokit exposes successful response headers separately from its rate-limit
+    /// exception path. A final successful discovery page must still defer provider-wide polling.</summary>
+    private static void DeferSuccessfulQuotaExhaustion(IReadOnlyDictionary<string, string> headers)
+    {
+        if (!PollingRateLimitScheduling.IsEnabled ||
+            !headers.TryGetValue("X-RateLimit-Remaining", out var remaining) ||
+            remaining != "0" ||
+            !headers.TryGetValue("X-RateLimit-Reset", out var reset) ||
+            !long.TryParse(reset, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var resetSeconds) ||
+            resetSeconds < DateTimeOffset.MinValue.ToUnixTimeSeconds() ||
+            resetSeconds > DateTimeOffset.MaxValue.ToUnixTimeSeconds())
+        {
+            return;
+        }
+
+        var delay = DateTimeOffset.FromUnixTimeSeconds(resetSeconds) - DateTimeOffset.UtcNow;
+        if (delay > TimeSpan.Zero)
+        {
+            PollingRateLimitScheduling.ThrowIfEnabled(delay);
+        }
+    }
 
     private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(5);
 
