@@ -30,7 +30,7 @@ public sealed class OmpRuntimeEnvironmentFactory(EffectiveIssueAgentConfiguratio
         // OMP performs commits inside the worktree. Apply identity after configured execution
         // variables so the repository's resolved GitIdentity always governs those commits.
         var environment = new Dictionary<string, string>(
-            OmpEnvironment.Build(ambientEnvironment, connection, executionValues, GetNonOmpSecretSourceNames(configuration.Source)),
+            OmpEnvironment.Build(ambientEnvironment, connection, executionValues, GetNonOmpSecretSourceNames(configuration.Source, repository)),
             StringComparer.Ordinal);
         environment["GIT_AUTHOR_NAME"] = gitIdentity.Name;
         environment["GIT_AUTHOR_EMAIL"] = gitIdentity.Email;
@@ -41,13 +41,35 @@ public sealed class OmpRuntimeEnvironmentFactory(EffectiveIssueAgentConfiguratio
 
     internal static HashSet<string> GetNonOmpSecretSourceNames(IssueAgentOptions options)
     {
-        var ompSecretSources = options.Omp.ExecutionSecrets.Values
-            .Concat(options.Providers.SelectMany(provider => provider.Repositories)
-                .SelectMany(repository => repository.Settings.OmpExecutionSecrets.Values))
-            .Select(source => source.Env)
-            .OfType<string>()
-            .Where(name => !string.IsNullOrWhiteSpace(name))
-            .ToHashSet(StringComparer.Ordinal);
+        var allSecretSources = GetAllSecretSourceNames(options);
+        allSecretSources.ExceptWith(GetOmpSecretSourceNames(options.Omp.ExecutionSecrets));
+        return allSecretSources;
+    }
+
+    internal static HashSet<string> GetNonOmpSecretSourceNames(
+        IssueAgentOptions options,
+        EffectiveRepositoryConfiguration repository)
+    {
+        var allSecretSources = GetAllSecretSourceNames(options);
+        allSecretSources.ExceptWith(GetOmpSecretSourceNames(MergeExecutionSecrets(options, repository)));
+        return allSecretSources;
+    }
+
+    private static Dictionary<string, SecretSource> MergeExecutionSecrets(
+        IssueAgentOptions options,
+        EffectiveRepositoryConfiguration repository)
+    {
+        var provider = options.Providers.Single(candidate =>
+            candidate.Name.Equals(repository.ProviderName, StringComparison.OrdinalIgnoreCase));
+        var executionSecrets = new Dictionary<string, SecretSource>(options.Omp.ExecutionSecrets, StringComparer.Ordinal);
+        AddExecutionSecrets(executionSecrets, options.Defaults.OmpExecutionSecrets);
+        AddExecutionSecrets(executionSecrets, provider.Defaults.OmpExecutionSecrets);
+        AddExecutionSecrets(executionSecrets, repository.Source.Settings.OmpExecutionSecrets);
+        return executionSecrets;
+    }
+
+    private static HashSet<string> GetAllSecretSourceNames(IssueAgentOptions options)
+    {
         var allSecretSources = new HashSet<string>(StringComparer.Ordinal);
         AddSecretSource(allSecretSources, options.Notifications.Telegram?.BotToken);
         AddSecretSource(allSecretSources, options.Notifications.Slack?.WebhookUrl);
@@ -62,8 +84,24 @@ public sealed class OmpRuntimeEnvironmentFactory(EffectiveIssueAgentConfiguratio
             }
         }
 
-        allSecretSources.ExceptWith(ompSecretSources);
         return allSecretSources;
+    }
+
+    private static IEnumerable<string> GetOmpSecretSourceNames(
+        IReadOnlyDictionary<string, SecretSource> executionSecrets) =>
+        executionSecrets.Values
+            .Select(source => source.Env)
+            .OfType<string>()
+            .Where(name => !string.IsNullOrWhiteSpace(name));
+
+    private static void AddExecutionSecrets(
+        Dictionary<string, SecretSource> destination,
+        IReadOnlyDictionary<string, SecretSource> source)
+    {
+        foreach (var (name, secret) in source)
+        {
+            destination[name] = secret;
+        }
     }
 
     private static void AddGitSecretSources(ISet<string> names, GitTransportOptions? git)

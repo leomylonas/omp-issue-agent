@@ -194,6 +194,7 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
 
     private async Task ReadLoopAsync()
     {
+        Exception? terminalException = null;
         try
         {
             string? line;
@@ -209,14 +210,14 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
                 {
                     parsed = JsonNode.Parse(line) as JsonObject;
                 }
-                catch (JsonException)
+                catch (JsonException exception)
                 {
-                    continue;
+                    throw new OmpRpcException($"OMP emitted a malformed NDJSON frame: {exception.Message}");
                 }
 
                 if (parsed is null)
                 {
-                    continue;
+                    throw new OmpRpcException("OMP emitted an NDJSON frame that was not a JSON object.");
                 }
 
                 if (string.Equals(parsed["type"]?.GetValue<string>(), "ready", StringComparison.Ordinal))
@@ -252,6 +253,7 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
         }
         catch (Exception exception)
         {
+            terminalException = exception;
             ready.TrySetException(exception);
             lock (pendingRequestsLock)
             {
@@ -266,14 +268,15 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
         {
             var processExitException = new InvalidOperationException(
                 "OMP process exited before sending its ready frame." + StandardErrorDiagnostic());
-            ready.TrySetException(processExitException);
-            frames.Writer.TryComplete();
+            ready.TrySetException(terminalException ?? processExitException);
+            frames.Writer.TryComplete(terminalException);
             lock (pendingRequestsLock)
             {
                 foreach (var completion in pendingRequests.Values)
                 {
                     completion.TrySetException(
-                        new InvalidOperationException("OMP process exited before responding." + StandardErrorDiagnostic()));
+                        terminalException ?? new InvalidOperationException(
+                            "OMP process exited before responding." + StandardErrorDiagnostic()));
                 }
                 pendingRequests.Clear();
             }

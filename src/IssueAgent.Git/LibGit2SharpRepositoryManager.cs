@@ -20,6 +20,7 @@ namespace IssueAgent.Git;
 /// </summary>
 public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRepositoryManager
 {
+    private const string OriginHeadsRefSpec = "+refs/heads/*:refs/remotes/origin/*";
     private static readonly string[] mutableBareRepositoryDirectories = ["objects", "refs", "worktrees"];
     private readonly string normalizedReposRootPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(reposRootPath));
 
@@ -27,9 +28,12 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
 
     public async ValueTask EnsureBareRepositoryAsync(string repositoryId, string cloneUrl, GitAuthentication authentication, CancellationToken cancellationToken)
     {
+        ValidateAuthenticationForCloneUrl(cloneUrl, authentication);
         var path = BareRepositoryPath(repositoryId);
         if (Repository.IsValid(path))
         {
+            ValidateCachedOrigin(path, cloneUrl);
+            ConfigureOriginHeadsRefSpec(path);
             DisableHooks(path);
             HardenBareRepositoryAuthority(path);
             return;
@@ -65,6 +69,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
             Repository.Clone(cloneUrl, path, options);
         }
 
+        ConfigureOriginHeadsRefSpec(path);
         DisableHooks(path);
         HardenBareRepositoryAuthority(path);
     }
@@ -1065,6 +1070,51 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
         }
 
         File.SetUnixFileMode(path, mode);
+    }
+
+    private static void ValidateAuthenticationForCloneUrl(string cloneUrl, GitAuthentication authentication)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(cloneUrl);
+        ArgumentNullException.ThrowIfNull(authentication);
+
+        var isSsh = TryNormalizeScpLikeSshRemote(cloneUrl, out _) ||
+            (Uri.TryCreate(cloneUrl, UriKind.Absolute, out var cloneUri) &&
+             cloneUri.Scheme.Equals(Uri.UriSchemeSsh, StringComparison.OrdinalIgnoreCase));
+        var isHttps = Uri.TryCreate(cloneUrl, UriKind.Absolute, out cloneUri) &&
+            cloneUri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
+
+        if (authentication.Mode == GitAuthenticationMode.Ssh && !isSsh)
+        {
+            throw new InvalidOperationException("SSH authentication requires an SSH clone URL.");
+        }
+
+        if (authentication.Mode is GitAuthenticationMode.ProviderToken or GitAuthenticationMode.Token && !isHttps)
+        {
+            throw new InvalidOperationException("Token authentication requires an HTTPS clone URL.");
+        }
+    }
+
+    private static void ValidateCachedOrigin(string bareRepositoryPath, string cloneUrl)
+    {
+        using var repository = new Repository(bareRepositoryPath);
+        var origin = repository.Network.Remotes["origin"]
+            ?? throw new InvalidOperationException($"Cached bare repository '{bareRepositoryPath}' does not have an origin remote.");
+        if (!string.Equals(origin.Url, cloneUrl, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Cached bare repository '{bareRepositoryPath}' has an origin URL different from its configured clone URL.");
+        }
+    }
+
+    private static void ConfigureOriginHeadsRefSpec(string bareRepositoryPath)
+    {
+        using var repository = new Repository(bareRepositoryPath);
+        if (repository.Network.Remotes["origin"] is null)
+        {
+            throw new InvalidOperationException($"Bare repository '{bareRepositoryPath}' does not have an origin remote.");
+        }
+
+        repository.Config.Set("remote.origin.fetch", OriginHeadsRefSpec);
     }
 
     private static string? TryGetHost(string? url) => GitUrlHost.TryGetHost(url);

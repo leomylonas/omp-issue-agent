@@ -65,6 +65,7 @@ prometheusRule:
   additionalLabels: {}
   pollingStalledFor: 15m
   longRunningOperationThresholdSeconds: 1800
+  workspaceMinimumAvailableBytes: 1073741824
 
 config:
   existingConfigMap: ""

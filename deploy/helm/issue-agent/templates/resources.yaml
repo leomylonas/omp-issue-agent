@@ -72,4 +72,7 @@ spec:
         - alert: IssueAgentLongRunningOperations
           expr: issueagent_operations_oldest_active_age_seconds{app_kubernetes_io_instance="{{ .Release.Name }}",app_kubernetes_io_namespace="{{ .Release.Namespace }}"} > {{ .Values.prometheusRule.longRunningOperationThresholdSeconds }}
           for: 5m
+        - alert: IssueAgentWorkspaceExhausted
+          expr: issueagent_workspace_available_bytes{app_kubernetes_io_instance="{{ .Release.Name }}",app_kubernetes_io_namespace="{{ .Release.Namespace }}"} < {{ .Values.prometheusRule.workspaceMinimumAvailableBytes }}
+          for: 5m
 {{- end }}

@@ -19,6 +19,10 @@ public sealed class OmpRuntimeEnvironmentFactoryTests
                 ExecutionVariables = new Dictionary<string, string> { ["GLOBAL_FLAG"] = "global", ["OVERRIDE"] = "global" },
                 ExecutionSecrets = new Dictionary<string, SecretSource> { ["GLOBAL_SECRET"] = new() { Env = "GLOBAL_SECRET" } },
             },
+            Defaults = new RepositorySettingsOptions
+            {
+                OmpExecutionSecrets = new Dictionary<string, SecretSource> { ["DEFAULT_SECRET"] = new() { Env = "HTTP_PROXY" } },
+            },
             Providers =
             [
                 new ProviderOptions
@@ -27,6 +31,10 @@ public sealed class OmpRuntimeEnvironmentFactoryTests
                     Kind = ProviderKind.GitHub,
                     BaseUri = new Uri("https://api.github.com/"),
                     Token = new SecretSource { Env = "HTTP_PROXY" },
+                    Defaults = new RepositorySettingsOptions
+                    {
+                        OmpExecutionSecrets = new Dictionary<string, SecretSource> { ["PROVIDER_SECRET"] = new() { Env = "HTTP_PROXY" } },
+                    },
                     IdentityOverride = "bot",
                     Repositories =
                     [
@@ -46,7 +54,7 @@ public sealed class OmpRuntimeEnvironmentFactoryTests
                             Name = "octo/second",
                             Settings = new RepositorySettingsOptions
                             {
-                                OmpExecutionSecrets = new Dictionary<string, SecretSource> { ["SECOND_SECRET"] = new() { Env = "SECOND_SECRET" } },
+                                OmpExecutionSecrets = new Dictionary<string, SecretSource> { ["SECOND_SECRET"] = new() { Env = "HTTP_PROXY" } },
                             },
                         },
                     ],
@@ -72,9 +80,50 @@ public sealed class OmpRuntimeEnvironmentFactoryTests
         Assert.Equal("global", environment["GLOBAL_FLAG"]);
         Assert.Equal("first", environment["OVERRIDE"]);
         Assert.Equal("GLOBAL_SECRET-value", environment["GLOBAL_SECRET"]);
-        Assert.Equal("FIRST_SECRET-value", environment["FIRST_SECRET"]);
+        Assert.Equal("HTTP_PROXY-value", environment["DEFAULT_SECRET"]);
+        Assert.Equal("HTTP_PROXY-value", environment["PROVIDER_SECRET"]);
+        Assert.Equal("http://provider-secret@proxy.example:8080", environment["HTTP_PROXY"]);
         Assert.DoesNotContain("GITHUB_TOKEN", environment.Keys);
         Assert.DoesNotContain("SECOND_SECRET", environment.Keys);
-        Assert.DoesNotContain("HTTP_PROXY", environment.Keys);
+    }
+
+    [Fact]
+    public void GetNonOmpSecretSourceNamesAllowsOnlyGlobalOmpSecretsAtStartup()
+    {
+        var options = new IssueAgentOptions
+        {
+            Workspace = new WorkspaceOptions { RootPath = "/data" },
+            Omp = new OmpOptions
+            {
+                ExecutablePath = "omp",
+                ExecutionSecrets = new Dictionary<string, SecretSource>
+                {
+                    ["GLOBAL_OMP_SECRET"] = new() { Env = "GLOBAL_OMP_SECRET" },
+                },
+            },
+            Defaults = new RepositorySettingsOptions
+            {
+                Git = new GitTransportOptions { Token = new SecretSource { Env = "DEFAULT_OMP_SECRET" } },
+                OmpExecutionSecrets = new Dictionary<string, SecretSource>
+                {
+                    ["DEFAULT_OMP_SECRET"] = new() { Env = "DEFAULT_OMP_SECRET" },
+                },
+            },
+            Providers =
+            [
+                new ProviderOptions
+                {
+                    Name = "github",
+                    Kind = ProviderKind.GitHub,
+                    BaseUri = new Uri("https://api.github.com/"),
+                    Token = new SecretSource { Env = "GLOBAL_OMP_SECRET" },
+                },
+            ],
+        };
+
+        var nonOmpSecretSources = OmpRuntimeEnvironmentFactory.GetNonOmpSecretSourceNames(options);
+
+        Assert.DoesNotContain("GLOBAL_OMP_SECRET", nonOmpSecretSources);
+        Assert.Contains("DEFAULT_OMP_SECRET", nonOmpSecretSources);
     }
 }

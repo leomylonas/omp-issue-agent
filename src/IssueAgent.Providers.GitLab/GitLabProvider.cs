@@ -41,8 +41,8 @@ public sealed partial class GitLabProvider(
 
     public async ValueTask<string> GetDefaultBranchAsync(RepositoryRef repository, CancellationToken cancellationToken)
     {
-        var project = await client.GetProjectAsync(repository.Id, cancellationToken).ConfigureAwait(false);
-        return project.DefaultBranch ?? throw new InvalidOperationException($"GitLab project '{repository.Id}' did not report a default branch.");
+        var project = await client.GetProjectAsync(ProjectAddress(repository), cancellationToken).ConfigureAwait(false);
+        return project.DefaultBranch ?? throw new InvalidOperationException($"GitLab project '{ProjectAddress(repository)}' did not report a default branch.");
     }
 
     public async IAsyncEnumerable<IssueSummary> DiscoverAssignedOpenIssuesAsync(
@@ -51,7 +51,7 @@ public sealed partial class GitLabProvider(
         DateTimeOffset startDate,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var issues = await client.GetIssuesAsync(repository.Id, identity, "opened", cancellationToken).ConfigureAwait(false);
+        var issues = await client.GetIssuesAsync(ProjectAddress(repository), identity, "opened", cancellationToken).ConfigureAwait(false);
         foreach (var issue in issues)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -73,7 +73,7 @@ public sealed partial class GitLabProvider(
         RepositoryRef repository,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var issues = await client.GetIssuesAsync(repository.Id, assigneeUsername: null, "all", cancellationToken).ConfigureAwait(false);
+        var issues = await client.GetIssuesAsync(ProjectAddress(repository), assigneeUsername: null, "all", cancellationToken).ConfigureAwait(false);
         foreach (var issue in issues)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -88,7 +88,7 @@ public sealed partial class GitLabProvider(
 
     public async ValueTask<ProviderIssue> GetIssueAsync(RepositoryRef repository, long issueNumber, CancellationToken cancellationToken)
     {
-        var issue = await client.GetIssueAsync(repository.Id, issueNumber, cancellationToken).ConfigureAwait(false);
+        var issue = await client.GetIssueAsync(ProjectAddress(repository), issueNumber, cancellationToken).ConfigureAwait(false);
         return ToProviderIssue(repository, issue);
     }
 
@@ -97,7 +97,7 @@ public sealed partial class GitLabProvider(
         long issueNumber,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var notes = await client.GetIssueNotesAsync(repository.Id, issueNumber, cancellationToken).ConfigureAwait(false);
+        var notes = await client.GetIssueNotesAsync(ProjectAddress(repository), issueNumber, cancellationToken).ConfigureAwait(false);
         foreach (var note in notes)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -112,13 +112,13 @@ public sealed partial class GitLabProvider(
 
     public async ValueTask<ProviderComment> CreateIssueCommentAsync(RepositoryRef repository, long issueNumber, string body, CancellationToken cancellationToken)
     {
-        var note = await client.CreateIssueNoteAsync(repository.Id, issueNumber, body, cancellationToken).ConfigureAwait(false);
+        var note = await client.CreateIssueNoteAsync(ProjectAddress(repository), issueNumber, body, cancellationToken).ConfigureAwait(false);
         return ToProviderComment(note, "issue-comment", issueNumber);
     }
 
     public async ValueTask<ProviderComment> UpdateIssueCommentAsync(RepositoryRef repository, long issueNumber, long commentId, string body, CancellationToken cancellationToken)
     {
-        var note = await client.UpdateIssueNoteAsync(repository.Id, issueNumber, commentId, body, cancellationToken).ConfigureAwait(false);
+        var note = await client.UpdateIssueNoteAsync(ProjectAddress(repository), issueNumber, commentId, body, cancellationToken).ConfigureAwait(false);
         return ToProviderComment(note, "issue-comment", issueNumber);
     }
 
@@ -126,11 +126,11 @@ public sealed partial class GitLabProvider(
     {
         if (workItem.Kind == ProviderWorkItemKind.Issue)
         {
-            var issue = await client.GetIssueAsync(workItem.Repository.Id, workItem.Number, cancellationToken).ConfigureAwait(false);
+            var issue = await client.GetIssueAsync(ProjectAddress(workItem.Repository), workItem.Number, cancellationToken).ConfigureAwait(false);
             return issue.Labels.ToHashSet(StringComparer.Ordinal);
         }
 
-        var mergeRequest = await client.GetMergeRequestAsync(workItem.Repository.Id, workItem.Number, cancellationToken).ConfigureAwait(false);
+        var mergeRequest = await client.GetMergeRequestAsync(ProjectAddress(workItem.Repository), workItem.Number, cancellationToken).ConfigureAwait(false);
         return mergeRequest.Labels.ToHashSet(StringComparer.Ordinal);
     }
 
@@ -138,11 +138,11 @@ public sealed partial class GitLabProvider(
     {
         if (workItem.Kind == ProviderWorkItemKind.Issue)
         {
-            await client.UpdateIssueLabelsAsync(workItem.Repository.Id, workItem.Number, labels, null, cancellationToken).ConfigureAwait(false);
+            await client.UpdateIssueLabelsAsync(ProjectAddress(workItem.Repository), workItem.Number, labels, null, cancellationToken).ConfigureAwait(false);
         }
         else
         {
-            await client.UpdateMergeRequestLabelsAsync(workItem.Repository.Id, workItem.Number, labels, null, cancellationToken).ConfigureAwait(false);
+            await client.UpdateMergeRequestLabelsAsync(ProjectAddress(workItem.Repository), workItem.Number, labels, null, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -150,28 +150,28 @@ public sealed partial class GitLabProvider(
     {
         if (workItem.Kind == ProviderWorkItemKind.Issue)
         {
-            await client.UpdateIssueLabelsAsync(workItem.Repository.Id, workItem.Number, null, [label], cancellationToken).ConfigureAwait(false);
+            await client.UpdateIssueLabelsAsync(ProjectAddress(workItem.Repository), workItem.Number, null, [label], cancellationToken).ConfigureAwait(false);
         }
         else
         {
-            await client.UpdateMergeRequestLabelsAsync(workItem.Repository.Id, workItem.Number, null, [label], cancellationToken).ConfigureAwait(false);
+            await client.UpdateMergeRequestLabelsAsync(ProjectAddress(workItem.Repository), workItem.Number, null, [label], cancellationToken).ConfigureAwait(false);
         }
     }
 
     public async ValueTask EnsureLabelAsync(RepositoryRef repository, ProviderLabel label, CancellationToken cancellationToken)
     {
-        if (await client.FindLabelAsync(repository.Id, label.Name, cancellationToken).ConfigureAwait(false) is not null)
+        if (await client.FindLabelAsync(ProjectAddress(repository), label.Name, cancellationToken).ConfigureAwait(false) is not null)
         {
             return;
         }
 
         try
         {
-            await client.CreateLabelAsync(repository.Id, label.Name, label.Color, label.Description, cancellationToken).ConfigureAwait(false);
+            await client.CreateLabelAsync(ProjectAddress(repository), label.Name, label.Color, label.Description, cancellationToken).ConfigureAwait(false);
         }
         catch (HttpRequestException exception) when (exception.StatusCode == HttpStatusCode.Conflict)
         {
-            if (await client.FindLabelAsync(repository.Id, label.Name, cancellationToken).ConfigureAwait(false) is null)
+            if (await client.FindLabelAsync(ProjectAddress(repository), label.Name, cancellationToken).ConfigureAwait(false) is null)
             {
                 throw;
             }
@@ -180,7 +180,7 @@ public sealed partial class GitLabProvider(
 
     public async ValueTask<ProviderMergeRequest?> FindMergeRequestAsync(RepositoryRef repository, string sourceBranch, string targetBranch, CancellationToken cancellationToken)
     {
-        var mergeRequests = await client.FindMergeRequestsAsync(repository.Id, sourceBranch, targetBranch, cancellationToken).ConfigureAwait(false);
+        var mergeRequests = await client.FindMergeRequestsAsync(ProjectAddress(repository), sourceBranch, targetBranch, cancellationToken).ConfigureAwait(false);
         var match = mergeRequests.Count > 0 ? mergeRequests[0] : null;
         return match is null ? null : ToProviderMergeRequest(repository, match);
     }
@@ -188,14 +188,14 @@ public sealed partial class GitLabProvider(
     public async ValueTask<ProviderMergeRequest> CreateDraftMergeRequestAsync(CreateMergeRequestRequest request, CancellationToken cancellationToken)
     {
         var title = request.Title.StartsWith(DraftTitlePrefix, StringComparison.OrdinalIgnoreCase) ? request.Title : DraftTitlePrefix + request.Title;
-        var created = await client.CreateMergeRequestAsync(request.Repository.Id, request.SourceBranch, request.TargetBranch, title, request.Body, cancellationToken)
+        var created = await client.CreateMergeRequestAsync(ProjectAddress(request.Repository), request.SourceBranch, request.TargetBranch, title, request.Body, cancellationToken)
             .ConfigureAwait(false);
         return ToProviderMergeRequest(request.Repository, created);
     }
 
     public async ValueTask<ProviderMergeRequest> GetMergeRequestAsync(RepositoryRef repository, long number, CancellationToken cancellationToken)
     {
-        var mergeRequest = await client.GetMergeRequestAsync(repository.Id, number, cancellationToken).ConfigureAwait(false);
+        var mergeRequest = await client.GetMergeRequestAsync(ProjectAddress(repository), number, cancellationToken).ConfigureAwait(false);
         return ToProviderMergeRequest(repository, mergeRequest);
     }
 
@@ -204,7 +204,7 @@ public sealed partial class GitLabProvider(
         long number,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var notes = await client.GetMergeRequestNotesAsync(repository.Id, number, cancellationToken).ConfigureAwait(false);
+        var notes = await client.GetMergeRequestNotesAsync(ProjectAddress(repository), number, cancellationToken).ConfigureAwait(false);
         foreach (var note in notes)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -222,7 +222,7 @@ public sealed partial class GitLabProvider(
         long number,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var discussions = await client.GetMergeRequestDiscussionsAsync(repository.Id, number, cancellationToken).ConfigureAwait(false);
+        var discussions = await client.GetMergeRequestDiscussionsAsync(ProjectAddress(repository), number, cancellationToken).ConfigureAwait(false);
         foreach (var discussion in discussions)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -246,7 +246,7 @@ public sealed partial class GitLabProvider(
         long issueNumber,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var links = await client.GetIssueLinksAsync(repository.Id, issueNumber, cancellationToken).ConfigureAwait(false);
+        var links = await client.GetIssueLinksAsync(ProjectAddress(repository), issueNumber, cancellationToken).ConfigureAwait(false);
         foreach (var link in links)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -319,16 +319,7 @@ public sealed partial class GitLabProvider(
 
         var destinationPath = AttachmentFileNames.ResolveSafeDestination(destinationDirectory, attachment.SuggestedFileName);
         var totalRead = await ProviderRetryPolicy.SendAndMaterializeAsync(
-            async token =>
-            {
-                using var request = new HttpRequestMessage(HttpMethod.Get, attachment.Url);
-                if (httpClient == anonymousAttachmentClient)
-                {
-                    request.Options.Set(IssueAgent.Git.TlsHttpHandlerFactory.ValidatedAddressesOptionKey, attachment.ValidatedAddresses!);
-                }
-
-                return await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
-            },
+            token => SendAttachmentRequestAsync(attachment, httpClient, token),
             async (response, token) =>
             {
                 if (attachment.RequiresAttachmentContentDisposition &&
@@ -356,6 +347,43 @@ public sealed partial class GitLabProvider(
         return new DownloadedAttachment(destinationPath, Path.GetFileName(destinationPath), totalRead);
     }
 
+    /// <summary>Authentication follows only documented provider attachment redirects. Redirects to
+    /// arbitrary paths or hosts are rejected before a second credential-bearing request is sent.</summary>
+    private async Task<HttpResponseMessage> SendAttachmentRequestAsync(
+        ProviderAttachment attachment,
+        HttpClient initialClient,
+        CancellationToken cancellationToken)
+    {
+        var url = attachment.Url;
+        var client = initialClient;
+        for (var redirects = 0; ; redirects++)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            if (client == anonymousAttachmentClient)
+            {
+                request.Options.Set(IssueAgent.Git.TlsHttpHandlerFactory.ValidatedAddressesOptionKey, attachment.ValidatedAddresses!);
+            }
+
+            var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            if ((int)response.StatusCode is < 300 or >= 400)
+            {
+                return response;
+            }
+
+            var location = response.Headers.Location;
+            if (client != authenticatedAttachmentClient ||
+                location is null ||
+                redirects == 4 ||
+                !IsTrustedAttachmentHost(url = new Uri(url, location)))
+            {
+                response.Dispose();
+                throw new InvalidOperationException($"Attachment redirect from '{attachment.Url}' was not a trusted provider attachment URL.");
+            }
+
+            response.Dispose();
+        }
+    }
+
     private static ProviderIssue ToProviderIssue(RepositoryRef repository, GitLabIssue issue) => new(
         repository,
         issue.Iid,
@@ -377,6 +405,11 @@ public sealed partial class GitLabProvider(
         note.Author.Bot || string.Equals(note.Author.UserType, "bot", StringComparison.OrdinalIgnoreCase) ||
         note.Author.Username.EndsWith("-bot", StringComparison.OrdinalIgnoreCase) ||
         note.Author.Username.EndsWith("[bot]", StringComparison.Ordinal));
+
+    /// <summary>GitLab's REST API identifies projects by their namespace path. Repository IDs are
+    /// local workspace keys and must never be forwarded as provider project addresses.</summary>
+    private static string ProjectAddress(RepositoryRef repository) =>
+        $"{repository.OwnerOrNamespace}/{repository.Name}".Trim('/');
 
     /// <summary>Resolves the repository a linked GitLab issue belongs to. Returns
     /// <paramref name="rootRepository"/> unchanged for a same-project link — matched first by

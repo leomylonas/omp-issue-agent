@@ -22,6 +22,9 @@ data:
         {"type":"stat","title":"OMP Errors","targets":[{"expr":"rate(issueagent_omp_errors_total[5m])"}]},
         {"type":"stat","title":"Git/LFS Errors","targets":[{"expr":"rate(issueagent_git_errors_total[5m]) + rate(issueagent_lfs_errors_total[5m])"}]},
         {"type":"timeseries","title":"Active Operations","targets":[{"expr":"issueagent_operations_active"}]},
+        {"type":"stat","title":"Retry Attempts","targets":[{"expr":"increase(issueagent_retry_attempts_total[1h])"}]},
+        {"type":"stat","title":"Retry Exhausted","targets":[{"expr":"increase(issueagent_retry_exhausted_total[1h])"}]},
+        {"type":"stat","title":"Workspace Available","targets":[{"expr":"issueagent_workspace_available_bytes"}]},
         {"type":"stat","title":"Notification Failures","targets":[{"expr":"rate(issueagent_notifications_failures_total[5m])"}]}
       ]
     }

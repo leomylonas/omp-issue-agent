@@ -123,6 +123,20 @@ public sealed class OmpProcessClientTests
     }
 
     [Fact]
+    public async Task RunAsyncConvertsMalformedFramesIntoTerminalFailure()
+    {
+        await using var client = StartClient();
+        var session = await client.CreateSessionAsync("anthropic/claude-sonnet-5", CancellationToken.None);
+
+        var events = await CollectAsync(client.RunAsync(
+            new OmpRunRequest(session.SessionId, "/tmp", "malformed frame", new Dictionary<string, string>()),
+            CancellationToken.None));
+
+        var error = Assert.IsType<OmpErrorEvent>(Assert.Single(events));
+        Assert.Contains("malformed NDJSON", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RunAsyncToolCallAndResultShareCorrelationId()
     {
         await using var client = StartClient();

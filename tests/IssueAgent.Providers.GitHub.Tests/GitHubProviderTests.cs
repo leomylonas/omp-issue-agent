@@ -553,17 +553,54 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
     }
 
     [Fact]
-    public async Task GetMergeRequestCommentsAsyncUsesMergeRequestAttachmentProvenance()
+    public async Task GetMergeRequestCommentsAsyncIncludesSubmittedReviewSummaryWithProvenance()
     {
         fixture.Server
             .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/9/comments").UsingGet())
             .RespondWith(JsonResponse("""
                 [{"id":501,"user":{"login":"alice"},"body":"review comment","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z"}]
                 """));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls/9/reviews").UsingGet())
+            .RespondWith(JsonResponse("""
+                [
+                  {"id":601,"user":{"login":"bob"},"body":"Looks good.","submitted_at":"2024-01-02T00:00:00Z"},
+                  {"id":602,"user":{"login":"carol"},"body":"Draft only","submitted_at":null}
+                ]
+                """));
 
-        var comment = Assert.Single(await CollectAsync(fixture.Provider.GetMergeRequestCommentsAsync(Repository, 9, CancellationToken.None)));
+        var comments = await CollectAsync(fixture.Provider.GetMergeRequestCommentsAsync(Repository, 9, CancellationToken.None));
 
-        Assert.Equal(new AttachmentSource("merge-request-comment", "9", "501"), comment.Source);
+        Assert.Equal(
+            new AttachmentSource("merge-request-comment", "9", "501"),
+            comments.Single(comment => comment.Id == 501).Source);
+        var summary = comments.Single(comment => comment.Id == 601);
+        Assert.Equal("Looks good.", summary.Body);
+        Assert.Equal("bob", summary.AuthorLogin);
+        Assert.Equal(new AttachmentSource("merge-request-review-summary", "9", "601"), summary.Source);
+        Assert.DoesNotContain(comments, comment => comment.Id == 602);
+    }
+
+    [Fact]
+    public async Task GetMergeRequestCommentsAsyncPaginatesSubmittedReviewSummaries()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/9/comments").UsingGet())
+            .RespondWith(JsonResponse("[]"));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls/9/reviews").UsingGet())
+            .RespondWith(Response.Create()
+                .WithStatusCode(200)
+                .WithHeader("Content-Type", "application/json")
+                .WithHeader("Link", $"<{fixture.Server.Url}/api/v3/repos/octo/widgets/pulls/9/reviews?page=2>; rel=\"next\"")
+                .WithBody("""[{"id":601,"user":{"login":"alice"},"body":"first","submitted_at":"2024-01-01T00:00:00Z"}]"""));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls/9/reviews").WithParam("page", "2").UsingGet())
+            .RespondWith(JsonResponse("""[{"id":602,"user":{"login":"bob"},"body":"second","submitted_at":"2024-01-02T00:00:00Z"}]"""));
+
+        var comments = await CollectAsync(fixture.Provider.GetMergeRequestCommentsAsync(Repository, 9, CancellationToken.None));
+
+        Assert.Equal([601L, 602L], comments.Select(comment => comment.Id).OrderBy(id => id));
     }
 
     [Fact]
@@ -1021,6 +1058,35 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
             fixture.Provider.DownloadAttachmentAsync(attachment, destination, 1024, CancellationToken.None).AsTask());
     }
 
+    [Fact]
+    public async Task DownloadAttachmentAsyncRejectsUntrustedRedirectBeforeForwardingProviderAuthentication()
+    {
+        var authenticated = new RedirectingHttpMessageHandler(
+            HttpStatusCode.Found,
+            new Uri("https://attacker.example/file.png"));
+        var anonymous = new RecordingHttpMessageHandler();
+        var provider = new GitHubProvider(
+            null!, null!, null!, new HttpClient(), new HttpClient(authenticated), new HttpClient(anonymous),
+            ["github.example"], false, string.Empty, "github");
+        var attachment = new ProviderAttachment(
+            new Uri("https://github.example/user-attachments/files/1/file.png"),
+            "file.png",
+            null,
+            new AttachmentSource("issue-description", "7"),
+            false,
+            new HashSet<IPAddress> { IPAddress.Loopback });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            provider.DownloadAttachmentAsync(
+                attachment,
+                Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")),
+                1024,
+                CancellationToken.None).AsTask());
+
+        Assert.Equal(1, authenticated.RequestCount);
+        Assert.Equal(0, anonymous.RequestCount);
+    }
+
     private static WireMock.ResponseBuilders.IResponseBuilder JsonResponse(string body) =>
         Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/json").WithBody(body);
 
@@ -1045,6 +1111,20 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
             return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
             {
                 Content = new StringContent("attachment"),
+            });
+        }
+    }
+
+    private sealed class RedirectingHttpMessageHandler(HttpStatusCode statusCode, Uri location) : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            return Task.FromResult(new HttpResponseMessage(statusCode)
+            {
+                Headers = { Location = location },
             });
         }
     }

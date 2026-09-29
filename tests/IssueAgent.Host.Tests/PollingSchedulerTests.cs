@@ -33,6 +33,14 @@ public sealed class PollingSchedulerTests
     }
 
     [Fact]
+    public void MeasureWorkspaceAvailableBytesReturnsZeroForMissingWorkspace()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), $"issue-agent-missing-workspace-{Guid.NewGuid():N}");
+
+        Assert.Equal(0, PollingScheduler.MeasureWorkspaceAvailableBytes(missing));
+    }
+
+    [Fact]
     public void PollingEligibilityDefersRateLimitedProviderScopeUntilRetryWindowEnds()
     {
         var time = new AdjustableTimeProvider(DateTimeOffset.Parse("2026-01-01T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture));

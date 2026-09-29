@@ -44,7 +44,7 @@ public static class GitHubProviderFactory
         ConfigureGitHubHeaders(timelineHttpClient, configuration.Token);
         ConfigureGitHubHeaders(mutationHttpClient, configuration.Token);
 
-        var authenticatedAttachmentClient = CreateHttpClient(configuration.TlsTrust);
+        var authenticatedAttachmentClient = CreateHttpClient(configuration.TlsTrust, allowAutoRedirect: false);
         ConfigureGitHubHeaders(authenticatedAttachmentClient, configuration.Token);
         var anonymousAttachmentClient = new HttpClient(TlsHttpHandlerFactory.CreateForAnonymousAttachmentDownloads(configuration.TlsTrust));
 
@@ -81,8 +81,8 @@ public static class GitHubProviderFactory
         }
     }
 
-    private static HttpClient CreateHttpClient(TlsTrust tlsTrust, Uri? baseAddress = null) =>
-        new(TlsHttpHandlerFactory.Create(tlsTrust)) { BaseAddress = baseAddress };
+    private static HttpClient CreateHttpClient(TlsTrust tlsTrust, Uri? baseAddress = null, bool allowAutoRedirect = true) =>
+        new(TlsHttpHandlerFactory.Create(tlsTrust, allowAutoRedirect)) { BaseAddress = baseAddress };
 
     private static void ConfigureGitHubHeaders(HttpClient httpClient, string? token)
     {

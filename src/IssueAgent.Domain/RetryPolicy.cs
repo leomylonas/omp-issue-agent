@@ -65,7 +65,12 @@ public sealed record RetryPolicy
                 lastException = exception;
                 if (attempt < MaxAttempts)
                 {
+                    RetryTelemetry.RecordAttempt();
                     await Task.Delay(GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    RetryTelemetry.RecordExhausted();
                 }
             }
         }
@@ -93,7 +98,12 @@ public sealed record RetryPolicy
                 lastException = exception;
                 if (attempt < MaxAttempts)
                 {
+                    RetryTelemetry.RecordAttempt();
                     await Task.Delay(GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    RetryTelemetry.RecordExhausted();
                 }
             }
         }

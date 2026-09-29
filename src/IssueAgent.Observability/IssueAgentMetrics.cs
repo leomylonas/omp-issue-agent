@@ -17,6 +17,7 @@ public sealed class IssueAgentMetrics : IDisposable
     private readonly ConcurrentDictionary<long, long> activeOperationStarts = new();
     private long nextActiveOperationId;
     private long workspaceBytes;
+    private long workspaceAvailableBytes;
 
     public IssueAgentMetrics()
     {
@@ -37,6 +38,11 @@ public sealed class IssueAgentMetrics : IDisposable
             () => Interlocked.Read(ref workspaceBytes),
             unit: "By",
             description: "Current workspace storage usage.");
+        WorkspaceAvailableBytes = meter.CreateObservableGauge(
+            "issueagent.workspace.available",
+            () => Interlocked.Read(ref workspaceAvailableBytes),
+            unit: "By",
+            description: "Usable bytes remaining on the workspace volume.");
 
         PlanCount = meter.CreateCounter<long>("issueagent.plans.count", description: "Planning runs started.");
         PlanErrors = meter.CreateCounter<long>("issueagent.plans.errors", description: "Planning runs that failed.");
@@ -79,6 +85,8 @@ public sealed class IssueAgentMetrics : IDisposable
 
     public ObservableGauge<long> WorkspaceBytes { get; }
 
+    public ObservableGauge<long> WorkspaceAvailableBytes { get; }
+
     public IDisposable BeginActiveOperation()
     {
         var id = Interlocked.Increment(ref nextActiveOperationId);
@@ -88,6 +96,9 @@ public sealed class IssueAgentMetrics : IDisposable
 
     public void UpdateWorkspaceBytes(long value) =>
         Interlocked.Exchange(ref workspaceBytes, Math.Max(0, value));
+
+    public void UpdateWorkspaceAvailableBytes(long value) =>
+        Interlocked.Exchange(ref workspaceAvailableBytes, Math.Max(0, value));
 
     private double ObserveOldestActiveOperationAge()
     {

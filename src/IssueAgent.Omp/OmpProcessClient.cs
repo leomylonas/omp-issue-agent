@@ -91,18 +91,6 @@ public sealed class OmpProcessClient(
         OmpRunRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var events = await RunToListAsync(request, cancellationToken).ConfigureAwait(false);
-
-        foreach (var domainEvent in events)
-        {
-            yield return domainEvent;
-        }
-    }
-
-    private async Task<IReadOnlyList<OmpEvent>> RunToListAsync(
-        OmpRunRequest request,
-        CancellationToken cancellationToken)
-    {
         using var timeoutCts = request.Timeout is { } timeout && timeout > TimeSpan.Zero
             ? new CancellationTokenSource(timeout)
             : null;
@@ -110,79 +98,123 @@ public sealed class OmpProcessClient(
             ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
             : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
         var runToken = runCts.Token;
-        var events = new List<OmpEvent>();
+
+        if (Interlocked.CompareExchange(ref cancellationRequested, 0, 0) != 0)
+        {
+            Interlocked.Exchange(ref cancellationRequested, 0);
+            yield return new OmpErrorEvent(
+                request.SessionId,
+                DateTimeOffset.UtcNow,
+                "OMP run cancelled before prompt dispatch.",
+                true);
+            yield break;
+        }
+
         var prompt = $"Work exclusively in the repository at '{request.WorkingDirectory}'.\n\n{request.Prompt}";
+        Exception? dispatchFailure = null;
+        await dispatchGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
-            await dispatchGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
-            try
-            {
-                if (Interlocked.CompareExchange(ref cancellationRequested, 0, 0) != 0)
-                {
-                    Interlocked.Exchange(ref cancellationRequested, 0);
-                    events.Add(new OmpErrorEvent(
-                        request.SessionId,
-                        DateTimeOffset.UtcNow,
-                        "OMP run cancelled before prompt dispatch.",
-                        true));
-                    return events;
-                }
-
-                var response = await transport.SendCommandAsync(
+            await RequireSuccessAsync(
+                await transport.SendCommandAsync(
                     "prompt",
                     new JsonObject { ["message"] = prompt },
-                    runToken).ConfigureAwait(false);
-                await RequireSuccessAsync(response).ConfigureAwait(false);
-            }
-            finally
-            {
-                dispatchGate.Release();
-            }
-
-            var assistantText = new System.Text.StringBuilder();
-
-            await foreach (var frame in transport.Frames.WithCancellation(runToken).ConfigureAwait(false))
-            {
-                var domainEvent = BuildEvent(request.SessionId, frame);
-                if (domainEvent is OmpCompletedEvent && Volatile.Read(ref cancellationRequested) != 0)
-                {
-                    domainEvent = new OmpErrorEvent(request.SessionId, DateTimeOffset.UtcNow, "OMP run cancelled.", true);
-                }
-                if (domainEvent is OmpMessageEvent message)
-                {
-                    assistantText.Append(message.Text);
-                }
-
-                if (domainEvent is OmpCompletedEvent completed &&
-                    string.Equals(completed.ResultJson, "null", StringComparison.Ordinal) &&
-                    assistantText.Length > 0)
-                {
-                    domainEvent = completed with { ResultJson = assistantText.ToString() };
-                }
-
-                if (domainEvent is null)
-                {
-                    continue;
-                }
-
-                events.Add(domainEvent);
-                if (domainEvent is OmpCompletedEvent or OmpErrorEvent)
-                {
-                    break;
-                }
-            }
+                    runToken).ConfigureAwait(false)).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (
-            timeoutCts?.IsCancellationRequested == true && !cancellationToken.IsCancellationRequested)
+        catch (Exception exception)
         {
-            Interlocked.Exchange(ref cancellationRequested, 1);
-            await RequestAbortAsync(suppressErrors: true, cancellationToken: CancellationToken.None).ConfigureAwait(false);
-            Interlocked.Exchange(ref cancellationRequested, 0);
-            events.Add(new OmpErrorEvent(request.SessionId, DateTimeOffset.UtcNow, "OMP run timed out.", false));
+            dispatchFailure = exception;
+        }
+        finally
+        {
+            dispatchGate.Release();
         }
 
-        return events;
+        if (dispatchFailure is OperationCanceledException && cancellationToken.IsCancellationRequested)
+        {
+            throw dispatchFailure;
+        }
+
+        if (dispatchFailure is not null)
+        {
+            yield return new OmpErrorEvent(request.SessionId, DateTimeOffset.UtcNow, dispatchFailure.Message, false);
+            yield break;
+        }
+
+        var assistantText = new System.Text.StringBuilder();
+        await using var frames = transport.Frames
+            .WithCancellation(runToken)
+            .ConfigureAwait(false)
+            .GetAsyncEnumerator();
+        while (true)
+        {
+            var hasFrame = false;
+            JsonObject? frame = null;
+            Exception? frameReadFailure = null;
+            try
+            {
+                hasFrame = await frames.MoveNextAsync();
+                if (hasFrame)
+                {
+                    frame = frames.Current;
+                }
+            }
+            catch (Exception exception)
+            {
+                frameReadFailure = exception;
+            }
+
+            if (frameReadFailure is not null)
+            {
+                if (timeoutCts?.IsCancellationRequested == true && !cancellationToken.IsCancellationRequested)
+                {
+                    Interlocked.Exchange(ref cancellationRequested, 1);
+                    await RequestAbortAsync(suppressErrors: true, cancellationToken: CancellationToken.None).ConfigureAwait(false);
+                    Interlocked.Exchange(ref cancellationRequested, 0);
+                    yield return new OmpErrorEvent(request.SessionId, DateTimeOffset.UtcNow, "OMP run timed out.", false);
+                }
+                else
+                {
+                    yield return new OmpErrorEvent(request.SessionId, DateTimeOffset.UtcNow, frameReadFailure.Message, false);
+                }
+                yield break;
+            }
+
+            if (!hasFrame)
+            {
+                yield break;
+            }
+
+            var domainEvent = BuildEvent(request.SessionId, frame!);
+            if (domainEvent is OmpCompletedEvent && Volatile.Read(ref cancellationRequested) != 0)
+            {
+                domainEvent = new OmpErrorEvent(request.SessionId, DateTimeOffset.UtcNow, "OMP run cancelled.", true);
+            }
+            if (domainEvent is OmpMessageEvent message)
+            {
+                assistantText.Append(message.Text);
+            }
+
+            if (domainEvent is OmpCompletedEvent completed &&
+                string.Equals(completed.ResultJson, "null", StringComparison.Ordinal) &&
+                assistantText.Length > 0)
+            {
+                domainEvent = completed with { ResultJson = assistantText.ToString() };
+            }
+
+            if (domainEvent is null)
+            {
+                continue;
+            }
+
+            yield return domainEvent;
+            if (domainEvent is OmpCompletedEvent or OmpErrorEvent)
+            {
+                yield break;
+            }
+        }
     }
+
 
     public async ValueTask CancelAsync(string sessionId, CancellationToken cancellationToken)
     {

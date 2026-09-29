@@ -64,7 +64,9 @@ jobs:
           OPENAI_API_KEY: ci-smoke
         run: dotnet test tests/IssueAgent.Omp.Tests/IssueAgent.Omp.Tests.csproj --no-build --configuration Release --logger trx
       - name: Unit and provider-contract tests
-        run: dotnet test IssueAgent.slnx --no-build --configuration Release --logger trx
+        run: dotnet test IssueAgent.slnx --no-build --configuration Release --logger trx --filter "FullyQualifiedName!~EndToEndLifecycleTests"
+      - name: End-to-end lifecycle tests
+        run: dotnet test tests/IssueAgent.Workflow.Tests/IssueAgent.Workflow.Tests.csproj --no-build --configuration Release --logger trx --filter "FullyQualifiedName~EndToEndLifecycleTests"
       - name: Git and LFS integration tests
         run: dotnet test tests/IssueAgent.Git.Tests/IssueAgent.Git.Tests.csproj --no-build --configuration Release --logger trx
       - name: Install Helm
@@ -130,6 +132,7 @@ jobs:
           container_id="$(docker compose -f deploy/docker-compose.yml ps --quiet issue-agent)"
           trap 'docker compose -f deploy/docker-compose.yml down --volumes' EXIT
           test "$(docker inspect --format '{{.State.Running}} {{.State.Health.Status}}' "$container_id")" = "true healthy"
+          curl --fail --silent http://127.0.0.1:8080/health/live
           curl --fail --silent http://127.0.0.1:8080/health/ready
       - name: Validate Dockerfile
         run: docker buildx build --check --platform linux/amd64,linux/arm64 -f Dockerfile .
@@ -142,7 +145,9 @@ jobs:
           port="$(docker port "$container_id" 8080/tcp | sed 's/.*://')"
           for attempt in $(seq 1 40); do
             state="$(docker inspect --format '{{.State.Running}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$container_id")"
-            if [ "$state" = "true healthy" ] && curl --fail --silent "http://127.0.0.1:${port}/health/ready"; then
+            if [ "$state" = "true healthy" ] &&
+              curl --fail --silent "http://127.0.0.1:${port}/health/live" &&
+              curl --fail --silent "http://127.0.0.1:${port}/health/ready"; then
               exit 0
             fi
             if [ "$state" != "true starting" ] && [ "$state" != "true healthy" ]; then

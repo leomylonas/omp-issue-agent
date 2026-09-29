@@ -17,7 +17,7 @@ public static class GitLabProviderFactory
         var restHttpClient = CreateHttpClient(configuration.TlsTrust, configuration.ApiBaseUri);
         ConfigureHeaders(restHttpClient, configuration.Token);
 
-        var authenticatedAttachmentClient = CreateHttpClient(configuration.TlsTrust);
+        var authenticatedAttachmentClient = CreateHttpClient(configuration.TlsTrust, allowAutoRedirect: false);
         ConfigureHeaders(authenticatedAttachmentClient, configuration.Token);
         var anonymousAttachmentClient = new HttpClient(TlsHttpHandlerFactory.CreateForAnonymousAttachmentDownloads(configuration.TlsTrust));
 
@@ -55,8 +55,8 @@ public static class GitLabProviderFactory
         }
     }
 
-    private static HttpClient CreateHttpClient(TlsTrust tlsTrust, Uri? baseAddress = null) =>
-        new(TlsHttpHandlerFactory.Create(tlsTrust)) { BaseAddress = baseAddress };
+    private static HttpClient CreateHttpClient(TlsTrust tlsTrust, Uri? baseAddress = null, bool allowAutoRedirect = true) =>
+        new(TlsHttpHandlerFactory.Create(tlsTrust, allowAutoRedirect)) { BaseAddress = baseAddress };
 
     private static void ConfigureHeaders(HttpClient httpClient, string? token)
     {

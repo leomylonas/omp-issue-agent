@@ -36,6 +36,7 @@ public sealed partial class PollingScheduler(
         if (workspaceBytes is { } measuredBytes)
         {
             metrics.UpdateWorkspaceBytes(measuredBytes);
+            metrics.UpdateWorkspaceAvailableBytes(MeasureWorkspaceAvailableBytes(configuration.Workspace.RootPath));
         }
         var repositories = effectiveConfiguration.Providers
             .SelectMany(provider => provider.Repositories
@@ -247,6 +248,24 @@ public sealed partial class PollingScheduler(
                 RecurseSubdirectories = true,
                 AttributesToSkip = FileAttributes.ReparsePoint,
             }).Sum(path => new FileInfo(path).Length);
+        }
+        catch (IOException)
+        {
+            return 0;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return 0;
+        }
+    }
+
+    internal static long MeasureWorkspaceAvailableBytes(string rootPath)
+    {
+        try
+        {
+            return Directory.Exists(rootPath)
+                ? new DriveInfo(rootPath).AvailableFreeSpace
+                : 0;
         }
         catch (IOException)
         {

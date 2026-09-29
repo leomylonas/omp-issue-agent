@@ -1,3 +1,6 @@
+using System.Diagnostics.Metrics;
+using IssueAgent.Domain;
+
 namespace IssueAgent.Providers.Tests;
 
 public sealed class ProviderRetryPolicyTests
@@ -35,6 +38,43 @@ public sealed class ProviderRetryPolicyTests
 
         Assert.Equal(3, attempts);
         Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SendAsyncEmitsRetryAttemptMetric()
+    {
+        long retries = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Meter.Name == "IssueAgent" && instrument.Name == "issueagent.retry.attempts")
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, _, _) =>
+        {
+            if (instrument.Name == "issueagent.retry.attempts")
+            {
+                Interlocked.Add(ref retries, measurement);
+            }
+        });
+        listener.Start();
+
+        var attempts = 0;
+        using var response = await ProviderRetryPolicy.SendAsync(
+            _ => Task.FromResult(new HttpResponseMessage(
+                ++attempts == 1 ? System.Net.HttpStatusCode.ServiceUnavailable : System.Net.HttpStatusCode.OK)),
+            CancellationToken.None,
+            retryPolicy: new RetryPolicy
+            {
+                MaxAttempts = 2,
+                InitialDelay = TimeSpan.Zero,
+                MaxJitter = TimeSpan.Zero,
+            });
+
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        Assert.True(Interlocked.Read(ref retries) >= 1);
     }
 
     [Fact]

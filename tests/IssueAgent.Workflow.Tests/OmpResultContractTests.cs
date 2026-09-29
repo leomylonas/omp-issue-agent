@@ -38,6 +38,40 @@ public sealed class OmpResultContractTests
 
 
     [Fact]
+    public void PlanningPromptsRenderIssueAttachmentProvenance()
+    {
+        var context = CreateContext();
+        context = context with
+        {
+            PrimaryIssue = context.PrimaryIssue with
+            {
+                Attachments =
+                [
+                    new AttachmentReference(
+                        "https://example.test/evidence.log",
+                        "evidence.log",
+                        "/tmp/evidence.log",
+                        "issue-comment:1:7",
+                        42),
+                    new AttachmentReference(
+                        "https://example.test/large.zip",
+                        "large.zip",
+                        string.Empty,
+                        "issue-description:1",
+                        0,
+                        IsOmitted: true,
+                        OmissionReason: "Attachment exceeds the size limit."),
+                ],
+            },
+        };
+
+        var prompt = PlanningPromptBuilder.BuildInitialPlanPrompt(context);
+
+        Assert.Contains("AVAILABLE evidence.log (issue-comment:1:7): /tmp/evidence.log", prompt, StringComparison.Ordinal);
+        Assert.Contains("OMITTED large.zip (issue-description:1): Attachment exceeds the size limit.", prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ReplanPromptIncludesLinkedReviewFeedbackAndAttachments()
     {
         var context = CreateContext() with

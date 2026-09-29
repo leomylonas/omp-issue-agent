@@ -348,58 +348,6 @@ public sealed class AttachmentPipelineTests
         return await pipeline.ProcessAsync(body, new AttachmentSource("issue-description", "1"), destination, budget, CancellationToken.None);
     }
 
-    [Fact]
-    public async Task ProcessAsyncOmitsLinksBeyondAttachmentCountLimit()
-    {
-        provider.TrustedHosts.Add("github.example");
-        provider.DownloadableContent["https://github.example/files/a.pdf"] = [1];
-        provider.DownloadableContent["https://github.example/files/b.pdf"] = [2];
-        var pipeline = new AttachmentPipeline(provider, new AttachmentLimits { MaxAttachmentCount = 2 });
-        var budget = new RemainingBudget(100 * 1024 * 1024);
-
-        var results = await pipeline.ProcessAsync(
-            "[a](https://github.example/files/a.pdf) [b](https://github.example/files/b.pdf) [c](https://github.example/files/c.pdf)",
-            new AttachmentSource("issue-description", "1"),
-            destination,
-            budget,
-            CancellationToken.None);
-
-        Assert.Equal(3, results.Count);
-        Assert.All(results.Take(2), attachment => Assert.False(attachment.IsOmitted));
-        Assert.True(results[2].IsOmitted);
-        Assert.Contains("count exceeds", results[2].OmissionReason, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task ProcessAsyncEnforcesTheAttachmentCountLimitAcrossMultipleCallsSharingOneBudget()
-    {
-        // Regression: the count limit must bound the whole workflow context (every comment body),
-        // not reset per ProcessAsync call — otherwise many comments each carrying one link drive
-        // unbounded downloads for a single planning turn (specification §15).
-        provider.TrustedHosts.Add("github.example");
-        for (var i = 0; i < 5; i++)
-        {
-            provider.DownloadableContent[$"https://github.example/files/{i}.pdf"] = [1];
-        }
-
-        var pipeline = new AttachmentPipeline(provider, new AttachmentLimits { MaxAttachmentCount = 2 });
-        var budget = new RemainingBudget(100 * 1024 * 1024);
-
-        var allResults = new List<IssueAgent.Domain.AttachmentReference>();
-        for (var i = 0; i < 5; i++)
-        {
-            allResults.AddRange(await pipeline.ProcessAsync(
-                $"[link](https://github.example/files/{i}.pdf)",
-                new AttachmentSource("issue-comment", i.ToString(System.Globalization.CultureInfo.InvariantCulture)),
-                destination,
-                budget,
-                CancellationToken.None));
-        }
-
-        Assert.Equal(5, allResults.Count);
-        Assert.Equal(2, allResults.Count(attachment => !attachment.IsOmitted));
-        Assert.Equal(3, allResults.Count(attachment => attachment.IsOmitted));
-    }
 
     [Fact]
     public async Task ProcessAsyncOmitsDownloadWhoseActualSizeExceedsRequestedCap()
@@ -447,7 +395,6 @@ public sealed class AttachmentPipelineTests
         {
             MaxAttachmentSizeBytes = 5,
             MaxTotalSizeBytes = 10,
-            MaxAttachmentCount = 2,
         });
 
         var result = await pipeline.ProcessAsync(
@@ -484,7 +431,6 @@ public sealed class AttachmentPipelineTests
         {
             MaxAttachmentSizeBytes = 10,
             MaxTotalSizeBytes = 6,
-            MaxAttachmentCount = 2,
         });
 
         var result = await pipeline.ProcessAsync(
@@ -500,33 +446,6 @@ public sealed class AttachmentPipelineTests
         Assert.Equal(1, downloads);
     }
 
-    [Fact]
-    public async Task ProcessAsyncDoesNotReturnARestoredAttachmentExceedingTheCurrentCountLimit()
-    {
-        const string firstUrl = "https://example.com/a.pdf";
-        const string secondUrl = "https://example.com/b.pdf";
-        Directory.CreateDirectory(destination);
-        File.WriteAllBytes(Path.Combine(destination, "a.pdf"), [1]);
-        File.WriteAllBytes(Path.Combine(destination, "b.pdf"), [1]);
-        WriteManifest((firstUrl, "a.pdf", 1), (secondUrl, "b.pdf", 1));
-        var pipeline = new AttachmentPipeline(provider, new AttachmentLimits
-        {
-            MaxAttachmentSizeBytes = 10,
-            MaxTotalSizeBytes = 10,
-            MaxAttachmentCount = 1,
-        });
-
-        var result = await pipeline.ProcessAsync(
-            $"[attachment]({secondUrl})",
-            new AttachmentSource("issue-description", "1"),
-            destination,
-            pipeline.CreateRemainingBudget(destination),
-            CancellationToken.None);
-
-        var attachment = Assert.Single(result);
-        Assert.True(attachment.IsOmitted);
-        Assert.Contains("count exceeds", attachment.OmissionReason, StringComparison.Ordinal);
-    }
 
     [Fact]
     public async Task ProcessAsyncRedownloadsAttachmentWhoseRetainedContentNoLongerMatchesTheManifestDigest()

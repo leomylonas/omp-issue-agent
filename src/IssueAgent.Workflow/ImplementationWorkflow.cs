@@ -520,7 +520,7 @@ public sealed class ImplementationWorkflow(WorkflowDependencies deps)
                 cancellationToken).ConfigureAwait(false);
         }
 
-        await RefreshLinkedMergeRequestAsync(
+        mergeRequest = await RefreshLinkedMergeRequestAsync(
             config, checkpointState, checkpointContent, cancellationToken).ConfigureAwait(false);
         try
         {

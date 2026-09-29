@@ -1093,6 +1093,50 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
         Assert.Contains("not initialized", exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task EnsureBareRepositoryAsyncRejectsCachedOriginThatDiffersFromConfiguredCloneUrl()
+    {
+        var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out _));
+        await manager.EnsureBareRepositoryAsync("origin-validation", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var barePath = Path.Combine(reposRoot, "origin-validation");
+        RunGitCli(barePath, "remote", "set-url", "origin", Path.Combine(reposRoot, "unexpected.git"));
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            manager.EnsureBareRepositoryAsync("origin-validation", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None).AsTask());
+
+        Assert.Contains("origin URL different", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EnsureBareRepositoryAsyncMigratesLegacyOriginRefspecBeforeReuse()
+    {
+        var remotePath = Track(TempGitFixtures.CreateRemoteRepositoryWithCommit(out _));
+        await manager.EnsureBareRepositoryAsync("legacy-refspec", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+        var barePath = Path.Combine(reposRoot, "legacy-refspec");
+        RunGitCli(barePath, "config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*");
+
+        await manager.EnsureBareRepositoryAsync("legacy-refspec", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
+
+        using var repository = new Repository(barePath);
+        var origin = repository.Network.Remotes["origin"];
+        Assert.Equal(
+            ["+refs/heads/*:refs/remotes/origin/*"],
+            origin.FetchRefSpecs.Select(spec => spec.Specification));
+    }
+
+    [Theory]
+    [InlineData(GitAuthenticationMode.Ssh, "https://git.example/repository.git")]
+    [InlineData(GitAuthenticationMode.Token, "ssh://git@git.example/repository.git")]
+    public async Task EnsureBareRepositoryAsyncRejectsAuthenticationModeThatDoesNotMatchCloneUrl(
+        GitAuthenticationMode mode,
+        string cloneUrl)
+    {
+        var authentication = new GitAuthentication { Mode = mode };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            manager.EnsureBareRepositoryAsync("scheme-mismatch", cloneUrl, authentication, CancellationToken.None).AsTask());
+    }
+
     private static object? InvokeCredentialsHandler(
         GitAuthentication authentication,
         string? expectedTransportAuthority,

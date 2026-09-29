@@ -93,6 +93,9 @@ def main():
             hang_abort = "abort timeout" in request.get("message", "")
             if "hang" in request.get("message", ""):
                 continue
+            if "malformed frame" in request.get("message", ""):
+                print("{not-json", flush=True)
+                continue
             send({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": '{"summary":"done"}'}})
             send({
                 "type": "tool_execution_start",

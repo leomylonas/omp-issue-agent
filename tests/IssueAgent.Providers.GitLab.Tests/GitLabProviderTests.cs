@@ -9,7 +9,7 @@ namespace IssueAgent.Providers.GitLab.Tests;
 
 public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
 {
-    private static readonly RepositoryRef Repository = new("123", "octo", "widgets");
+    private static readonly RepositoryRef Repository = new("123", "123", "");
 
     private readonly GitLabProviderFixture fixture;
 
@@ -172,6 +172,23 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
         var defaultBranch = await fixture.Provider.GetDefaultBranchAsync(Repository, CancellationToken.None);
 
         Assert.Equal("develop", defaultBranch);
+    }
+
+    [Fact]
+    public async Task GetIssueAsyncUsesConfiguredOwnerAndNameInsteadOfRepositoryStorageId()
+    {
+        var repository = new RepositoryRef("workspace-key", "group/subgroup", "widgets");
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/group/subgroup/widgets/issues/7").UsingGet())
+            .RespondWith(JsonResponse("""
+                {"iid":7,"title":"Bug report","description":"Steps","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-02T00:00:00Z","labels":[],"assignees":[]}
+                """));
+
+        var issue = await fixture.Provider.GetIssueAsync(repository, 7, CancellationToken.None);
+
+        Assert.Equal(7, issue.Number);
+        Assert.DoesNotContain(fixture.Server.LogEntries, entry =>
+            entry.RequestMessage!.Path.Contains("workspace-key", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -396,7 +413,7 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     }
 
     [Fact]
-    public async Task GetIssueRelationshipsAsyncEmitsAGitLabApiConsumableIdForACrossProjectLink()
+    public async Task GetIssueRelationshipsAsyncUsesLinkedOwnerAndNameForACrossProjectLink()
     {
         fixture.Server
             .Given(Request.Create().WithPath("/api/v4/projects/123/issues/7/links").UsingGet())
@@ -406,7 +423,7 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
                 ]
                 """));
         fixture.Server
-            .Given(Request.Create().WithPath("/api/v4/projects/456/issues/42").UsingGet())
+            .Given(Request.Create().WithPath("/api/v4/projects/other/project/issues/42").UsingGet())
             .RespondWith(JsonResponse("""{"iid":42,"title":"Other issue","description":"d","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","labels":[],"assignees":[]}"""));
 
         var relationships = await CollectAsync(fixture.Provider.GetIssueRelationshipsAsync(Repository, 7, CancellationToken.None));
@@ -416,9 +433,6 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
         Assert.Equal("other", linked.Repository.OwnerOrNamespace);
         Assert.Equal("project", linked.Repository.Name);
 
-        // The synthesized Id must be directly usable as a GitLab API project identifier: fetching
-        // the linked issue with it must succeed rather than 404 (the exact defect this regression
-        // test defends against).
         var linkedIssue = await fixture.Provider.GetIssueAsync(linked.Repository, linked.IssueNumber, CancellationToken.None);
         Assert.Equal("Other issue", linkedIssue.Title);
     }

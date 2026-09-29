@@ -327,6 +327,18 @@ public sealed partial class GitHubProvider(
                     comment.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)),
             };
         }
+
+        var reviews = await GetAllReadPagesAsync<GitHubReviewResponse>(
+            new Uri($"repos/{repository.OwnerOrNamespace}/{repository.Name}/pulls/{checked((int)number)}/reviews?per_page=100", UriKind.Relative),
+            cancellationToken).ConfigureAwait(false);
+        foreach (var review in reviews)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (review.SubmittedAt is not null && !string.IsNullOrWhiteSpace(review.Body))
+            {
+                yield return ToProviderComment(review, number);
+            }
+        }
     }
 
     public async IAsyncEnumerable<ProviderReviewThread> GetReviewThreadsAsync(
@@ -393,16 +405,7 @@ public sealed partial class GitHubProvider(
 
         var destinationPath = AttachmentFileNames.ResolveSafeDestination(destinationDirectory, attachment.SuggestedFileName);
         var totalRead = await ProviderRetryPolicy.SendAndMaterializeAsync(
-            async token =>
-            {
-                using var request = new HttpRequestMessage(HttpMethod.Get, attachment.Url);
-                if (httpClient == anonymousAttachmentClient)
-                {
-                    request.Options.Set(IssueAgent.Git.TlsHttpHandlerFactory.ValidatedAddressesOptionKey, attachment.ValidatedAddresses!);
-                }
-
-                return await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
-            },
+            token => SendAttachmentRequestAsync(attachment, httpClient, token),
             async (response, token) =>
             {
                 if (attachment.RequiresAttachmentContentDisposition &&
@@ -428,6 +431,43 @@ public sealed partial class GitHubProvider(
             cancellationToken,
             retryPolicy).ConfigureAwait(false);
         return new DownloadedAttachment(destinationPath, Path.GetFileName(destinationPath), totalRead);
+    }
+
+    /// <summary>Authentication follows only documented provider attachment redirects. Redirects to
+    /// arbitrary paths or hosts are rejected before a second credential-bearing request is sent.</summary>
+    private async Task<HttpResponseMessage> SendAttachmentRequestAsync(
+        ProviderAttachment attachment,
+        HttpClient initialClient,
+        CancellationToken cancellationToken)
+    {
+        var url = attachment.Url;
+        var client = initialClient;
+        for (var redirects = 0; ; redirects++)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            if (client == anonymousAttachmentClient)
+            {
+                request.Options.Set(IssueAgent.Git.TlsHttpHandlerFactory.ValidatedAddressesOptionKey, attachment.ValidatedAddresses!);
+            }
+
+            var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            if ((int)response.StatusCode is < 300 or >= 400)
+            {
+                return response;
+            }
+
+            var location = response.Headers.Location;
+            if (client != authenticatedAttachmentClient ||
+                location is null ||
+                redirects == 4 ||
+                !IsTrustedAttachmentHost(url = new Uri(url, location)))
+            {
+                response.Dispose();
+                throw new InvalidOperationException($"Attachment redirect from '{attachment.Url}' was not a trusted provider attachment URL.");
+            }
+
+            response.Dispose();
+        }
     }
     private async Task<T> ExecuteReadWithCancellationAsync<T>(
         Func<CancellationToken, Task<IApiResponse<T>>> execute,
@@ -678,6 +718,34 @@ public sealed partial class GitHubProvider(
         [property: JsonPropertyName("user")] GitHubCommentAuthor User);
 
     private sealed record GitHubCommentAuthor([property: JsonPropertyName("login")] string Login);
+    private static ProviderComment ToProviderComment(GitHubReviewResponse review, long mergeRequestNumber) => new(
+        review.Id,
+        review.User.Login,
+        review.Body!,
+        review.SubmittedAt!.Value,
+        review.SubmittedAt.Value,
+        new AttachmentSource(
+            "merge-request-review-summary",
+            mergeRequestNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            review.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+        review.User.Login.EndsWith("[bot]", StringComparison.Ordinal));
+
+    private sealed class GitHubReviewResponse
+    {
+        public long Id { get; init; }
+
+        public string? Body { get; init; }
+
+        public DateTimeOffset? SubmittedAt { get; init; }
+
+        public GitHubReviewAuthor User { get; init; } = new();
+    }
+
+    private sealed class GitHubReviewAuthor
+    {
+        public string Login { get; init; } = "ghost";
+    }
+
     private static ProviderMergeRequest ToProviderMergeRequest(RepositoryRef repository, PullRequest pullRequest) => new(
         repository,
         pullRequest.Number,

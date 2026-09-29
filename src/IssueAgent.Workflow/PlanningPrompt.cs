@@ -148,11 +148,15 @@ public static class PlanningPromptBuilder
             {
                 if (attachment.IsOmitted)
                 {
-                    builder.Append("- OMITTED ").Append(attachment.SafeFileName).Append(": ").AppendLine(attachment.OmissionReason);
+                    builder.Append("- OMITTED ").Append(attachment.SafeFileName)
+                        .Append(" (").Append(attachment.Provenance).Append("): ")
+                        .AppendLine(attachment.OmissionReason);
                 }
                 else
                 {
-                    builder.Append("- ").Append(attachment.SafeFileName).Append(" (").Append(attachment.LocalPath).AppendLine(")");
+                    builder.Append("- AVAILABLE ").Append(attachment.SafeFileName)
+                        .Append(" (").Append(attachment.Provenance).Append("): ")
+                        .AppendLine(attachment.LocalPath);
                 }
             }
         }

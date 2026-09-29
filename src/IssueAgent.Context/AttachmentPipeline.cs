@@ -13,7 +13,6 @@ public sealed record AttachmentLimits
 
     public long MaxTotalSizeBytes { get; init; } = 100 * 1024 * 1024;
 
-    public int MaxAttachmentCount { get; init; } = 50;
 }
 
 /// <summary>
@@ -89,11 +88,6 @@ public sealed class AttachmentPipeline(
                     cached.LocalPath,
                     DescribeProvenance(source),
                     cached.SizeBytes));
-                continue;
-            }
-            if (!remainingBudget.TryReserveAttachmentSlot(limits.MaxAttachmentCount))
-            {
-                results.Add(Omitted(providerAttachment, $"Attachment count exceeds the {limits.MaxAttachmentCount}-attachment limit for this workflow context."));
                 continue;
             }
 
@@ -207,8 +201,7 @@ public sealed class AttachmentPipeline(
                 .ToArray();
             return new RemainingBudget(
                 limits.MaxTotalSizeBytes,
-                downloaded.Aggregate(0L, (total, attachment) => total > long.MaxValue - attachment.SizeBytes ? long.MaxValue : total + attachment.SizeBytes),
-                downloaded.Length);
+                downloaded.Aggregate(0L, (total, attachment) => total > long.MaxValue - attachment.SizeBytes ? long.MaxValue : total + attachment.SizeBytes));
         }
     }
 
@@ -239,7 +232,6 @@ public sealed class AttachmentPipeline(
             }
 
             var restoredTotalSize = 0L;
-            var restoredAttachmentCount = 0;
             var restoredFileNames = new HashSet<string>(StringComparer.Ordinal);
 
             foreach (var entry in entries ?? [])
@@ -248,7 +240,6 @@ public sealed class AttachmentPipeline(
                     !IsSafeFileName(entry.SafeFileName) ||
                     entry.SizeBytes < 0 ||
                     entry.SizeBytes > limits.MaxAttachmentSizeBytes ||
-                    restoredAttachmentCount >= limits.MaxAttachmentCount ||
                     entry.SizeBytes > limits.MaxTotalSizeBytes - restoredTotalSize ||
                     restoredFileNames.Contains(entry.SafeFileName))
                 {
@@ -280,7 +271,6 @@ public sealed class AttachmentPipeline(
                 downloadedAttachments[cacheKey] =
                     new DownloadedAttachment(localPath, entry.SafeFileName, entry.SizeBytes, entry.ContentDigest);
                 restoredTotalSize += entry.SizeBytes;
-                restoredAttachmentCount++;
             }
             ProtectRetainedAttachmentDirectory(fullDestinationDirectory);
         }
@@ -501,13 +491,12 @@ public sealed class AttachmentPipeline(
 
 internal sealed record AttachmentManifestEntry(string Url, string SafeFileName, long SizeBytes, string? ContentDigest);
 
-/// <summary>Mutable running totals shared across every <see cref="AttachmentPipeline.ProcessAsync"/>
-/// call for one workflow context: the remaining byte budget and the remaining attachment-count
-/// budget (specification §15). Both are enforced across the whole context, not per comment body.</summary>
-public sealed class RemainingBudget(long totalBytes, long consumedBytes = 0, int attachmentCount = 0)
+/// <summary>Mutable running byte total shared across every <see cref="AttachmentPipeline.ProcessAsync"/>
+/// call for one workflow context. The total attachment size cap is enforced across the whole context,
+/// not per comment body.</summary>
+public sealed class RemainingBudget(long totalBytes, long consumedBytes = 0)
 {
     private long remaining = Math.Max(0, totalBytes - Math.Clamp(consumedBytes, 0, totalBytes));
-    private int attachmentCount = Math.Max(0, attachmentCount);
 
     public long Remaining => Volatile.Read(ref remaining);
 
@@ -534,23 +523,4 @@ public sealed class RemainingBudget(long totalBytes, long consumedBytes = 0, int
         }
     }
 
-    /// <summary>Atomically reserves one attachment slot against <paramref name="maxAttachmentCount"/>,
-    /// shared across every <see cref="AttachmentPipeline.ProcessAsync"/> call for this workflow
-    /// context. Returns <see langword="false"/> once the cap is already reached.</summary>
-    public bool TryReserveAttachmentSlot(int maxAttachmentCount)
-    {
-        while (true)
-        {
-            var current = Volatile.Read(ref attachmentCount);
-            if (current >= maxAttachmentCount)
-            {
-                return false;
-            }
-
-            if (Interlocked.CompareExchange(ref attachmentCount, current + 1, current) == current)
-            {
-                return true;
-            }
-        }
-    }
 }

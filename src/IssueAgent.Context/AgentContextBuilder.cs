@@ -60,6 +60,7 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
         return new AgentContext(primaryIssue, relatedIssues, currentPlan, mergeRequestContext, workflowState);
     }
 
+
     private async Task<IssueContext> BuildIssueContextAsync(
         RepositoryRef repository,
         long issueNumber,
