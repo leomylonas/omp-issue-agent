@@ -5,11 +5,15 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="WireMock.Net" />
     <PackageReference Include="xunit.v3" />
     <PackageReference Include="xunit.runner.visualstudio" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="../../src/IssueAgent.Workflow/IssueAgent.Workflow.csproj" />
+    <ProjectReference Include="../../src/IssueAgent.Configuration/IssueAgent.Configuration.csproj" />
+    <ProjectReference Include="../../src/IssueAgent.Providers.GitHub/IssueAgent.Providers.GitHub.csproj" />
+    <ProjectReference Include="../../src/IssueAgent.Providers.GitLab/IssueAgent.Providers.GitLab.csproj" />
   </ItemGroup>
 </Project>

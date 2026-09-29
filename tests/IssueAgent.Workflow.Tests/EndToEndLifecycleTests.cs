@@ -1,9 +1,15 @@
 using System.Diagnostics;
+using IssueAgent.Configuration;
 using IssueAgent.Context;
 using IssueAgent.Domain;
 using IssueAgent.Git;
 using IssueAgent.Omp;
 using IssueAgent.Providers;
+using IssueAgent.Providers.GitHub;
+using IssueAgent.Providers.GitLab;
+using WireMock.RequestBuilders;
+using WireMock.ResponseBuilders;
+using WireMock.Server;
 
 namespace IssueAgent.Workflow.Tests;
 
@@ -19,6 +25,67 @@ public sealed class EndToEndLifecycleTests : IDisposable
     [Fact]
     public Task AssignmentLifecycleMaterializesLfsContentBeforePublication() =>
         RunLifecycleAsync(includeLfsAsset: true);
+
+    [Theory]
+    [InlineData(ProviderKind.GitHub)]
+    [InlineData(ProviderKind.GitLab)]
+    public async Task ProviderBackedDiscoveryAndCanonicalStateMutationSurviveRestart(ProviderKind kind)
+    {
+        using var server = WireMockServer.Start();
+        var repository = kind == ProviderKind.GitHub
+            ? new RepositoryRef("github/octo/widgets", "octo", "widgets")
+            : new RepositoryRef("123", "123", "");
+        var canonicalBody = CanonicalCommentMarkdown.Render(new CanonicalCommentContent(
+            "Validate titles.",
+            ["Validation occurs at the boundary."],
+            null,
+            CanonicalStateSerializer.ToDocument(new WorkflowState(
+                new WorkflowId(Guid.Parse("11111111-1111-1111-1111-111111111111")),
+                WorkflowPhase.Planning,
+                WorkflowOperationalState.Working,
+                null,
+                1,
+                null,
+                "session-1",
+                "agent/1-title",
+                "main",
+                "base",
+                DateTimeOffset.Parse("2024-06-01T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture)),
+                null)));
+        var provider = CreateProviderAndFixture(server, kind, canonicalBody);
+
+        var discovered = new List<IssueSummary>();
+        await foreach (var issue in provider.DiscoverAssignedOpenIssuesAsync(
+            repository, "issue-agent", DateTimeOffset.MinValue, TestContext.Current.CancellationToken))
+        {
+            discovered.Add(issue);
+        }
+
+        Assert.Single(discovered);
+        Assert.Equal(1, discovered[0].Number);
+
+        var created = await provider.CreateIssueCommentAsync(
+            repository,
+            1,
+            canonicalBody,
+            TestContext.Current.CancellationToken);
+        await provider.UpdateIssueCommentAsync(
+            repository,
+            1,
+            created.Id,
+            created.Body,
+            TestContext.Current.CancellationToken);
+
+        // A new provider instance represents a host restart. The persisted canonical comment is
+        // returned by the provider fixture rather than by an in-process fake.
+        var restartedProvider = CreateProvider(server, kind);
+        var canonical = await CanonicalCommentLocator.FindAsync(
+            restartedProvider, repository, 1, TestContext.Current.CancellationToken, "issue-agent");
+
+        Assert.NotNull(canonical);
+        Assert.Equal(created.Id, canonical.Id);
+        Assert.Contains(CanonicalCommentMarkdown.StateLocatorMarker, canonical.Body, StringComparison.Ordinal);
+    }
 
     private async Task RunLifecycleAsync(bool includeLfsAsset)
     {
@@ -84,6 +151,40 @@ public sealed class EndToEndLifecycleTests : IDisposable
             planningOmp.RunRequests.Concat(replanOmp.RunRequests).Concat(implementationOmp.RunRequests).Concat(revisionOmp.RunRequests),
             request => Assert.Equal("session-1", request.SessionId));
     }
+
+    private static IGitProvider CreateProviderAndFixture(WireMockServer server, ProviderKind kind, string canonicalBody)
+    {
+        var body = System.Text.Json.JsonSerializer.Serialize(canonicalBody);
+        if (kind == ProviderKind.GitHub)
+        {
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody("""[{"number":1,"title":"Guard titles","body":"Empty titles fail.","created_at":"2024-06-01T00:00:00Z","updated_at":"2024-06-01T00:00:00Z","state":"open","assignees":[{"login":"issue-agent"}],"labels":[]}]"""));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/comments").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody(CommentJson(body, true, true)));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/comments").UsingPost()).RespondWith(Response.Create().WithStatusCode(201).WithHeader("Content-Type", "application/json").WithBody(CommentJson(body, true, false)));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/comments/10").UsingPatch()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody(CommentJson(body, true, false)));
+        }
+        else
+        {
+            server.Given(Request.Create().WithPath("/api/v4/projects/123/issues").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody("""[{"iid":1,"title":"Guard titles","description":"Empty titles fail.","created_at":"2024-06-01T00:00:00Z","updated_at":"2024-06-01T00:00:00Z","state":"opened","assignees":[{"username":"issue-agent"}],"labels":[]}]"""));
+            server.Given(Request.Create().WithPath("/api/v4/projects/123/issues/1/notes").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody(CommentJson(body, false, true)));
+            server.Given(Request.Create().WithPath("/api/v4/projects/123/issues/1/notes").UsingPost()).RespondWith(Response.Create().WithStatusCode(201).WithHeader("Content-Type", "application/json").WithBody(CommentJson(body, false, false)));
+            server.Given(Request.Create().WithPath("/api/v4/projects/123/issues/1/notes/10").UsingPut()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody(CommentJson(body, false, false)));
+        }
+
+        return CreateProvider(server, kind);
+    }
+    private static string CommentJson(string body, bool gitHub, bool array) =>
+        (array ? "[" : string.Empty) +
+        """{"id":10,"body":""" + body +
+        (gitHub
+            ? ""","created_at":"2024-06-01T00:00:00Z","updated_at":"2024-06-01T00:00:00Z","user":{"login":"issue-agent","type":"Bot"}}"""
+            : ""","created_at":"2024-06-01T00:00:00Z","updated_at":"2024-06-01T00:00:00Z","author":{"username":"issue-agent","bot":true}}""") +
+        (array ? "]" : string.Empty);
+
+
+    private static IGitProvider CreateProvider(WireMockServer server, ProviderKind kind) =>
+        kind == ProviderKind.GitHub
+            ? GitHubProviderFactory.Create(new GitHubProviderConfiguration("github", new Uri(server.Url! + "/"), null, ["github.example"]))
+            : GitLabProviderFactory.Create(new GitLabProviderConfiguration("gitlab", new Uri(server.Url! + "/api/v4/"), null, ["gitlab.example"]));
 
     private static AgentContextBuilder CreateContextBuilder(FakeGitProvider provider) => new(
         provider,

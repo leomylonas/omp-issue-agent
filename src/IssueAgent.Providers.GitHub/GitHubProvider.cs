@@ -463,7 +463,8 @@ public sealed partial class GitHubProvider(
                 !IsTrustedAttachmentHost(url = new Uri(url, location)))
             {
                 response.Dispose();
-                throw new InvalidOperationException($"Attachment redirect from '{attachment.Url}' was not a trusted provider attachment URL.");
+                throw new AttachmentRedirectRejectedException(
+                    $"Attachment redirect from '{attachment.Url}' was not a trusted provider attachment URL.");
             }
 
             response.Dispose();
@@ -600,47 +601,80 @@ public sealed partial class GitHubProvider(
             catch (RateLimitExceededException exception)
             {
                 var delay = GetRateLimitRetryAfter(exception, attempt);
-                PollingRateLimitScheduling.ThrowIfEnabled(delay);
                 if (attempt >= retryPolicy.MaxAttempts)
                 {
+                    RetryTelemetry.RecordExhausted();
+                    PollingRateLimitScheduling.ThrowIfEnabled(delay);
                     throw;
                 }
 
+                PollingRateLimitScheduling.ThrowIfEnabled(delay);
+                RetryTelemetry.RecordAttempt();
                 await DelayForProviderInstructionAsync(delay, cancellationToken).ConfigureAwait(false);
             }
             catch (SecondaryRateLimitExceededException exception)
             {
                 var delay = GetRetryAfter(exception) ?? GetRateLimitFallbackDelay(attempt);
-                PollingRateLimitScheduling.ThrowIfEnabled(delay);
                 if (attempt >= retryPolicy.MaxAttempts)
                 {
+                    RetryTelemetry.RecordExhausted();
+                    PollingRateLimitScheduling.ThrowIfEnabled(delay);
                     throw;
                 }
 
+                PollingRateLimitScheduling.ThrowIfEnabled(delay);
+                RetryTelemetry.RecordAttempt();
                 await DelayForProviderInstructionAsync(delay, cancellationToken).ConfigureAwait(false);
             }
             catch (ApiException exception) when ((int)exception.StatusCode == (int)HttpStatusCode.TooManyRequests)
             {
                 var delay = GetRetryAfter(exception) ?? GetRateLimitFallbackDelay(attempt);
-                PollingRateLimitScheduling.ThrowIfEnabled(delay);
                 if (attempt >= retryPolicy.MaxAttempts)
                 {
+                    RetryTelemetry.RecordExhausted();
+                    PollingRateLimitScheduling.ThrowIfEnabled(delay);
                     throw;
                 }
 
+                PollingRateLimitScheduling.ThrowIfEnabled(delay);
+                RetryTelemetry.RecordAttempt();
                 await DelayForProviderInstructionAsync(delay, cancellationToken).ConfigureAwait(false);
             }
-            catch (ApiException exception) when (isIdempotent && ((int)exception.StatusCode == (int)HttpStatusCode.RequestTimeout || (int)exception.StatusCode >= 500) && attempt < retryPolicy.MaxAttempts)
+            catch (ApiException exception) when ((int)exception.StatusCode == (int)HttpStatusCode.RequestTimeout || (int)exception.StatusCode >= 500)
             {
-                await Task.Delay(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+                if (isIdempotent && attempt < retryPolicy.MaxAttempts)
+                {
+                    RetryTelemetry.RecordAttempt();
+                    await Task.Delay(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                RetryTelemetry.RecordExhausted();
+                throw;
             }
-            catch (HttpRequestException) when (isIdempotent && attempt < retryPolicy.MaxAttempts)
+            catch (HttpRequestException)
             {
-                await Task.Delay(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+                if (isIdempotent && attempt < retryPolicy.MaxAttempts)
+                {
+                    RetryTelemetry.RecordAttempt();
+                    await Task.Delay(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                RetryTelemetry.RecordExhausted();
+                throw;
             }
-            catch (OperationCanceledException) when (isIdempotent && !cancellationToken.IsCancellationRequested && attempt < retryPolicy.MaxAttempts)
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                await Task.Delay(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+                if (isIdempotent && attempt < retryPolicy.MaxAttempts)
+                {
+                    RetryTelemetry.RecordAttempt();
+                    await Task.Delay(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                RetryTelemetry.RecordExhausted();
+                throw;
             }
         }
     }

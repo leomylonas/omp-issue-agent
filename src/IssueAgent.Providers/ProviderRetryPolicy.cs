@@ -61,13 +61,27 @@ public static class ProviderRetryPolicy
 
                 await DelayForRetryAsync(delay, cancellationToken).ConfigureAwait(false);
             }
-            catch (HttpRequestException) when (isIdempotent && attempt < retryPolicy.MaxAttempts)
+            catch (HttpRequestException)
             {
-                await DelayForRetryAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+                if (isIdempotent && attempt < retryPolicy.MaxAttempts)
+                {
+                    await DelayForRetryAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                RetryTelemetry.RecordExhausted();
+                throw;
             }
-            catch (OperationCanceledException) when (isIdempotent && !cancellationToken.IsCancellationRequested && attempt < retryPolicy.MaxAttempts)
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                await DelayForRetryAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+                if (isIdempotent && attempt < retryPolicy.MaxAttempts)
+                {
+                    await DelayForRetryAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                RetryTelemetry.RecordExhausted();
+                throw;
             }
         }
     }
@@ -94,15 +108,27 @@ public static class ProviderRetryPolicy
             {
                 response = await send(cancellationToken).ConfigureAwait(false);
             }
-            catch (HttpRequestException) when (attempt < retryPolicy.MaxAttempts)
+            catch (HttpRequestException)
             {
-                await DelayForRetryAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
-                continue;
+                if (attempt < retryPolicy.MaxAttempts)
+                {
+                    await DelayForRetryAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                RetryTelemetry.RecordExhausted();
+                throw;
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && attempt < retryPolicy.MaxAttempts)
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                await DelayForRetryAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
-                continue;
+                if (attempt < retryPolicy.MaxAttempts)
+                {
+                    await DelayForRetryAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                RetryTelemetry.RecordExhausted();
+                throw;
             }
 
             using (response)
@@ -135,17 +161,38 @@ public static class ProviderRetryPolicy
                 {
                     return await materialize(response, cancellationToken).ConfigureAwait(false);
                 }
-                catch (HttpRequestException) when (attempt < retryPolicy.MaxAttempts)
+                catch (HttpRequestException)
                 {
-                    await DelayForRetryAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+                    if (attempt < retryPolicy.MaxAttempts)
+                    {
+                        await DelayForRetryAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    RetryTelemetry.RecordExhausted();
+                    throw;
                 }
-                catch (IOException) when (attempt < retryPolicy.MaxAttempts)
+                catch (IOException)
                 {
-                    await DelayForRetryAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+                    if (attempt < retryPolicy.MaxAttempts)
+                    {
+                        await DelayForRetryAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    RetryTelemetry.RecordExhausted();
+                    throw;
                 }
-                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && attempt < retryPolicy.MaxAttempts)
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
-                    await DelayForRetryAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+                    if (attempt < retryPolicy.MaxAttempts)
+                    {
+                        await DelayForRetryAsync(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    RetryTelemetry.RecordExhausted();
+                    throw;
                 }
             }
         }

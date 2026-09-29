@@ -1,4 +1,5 @@
 using System.Net;
+using System.Diagnostics.Metrics;
 using System.Reflection;
 using IssueAgent.Providers;
 using WireMock.RequestBuilders;
@@ -82,6 +83,48 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
         Assert.Equal(
             [TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(2)],
             chunks);
+    }
+
+    [Fact]
+    public async Task GitHubRestRetryEmitsExhaustionMetricForTerminalTransientFailure()
+    {
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/7").UsingGet())
+            .RespondWith(Response.Create()
+                .WithStatusCode(500)
+                .WithBody("""{"message":"server error"}"""));
+        var provider = GitHubProviderFactory.Create(new GitHubProviderConfiguration(
+            "github",
+            new Uri(fixture.Server.Url! + "/"),
+            null,
+            ["github.example"],
+            Retry: new IssueAgent.Domain.RetryPolicy
+            {
+                MaxAttempts = 1,
+                InitialDelay = TimeSpan.Zero,
+                MaxJitter = TimeSpan.Zero,
+            }));
+        long exhausted = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Meter.Name == "IssueAgent" && instrument.Name == "issueagent.retry.exhausted")
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, _, _) =>
+        {
+            if (instrument.Name == "issueagent.retry.exhausted")
+            {
+                Interlocked.Add(ref exhausted, measurement);
+            }
+        });
+        listener.Start();
+
+        await Assert.ThrowsAsync<Octokit.ApiException>(() => provider.GetIssueAsync(Repository, 7, CancellationToken.None).AsTask());
+
+        Assert.True(Interlocked.Read(ref exhausted) >= 1);
     }
     [Fact]
     public async Task DiscoverAssignedOpenIssuesAsyncExcludesPullRequestsAndIssuesBeforeStartDate()
@@ -1076,7 +1119,7 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
             false,
             new HashSet<IPAddress> { IPAddress.Loopback });
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        await Assert.ThrowsAsync<AttachmentRedirectRejectedException>(() =>
             provider.DownloadAttachmentAsync(
                 attachment,
                 Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")),

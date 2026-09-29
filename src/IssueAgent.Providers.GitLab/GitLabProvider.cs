@@ -377,7 +377,8 @@ public sealed partial class GitLabProvider(
                 !IsTrustedAttachmentHost(url = new Uri(url, location)))
             {
                 response.Dispose();
-                throw new InvalidOperationException($"Attachment redirect from '{attachment.Url}' was not a trusted provider attachment URL.");
+                throw new AttachmentRedirectRejectedException(
+                    $"Attachment redirect from '{attachment.Url}' was not a trusted provider attachment URL.");
             }
 
             response.Dispose();

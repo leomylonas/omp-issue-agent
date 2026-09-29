@@ -276,12 +276,9 @@ public sealed class AttachmentPipelineTests
     }
 
     [Fact]
-    public async Task ProcessAsyncOmitsRatherThanCrashesOnADownloadTransportFailureSuchAsABlockedRedirect()
+    public async Task ProcessAsyncOmitsRatherThanCrashesOnADownloadTransportFailure()
     {
-        // Regression: the anonymous attachment client disables AllowAutoRedirect so an unvalidated
-        // 3xx to an internal/loopback/cloud-metadata endpoint is never followed (specification §15).
-        // A blocked redirect surfaces as HttpRequestException from EnsureSuccessStatusCode; one bad
-        // link must be omitted, not crash the whole ProcessAsync call for every other link.
+        // One failed download must not abort the context assembled from the remaining human input.
         provider.TrustedHosts.Add("github.example");
         provider.AttachmentDownloadOverride = (_, _, _) => throw new HttpRequestException("Response status code does not indicate success: 302 (Found).", null, System.Net.HttpStatusCode.Found);
 
@@ -290,6 +287,20 @@ public sealed class AttachmentPipelineTests
         var attachment = Assert.Single(results);
         Assert.True(attachment.IsOmitted);
         Assert.Contains("download failed", attachment.OmissionReason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ProcessAsyncOmitsRejectedProviderAttachmentRedirectRatherThanAbortingTheContext()
+    {
+        provider.TrustedHosts.Add("github.example");
+        provider.AttachmentDownloadOverride = (_, _, _) =>
+            throw new AttachmentRedirectRejectedException("Attachment redirect was not a trusted provider attachment URL.");
+
+        var results = await RunProcessAsync("[redirect](https://github.example/files/redirect.pdf)");
+
+        var attachment = Assert.Single(results);
+        Assert.True(attachment.IsOmitted);
+        Assert.Contains("redirect was rejected", attachment.OmissionReason, StringComparison.Ordinal);
     }
 
     [Theory]

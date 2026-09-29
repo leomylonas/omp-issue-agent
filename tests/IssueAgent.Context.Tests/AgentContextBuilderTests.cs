@@ -201,6 +201,33 @@ public sealed class AgentContextBuilderTests
     }
 
     [Fact]
+    public async Task BuildMergeRequestContextAsyncExcludesFlatCommentsDuplicatedByReviewThreads()
+    {
+        var provider = new FakeGitProvider();
+        var mergeRequestKey = (Repository.Id, 9L);
+        var timestamp = DateTimeOffset.UtcNow;
+        provider.MergeRequestComments[mergeRequestKey] =
+        [
+            new ProviderComment(1, "bob", "General feedback", timestamp, timestamp, new AttachmentSource("merge-request-comment", "9"), false),
+            new ProviderComment(2, "carol", "Please fix this line", timestamp, timestamp, new AttachmentSource("merge-request-comment", "9"), false),
+        ];
+        provider.ReviewThreads[mergeRequestKey] =
+        [
+            new ProviderReviewThread("thread-1", false,
+            [
+                new ProviderComment(2, "carol", "Please fix this line", timestamp, timestamp, new AttachmentSource("merge-request-review-comment", "9", "thread-1"), false),
+            ]),
+        ];
+        var mergeRequest = new ProviderMergeRequest(Repository, 9, "agent/issue-1", "main", "Fix bug", "Implements the plan", true, false, false, new AttachmentSource("merge-request-description", "9"));
+        var builder = new AgentContextBuilder(provider, new AttachmentPipeline(provider, new AttachmentLimits()), new AgentContextBuilderOptions());
+
+        var context = await builder.BuildMergeRequestContextAsync(Repository, mergeRequest, destination, new RemainingBudget(1000), CancellationToken.None);
+
+        Assert.Equal([1L], context.Comments.Select(comment => comment.CommentId));
+        Assert.Equal([2L], context.ReviewThreads.Select(comment => comment.CommentId));
+    }
+
+    [Fact]
     public async Task BuildAsyncReusesAttachmentsAndRetainsBudgetAcrossContextRebuilds()
     {
         var provider = new FakeGitProvider();

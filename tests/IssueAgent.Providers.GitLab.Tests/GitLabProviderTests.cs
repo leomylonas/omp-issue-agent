@@ -643,6 +643,39 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
             fixture.Provider.DownloadAttachmentAsync(attachment, destination, 1024, CancellationToken.None).AsTask());
     }
 
+    [Fact]
+    public async Task DownloadAttachmentAsyncRejectsUntrustedRedirectBeforeForwardingProviderAuthentication()
+    {
+        var authenticated = new RedirectingHttpMessageHandler(
+            HttpStatusCode.Found,
+            new Uri("https://attacker.example/file.png"));
+        var anonymous = new RecordingHttpMessageHandler();
+        var provider = new GitLabProvider(
+            new GitLabApiClient(new HttpClient(), RetryPolicy.Default),
+            new HttpClient(authenticated),
+            new HttpClient(anonymous),
+            ["gitlab.example"],
+            string.Empty,
+            "gitlab");
+        var attachment = new ProviderAttachment(
+            new Uri("https://gitlab.example/uploads/0123456789abcdef0123456789abcdef/file.png"),
+            "file.png",
+            null,
+            new AttachmentSource("issue-description", "7"),
+            false,
+            new HashSet<IPAddress> { IPAddress.Loopback });
+
+        await Assert.ThrowsAsync<AttachmentRedirectRejectedException>(() =>
+            provider.DownloadAttachmentAsync(
+                attachment,
+                Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")),
+                1024,
+                CancellationToken.None).AsTask());
+
+        Assert.Equal(1, authenticated.RequestCount);
+        Assert.Equal(0, anonymous.RequestCount);
+    }
+
     private static WireMock.ResponseBuilders.IResponseBuilder JsonResponse(string body) =>
         Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/json").WithBody(body);
 
@@ -655,6 +688,20 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
         }
 
         return results;
+    }
+
+    private sealed class RedirectingHttpMessageHandler(HttpStatusCode statusCode, Uri location) : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            return Task.FromResult(new HttpResponseMessage(statusCode)
+            {
+                Headers = { Location = location },
+            });
+        }
     }
 
     private sealed class RecordingHttpMessageHandler : HttpMessageHandler

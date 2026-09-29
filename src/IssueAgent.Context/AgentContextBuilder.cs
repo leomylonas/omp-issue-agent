@@ -169,7 +169,7 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
             .ProcessAsync(mergeRequest.Description, mergeRequest.DescriptionSource, attachmentsDestinationDirectory, remainingBudget, cancellationToken)
             .ConfigureAwait(false));
 
-        var comments = new List<HumanComment>();
+        var comments = new List<ProviderComment>();
         await foreach (var comment in provider.GetMergeRequestCommentsAsync(repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false))
         {
             if (comment.IsBot && options.IgnoreBotComments ||
@@ -178,17 +178,17 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
                 continue;
             }
 
-            comments.Add(new HumanComment(comment.AuthorLogin, comment.CreatedAt, comment.Body, UpdatedAt: comment.UpdatedAt, CommentId: comment.Id));
-            attachments.AddRange(await attachmentPipeline
-                .ProcessAsync(comment.Body, comment.Source, attachmentsDestinationDirectory, remainingBudget, cancellationToken)
-                .ConfigureAwait(false));
+            comments.Add(comment);
         }
 
+        var discussionNoteIds = new HashSet<long>();
         var reviewThreads = new List<HumanComment>();
+        var reviewThreadComments = new List<ProviderComment>();
         await foreach (var thread in provider.GetReviewThreadsAsync(repository, mergeRequest.Number, cancellationToken).ConfigureAwait(false))
         {
             foreach (var comment in thread.Comments)
             {
+                discussionNoteIds.Add(comment.Id);
                 if (comment.IsBot && options.IgnoreBotComments ||
                     await IsAuthoritativeCanonicalCommentAsync(comment, cancellationToken).ConfigureAwait(false))
                 {
@@ -196,13 +196,32 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
                 }
 
                 reviewThreads.Add(new HumanComment(comment.AuthorLogin, comment.CreatedAt, comment.Body, thread.Id, thread.IsResolved, comment.UpdatedAt, comment.Id));
-                attachments.AddRange(await attachmentPipeline
-                    .ProcessAsync(comment.Body, comment.Source, attachmentsDestinationDirectory, remainingBudget, cancellationToken)
-                    .ConfigureAwait(false));
+                reviewThreadComments.Add(comment);
             }
         }
 
-        return new MergeRequestContext(mergeRequest.Number, mergeRequest.Description, comments, reviewThreads, attachments);
+        var flatComments = new List<HumanComment>(comments.Count);
+        foreach (var comment in comments)
+        {
+            if (discussionNoteIds.Contains(comment.Id))
+            {
+                continue;
+            }
+
+            flatComments.Add(new HumanComment(comment.AuthorLogin, comment.CreatedAt, comment.Body, UpdatedAt: comment.UpdatedAt, CommentId: comment.Id));
+            attachments.AddRange(await attachmentPipeline
+                .ProcessAsync(comment.Body, comment.Source, attachmentsDestinationDirectory, remainingBudget, cancellationToken)
+                .ConfigureAwait(false));
+        }
+
+        foreach (var comment in reviewThreadComments)
+        {
+            attachments.AddRange(await attachmentPipeline
+                .ProcessAsync(comment.Body, comment.Source, attachmentsDestinationDirectory, remainingBudget, cancellationToken)
+                .ConfigureAwait(false));
+        }
+
+        return new MergeRequestContext(mergeRequest.Number, mergeRequest.Description, flatComments, reviewThreads, attachments);
     }
 
     private ValueTask<bool> IsAuthoritativeCanonicalCommentAsync(ProviderComment comment, CancellationToken cancellationToken)

@@ -78,6 +78,81 @@ public sealed class ProviderRetryPolicyTests
     }
 
     [Fact]
+    public async Task SendAsyncEmitsExhaustionMetricForTerminalTransportFailure()
+    {
+        long exhausted = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Meter.Name == "IssueAgent" && instrument.Name == "issueagent.retry.exhausted")
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, _, _) =>
+        {
+            if (instrument.Name == "issueagent.retry.exhausted")
+            {
+                Interlocked.Add(ref exhausted, measurement);
+            }
+        });
+        listener.Start();
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => ProviderRetryPolicy.SendAsync(
+            _ => Task.FromException<HttpResponseMessage>(new HttpRequestException("connection reset")),
+            CancellationToken.None,
+            retryPolicy: new RetryPolicy
+            {
+                MaxAttempts = 1,
+                InitialDelay = TimeSpan.Zero,
+                MaxJitter = TimeSpan.Zero,
+            }));
+
+        Assert.True(Interlocked.Read(ref exhausted) >= 1);
+    }
+
+
+    [Fact]
+    public async Task SendAsyncEmitsExhaustionMetricForAFilteredTransportFailure()
+    {
+        long exhausted = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Meter.Name == "IssueAgent" && instrument.Name == "issueagent.retry.exhausted")
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, _, _) =>
+        {
+            if (instrument.Name == "issueagent.retry.exhausted")
+            {
+                Interlocked.Add(ref exhausted, measurement);
+            }
+        });
+        listener.Start();
+
+        var attempts = 0;
+        await Assert.ThrowsAsync<HttpRequestException>(() => ProviderRetryPolicy.SendAsync(
+            _ =>
+            {
+                attempts++;
+                return Task.FromException<HttpResponseMessage>(new HttpRequestException("connection reset"));
+            },
+            CancellationToken.None,
+            isIdempotent: false,
+            retryPolicy: new RetryPolicy
+            {
+                MaxAttempts = 2,
+                InitialDelay = TimeSpan.Zero,
+                MaxJitter = TimeSpan.Zero,
+            }));
+
+        Assert.Equal(1, attempts);
+        Assert.True(Interlocked.Read(ref exhausted) >= 1);
+    }
+    [Fact]
     public async Task SendAsyncRetriesA429EvenForANonIdempotentPost()
     {
         var attempts = 0;

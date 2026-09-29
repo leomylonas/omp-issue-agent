@@ -154,6 +154,11 @@ public sealed class AttachmentPipeline(
                 DeletePartialFile(partialPath);
                 results.Add(Omitted(providerAttachment, $"Attachment exceeds the {perAttachmentCap}-byte limit for this download."));
             }
+            catch (AttachmentRedirectRejectedException)
+            {
+                DeletePartialFile(partialPath);
+                results.Add(Omitted(providerAttachment, "Attachment redirect was rejected because its destination was not a trusted provider attachment URL."));
+            }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 DeletePartialFile(partialPath);

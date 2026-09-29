@@ -215,3 +215,7 @@ public sealed class AttachmentNotClassifiedException(string message) : Exception
 /// <summary>Thrown when a downloaded attachment exceeds the caller-supplied size cap. The caller
 /// omits the attachment rather than failing the workflow.</summary>
 public sealed class AttachmentTooLargeException(string message) : Exception(message);
+
+/// <summary>Thrown when a provider attachment redirect is rejected before it can be followed.
+/// The rejected destination remains unrequested, preserving the attachment SSRF boundary.</summary>
+public sealed class AttachmentRedirectRejectedException(string message) : Exception(message);
