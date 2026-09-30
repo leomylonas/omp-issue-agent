@@ -654,7 +654,8 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
             .RespondWith(JsonResponse("""
                 [
                   {"id":1,"user":{"login":"alice"},"body":"human comment","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z"},
-                  {"id":2,"user":{"login":"dependabot[bot]"},"body":"bot comment","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z"}
+                  {"id":2,"user":{"login":"dependabot[bot]"},"body":"bot comment","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z"},
+                  {"id":3,"user":null,"body":"comment from deleted account","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z"}
                 ]
                 """));
 
@@ -662,6 +663,9 @@ public sealed class GitHubProviderTests : IClassFixture<GitHubProviderFixture>
 
         Assert.False(comments.Single(c => c.AuthorLogin == "alice").IsBot);
         Assert.True(comments.Single(c => c.AuthorLogin == "dependabot[bot]").IsBot);
+        var deletedAuthorComment = comments.Single(c => c.Id == 3);
+        Assert.Equal("ghost", deletedAuthorComment.AuthorLogin);
+        Assert.False(deletedAuthorComment.IsBot);
     }
 
     [Fact]

@@ -163,6 +163,24 @@ public sealed class AgentContextBuilderTests
     }
 
     [Fact]
+    public async Task CaptureRelatedIssueSnapshotAsyncIncludesRelatedHumanCommentsAndAttachmentLinks()
+    {
+        var provider = new FakeGitProvider();
+        provider.AddIssue(Repository, 1, "Primary", "primary");
+        provider.AddIssue(Repository, 2, "Related", "related");
+        provider.AddRelationship(Repository, 1, "related", Repository, 2);
+        var options = new AgentContextBuilderOptions { AllowedRepositories = [Repository] };
+        var builder = new AgentContextBuilder(provider, new AttachmentPipeline(provider, options.AttachmentLimits), options);
+
+        var before = await builder.CaptureRelatedIssueSnapshotAsync(Repository, 1, CancellationToken.None);
+        provider.AddComment(Repository, 2, "alice", "[requirements](https://example.test/requirements.pdf)");
+        var after = await builder.CaptureRelatedIssueSnapshotAsync(Repository, 1, CancellationToken.None);
+
+        Assert.NotEqual(before, after);
+        Assert.Contains(after, stamp => stamp.Contains("requirements.pdf", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task BuildAsyncStopsAtZeroTraversalDepth()
     {
         var provider = new FakeGitProvider();

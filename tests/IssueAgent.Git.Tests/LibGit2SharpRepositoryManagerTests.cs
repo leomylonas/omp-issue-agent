@@ -820,6 +820,9 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
         await manager.EnsureBareRepositoryAsync("repo-ssh-submodule", remotePath, TempGitFixtures.AnonymousAuthentication(), CancellationToken.None);
         var worktreePath = Track(Path.Combine(TempGitFixtures.CreateTempDirectory(), "wt"));
         await manager.CreateWorktreeAsync("repo-ssh-submodule", "wt-ssh-submodule", worktreePath, "agent/issue-1", baseCommit, CancellationToken.None);
+        // A previous checkout can leave a mutable local URL behind. SSH updates must still use the
+        // authoritative URL resolved from the committed .gitmodules entry.
+        RunGitCli(worktreePath, "config", "submodule.lib/dependency.url", "git@example.test:/untrusted.git");
         var sshAuthentication = new GitAuthentication
         {
             Mode = GitAuthenticationMode.Ssh,
@@ -827,7 +830,7 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
             SshTrust = new SshTrust { Mode = SshHostVerificationMode.None },
         };
 
-        WithFakeCommand("ssh", $"#!/bin/sh\nexec git-upload-pack \"{submoduleSourcePath}\"\n", () =>
+        WithFakeCommand("ssh", $"#!/bin/sh\ncase \"$*\" in\n  *\"{submoduleSourcePath}\"*) exec git-upload-pack \"{submoduleSourcePath}\" ;;\n  *) exit 77 ;;\nesac\n", () =>
             manager.UpdateSubmodulesAsync("repo-ssh-submodule", worktreePath, remoteUrl => GitUrlHost.TryGetHost(remoteUrl) == "example.test" ? sshAuthentication : null, CancellationToken.None).AsTask().GetAwaiter().GetResult());
 
         Assert.True(File.Exists(Path.Combine(worktreePath, "lib", "dependency", "README.md")));

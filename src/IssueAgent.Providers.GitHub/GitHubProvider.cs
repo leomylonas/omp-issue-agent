@@ -139,7 +139,7 @@ public sealed partial class GitHubProvider(
         long issueNumber,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var comments = await GetAllReadPagesAsync<IssueComment>(
+        var comments = await GetAllJsonPagesAsync<GitHubCommentResponse>(
             new Uri($"repos/{repository.OwnerOrNamespace}/{repository.Name}/issues/{checked((int)issueNumber)}/comments?per_page=100", UriKind.Relative),
             cancellationToken).ConfigureAwait(false);
 
@@ -328,7 +328,7 @@ public sealed partial class GitHubProvider(
             };
         }
 
-        var reviews = await GetAllReadPagesAsync<GitHubReviewResponse>(
+        var reviews = await GetAllJsonPagesAsync<GitHubReviewResponse>(
             new Uri($"repos/{repository.OwnerOrNamespace}/{repository.Name}/pulls/{checked((int)number)}/reviews?per_page=100", UriKind.Relative),
             cancellationToken).ConfigureAwait(false);
         foreach (var review in reviews)
@@ -525,6 +525,39 @@ public sealed partial class GitHubProvider(
 
         return results;
     }
+
+    /// <summary>Uses System.Text.Json for comment pages because GitHub represents a deleted
+    /// comment author as <c>"user": null</c>, which Octokit's generated comment model rejects.</summary>
+    private async Task<IReadOnlyList<T>> GetAllJsonPagesAsync<T>(Uri initialUri, CancellationToken cancellationToken)
+    {
+        var results = new List<T>();
+        var visitedPageUris = new HashSet<string>(StringComparer.Ordinal);
+        var nextUri = initialUri;
+        do
+        {
+            var pageUri = nextUri.IsAbsoluteUri ? nextUri : new Uri(mutationClient.BaseAddress!, nextUri);
+            if (!visitedPageUris.Add(pageUri.AbsoluteUri))
+            {
+                throw new InvalidOperationException($"GitHub REST pagination repeated page URI '{pageUri}'.");
+            }
+
+            using var response = await ProviderRetryPolicy.SendAsync(
+                token => mutationClient.GetAsync(nextUri, HttpCompletionOption.ResponseHeadersRead, token),
+                cancellationToken,
+                retryPolicy: retryPolicy).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            DeferSuccessfulQuotaExhaustion(response.Headers.ToDictionary(header => header.Key, header => string.Join(',', header.Value), StringComparer.OrdinalIgnoreCase));
+            var page = await response.Content.ReadFromJsonAsync<List<T>>(cancellationToken: cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("GitHub returned an empty comment page.");
+            results.AddRange(page);
+            nextUri = GetNextPageUri(
+                response.Headers.ToDictionary(header => header.Key, header => string.Join(',', header.Value), StringComparer.OrdinalIgnoreCase),
+                mutationClient.BaseAddress!);
+        }
+        while (nextUri is not null);
+
+        return results;
+    }
     private static Uri? GetNextPageUri(IReadOnlyDictionary<string, string> headers, Uri baseAddress)
     {
         if (!headers.TryGetValue("Link", out var links))
@@ -558,6 +591,7 @@ public sealed partial class GitHubProvider(
 
         return null;
     }
+
 
     private static ProviderComment ToProviderComment(IssueComment comment, long issueNumber) => new(
         comment.Id,
@@ -779,50 +813,65 @@ public sealed partial class GitHubProvider(
 
     private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(5);
 
-    private static ProviderComment ToProviderComment(GitHubCommentResponse comment, long issueNumber) => new(
-        comment.Id,
-        comment.User.Login,
-        comment.Body,
-        comment.CreatedAt,
-        comment.UpdatedAt ?? comment.CreatedAt,
-        new AttachmentSource("issue-comment", issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture), comment.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)),
-        comment.User.Login.EndsWith("[bot]", StringComparison.Ordinal));
+    private static ProviderComment ToProviderComment(GitHubCommentResponse comment, long issueNumber)
+    {
+        var author = comment.User?.Login ?? "ghost";
+        return new ProviderComment(
+            comment.Id,
+            author,
+            comment.Body,
+            comment.CreatedAt,
+            comment.UpdatedAt ?? comment.CreatedAt,
+            new AttachmentSource("issue-comment", issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture), comment.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+            author.EndsWith("[bot]", StringComparison.Ordinal));
+    }
 
     private sealed record GitHubCommentResponse(
         [property: JsonPropertyName("id")] long Id,
         [property: JsonPropertyName("body")] string Body,
         [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
         [property: JsonPropertyName("updated_at")] DateTimeOffset? UpdatedAt,
-        [property: JsonPropertyName("user")] GitHubCommentAuthor User);
+        [property: JsonPropertyName("user")] GitHubCommentAuthor? User);
 
     private sealed record GitHubCommentAuthor([property: JsonPropertyName("login")] string Login);
-    private static ProviderComment ToProviderComment(GitHubReviewResponse review, long mergeRequestNumber) => new(
-        review.Id,
-        review.User.Login,
-        review.Body!,
-        review.SubmittedAt!.Value,
-        review.SubmittedAt.Value,
-        new AttachmentSource(
-            "merge-request-review-summary",
-            mergeRequestNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            review.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)),
-        review.User.Login.EndsWith("[bot]", StringComparison.Ordinal));
+
+    private static ProviderComment ToProviderComment(GitHubReviewResponse review, long mergeRequestNumber)
+    {
+        var author = review.User?.Login ?? "ghost";
+        return new ProviderComment(
+            review.Id,
+            author,
+            review.Body!,
+            review.SubmittedAt!.Value,
+            review.SubmittedAt.Value,
+            new AttachmentSource(
+                "merge-request-review-summary",
+                mergeRequestNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                review.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+            author.EndsWith("[bot]", StringComparison.Ordinal));
+    }
 
     private sealed class GitHubReviewResponse
     {
+        [JsonPropertyName("id")]
         public long Id { get; init; }
 
+        [JsonPropertyName("body")]
         public string? Body { get; init; }
 
+        [JsonPropertyName("submitted_at")]
         public DateTimeOffset? SubmittedAt { get; init; }
 
-        public GitHubReviewAuthor User { get; init; } = new();
+        [JsonPropertyName("user")]
+        public GitHubReviewAuthor? User { get; init; }
     }
 
     private sealed class GitHubReviewAuthor
     {
+        [JsonPropertyName("login")]
         public string Login { get; init; } = "ghost";
     }
+
 
     private static ProviderMergeRequest ToProviderMergeRequest(RepositoryRef repository, PullRequest pullRequest) => new(
         repository,

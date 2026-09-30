@@ -50,9 +50,10 @@ public sealed partial class GitSshTransport
     public static ValueTask PushCommitAsync(string worktreePath, string authoritativeRemoteUrl, string commitSha, string branchName, GitAuthentication authentication, CancellationToken cancellationToken) =>
         RunGitAsync(["push", authoritativeRemoteUrl, "--", $"{commitSha}:refs/heads/{branchName}"], worktreePath, authoritativeRemoteUrl, authentication, cancellationToken);
 
-    /// <summary>Initializes and fetches one submodule through the Git/SSH transport.</summary>
-    public static ValueTask UpdateSubmoduleAsync(string repositoryPath, string submodulePath, string remoteUrl, GitAuthentication authentication, CancellationToken cancellationToken) =>
-        RunGitAsync(["submodule", "update", "--init", "--", submodulePath], repositoryPath, remoteUrl, authentication, cancellationToken);
+    /// <summary>Initializes and fetches one submodule through the Git/SSH transport, overriding
+    /// the mutable local submodule remote with the committed, resolved authoritative URL.</summary>
+    public static ValueTask UpdateSubmoduleAsync(string repositoryPath, string submoduleName, string submodulePath, string authoritativeRemoteUrl, GitAuthentication authentication, CancellationToken cancellationToken) =>
+        RunGitAsync(["-c", $"submodule.{submoduleName}.url={authoritativeRemoteUrl}", "submodule", "update", "--init", "--", submodulePath], repositoryPath, authoritativeRemoteUrl, authentication, cancellationToken);
 
     private static async ValueTask<string> GetOriginUrlAsync(string workingDirectory, CancellationToken cancellationToken)
     {

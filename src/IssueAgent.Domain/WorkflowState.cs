@@ -112,7 +112,9 @@ public sealed record WorkflowState(
     string? ExpectedImplementationHead = null,
     ImplementationPublicationStage? PublicationStage = null,
     string? ImplementationInputDigest = null,
-    string? RebasedPublicationBase = null)
+    string? RebasedPublicationBase = null,
+    string? PendingRevisionHead = null,
+    string? RevisionRemoteLease = null)
 {
     public void EnsureValid()
     {
@@ -139,6 +141,11 @@ public sealed record WorkflowState(
         if (PublicationStage is not null && ExpectedImplementationHead is null)
         {
             throw new InvalidOperationException("Implementation publication stage requires an expected implementation head.");
+        }
+
+        if ((PendingRevisionHead is null) != (RevisionRemoteLease is null))
+        {
+            throw new InvalidOperationException("Pending revision head and remote lease must be recorded together.");
         }
     }
 }

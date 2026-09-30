@@ -33,6 +33,8 @@ public sealed record CanonicalStateDocument
     public string? PublicationStage { get; init; }
     public string? ImplementationInputDigest { get; init; }
     public string? RebasedPublicationBase { get; init; }
+    public string? PendingRevisionHead { get; init; }
+    public string? RevisionRemoteLease { get; init; }
     public string? PullOrMergeRequest { get; init; }
     public required DateTimeOffset UpdatedAt { get; init; }
     public DateTimeOffset? ReviewFeedbackCutoff { get; init; }
@@ -96,6 +98,8 @@ public static partial class CanonicalStateSerializer
         PublicationStage = state.PublicationStage is { } publicationStage ? ToKebabCase(publicationStage.ToString()) : null,
         ImplementationInputDigest = state.ImplementationInputDigest,
         RebasedPublicationBase = state.RebasedPublicationBase,
+        PendingRevisionHead = state.PendingRevisionHead,
+        RevisionRemoteLease = state.RevisionRemoteLease,
         PullOrMergeRequest = pullOrMergeRequest,
         UpdatedAt = state.UpdatedAt,
         ReviewFeedbackCutoff = state.ReviewFeedbackCutoff,
@@ -117,6 +121,11 @@ public static partial class CanonicalStateSerializer
         if (document.PublicationStage is not null && document.ExpectedImplementationHead is null)
         {
             throw new CanonicalStateException("Canonical state publicationStage requires expectedImplementationHead.");
+        }
+
+        if ((document.PendingRevisionHead is null) != (document.RevisionRemoteLease is null))
+        {
+            throw new CanonicalStateException("Canonical state pending revision checkpoint requires both pendingRevisionHead and revisionRemoteLease.");
         }
 
         var branch = ValidateBranchName(document.Branch, "branch");
@@ -144,7 +153,9 @@ public static partial class CanonicalStateSerializer
             document.ExpectedImplementationHead is null ? null : ValidateCommitSha(document.ExpectedImplementationHead),
             document.PublicationStage is null ? null : ParseEnum<ImplementationPublicationStage>(document.PublicationStage, "publicationStage"),
             document.ImplementationInputDigest is null ? null : ValidateDigest(document.ImplementationInputDigest, "implementationInputDigest"),
-            document.RebasedPublicationBase is null ? null : ValidateCommitSha(document.RebasedPublicationBase));
+            document.RebasedPublicationBase is null ? null : ValidateCommitSha(document.RebasedPublicationBase),
+            document.PendingRevisionHead is null ? null : ValidateCommitSha(document.PendingRevisionHead),
+            document.RevisionRemoteLease is null ? null : ValidateCommitSha(document.RevisionRemoteLease));
     }
 
     [GeneratedRegex(@"^[A-Za-z0-9]([A-Za-z0-9._/-]*[A-Za-z0-9])?$")]

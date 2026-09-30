@@ -136,19 +136,49 @@ public sealed partial class PollingScheduler(
                         continue;
                     }
 
-                    var sequence = Interlocked.Increment(ref discoverySequence);
-                    discovered.Enqueue(new WorkflowCandidate(
-                        new WorkflowWorkKey(provider.Name, repository.Id, issue.Number),
-                        classification.Kind,
-                        classification.Priority,
-                        classification.Command,
-                        sequence,
-                        token => dispatcher.ExecuteAsync(
-                            classification.Kind,
-                            provider.Name,
-                            repositoryOptions.Source,
-                            issue.Number,
-                            token)));
+                    WorkflowCandidate CreateCandidate(WorkflowCandidateClassification candidateClassification) =>
+                        new(
+                            new WorkflowWorkKey(provider.Name, repository.Id, issue.Number),
+                            candidateClassification.Kind,
+                            candidateClassification.Priority,
+                            candidateClassification.Command,
+                            Interlocked.Increment(ref discoverySequence),
+                            token => dispatcher.ExecuteAsync(
+                                candidateClassification.Kind,
+                                provider.Name,
+                                repositoryOptions.Source,
+                                issue.Number,
+                                token),
+                            async token =>
+                            {
+                                var refreshed = await dispatcher
+                                    .ClassifyAsync(provider.Name, repositoryOptions.Source, issue.Number, token)
+                                    .ConfigureAwait(false);
+                                if (refreshed.Priority != WorkflowWorkPriority.Reconciliation)
+                                {
+                                    return CreateCandidate(refreshed);
+                                }
+
+                                metrics.ActiveOperations.Add(1);
+                                using var activeOperation = metrics.BeginActiveOperation();
+                                try
+                                {
+                                    await dispatcher.ExecuteAsync(
+                                        refreshed.Kind,
+                                        provider.Name,
+                                        repositoryOptions.Source,
+                                        issue.Number,
+                                        token).ConfigureAwait(false);
+                                }
+                                finally
+                                {
+                                    metrics.ActiveOperations.Add(-1);
+                                }
+
+                                return null;
+                            });
+
+                    discovered.Enqueue(CreateCandidate(classification));
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {

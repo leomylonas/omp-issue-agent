@@ -21,14 +21,16 @@ public enum WorkflowCandidateKind
 }
 
 /// <summary>One classified unit of workflow work. The callback performs exactly one reconciled
-/// attempt; durable state remains in the provider and canonical comment.</summary>
+/// attempt; durable state remains in the provider and canonical comment. A deferred rate-limit
+/// retry refreshes this classification from that durable state before admission.</summary>
 public sealed record WorkflowCandidate(
     WorkflowWorkKey Key,
     WorkflowCandidateKind Kind,
     WorkflowWorkPriority Priority,
     WorkflowCommand? Command,
     long DiscoverySequence,
-    Func<CancellationToken, Task> ExecuteAsync);
+    Func<CancellationToken, Task> ExecuteAsync,
+    Func<CancellationToken, Task<WorkflowCandidate?>>? RefreshAsync = null);
 
 /// <summary>Thread-safe priority and round-robin admission with queued/in-flight deduplication.
 /// FIFO is preserved within each repository and priority class.</summary>

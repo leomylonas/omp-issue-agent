@@ -3,6 +3,7 @@ using IssueAgent.Configuration;
 using IssueAgent.Domain;
 using IssueAgent.Git;
 using IssueAgent.Observability;
+using IssueAgent.Omp;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -253,6 +254,24 @@ public sealed class StartupValidatorTests
                 Directory.Delete(workspace, recursive: true);
             }
         }
+    }
+
+    [Fact]
+    public void OmpProtocolAndSessionIncompatibilitiesAreFatalAtStartup()
+    {
+        Assert.False(StartupValidator.IsTransientOmpStartupDependencyFailure(
+            new OmpRpcException("OMP resumed a different durable session.")));
+        Assert.False(StartupValidator.IsTransientOmpStartupDependencyFailure(
+            new InvalidOperationException("OMP ready frame must declare a supported protocol.", new OmpRpcException("protocol mismatch"))));
+    }
+
+    [Fact]
+    public void OmpBrokerOrModelRejectionsRemainNonfatalAtStartup()
+    {
+        Assert.True(StartupValidator.IsTransientOmpStartupDependencyFailure(
+            new OmpRemoteException("broker temporarily unavailable")));
+        Assert.True(StartupValidator.IsTransientOmpStartupDependencyFailure(
+            new InvalidOperationException("probe failed", new OmpRemoteException("model unavailable"))));
     }
 
     [Fact]

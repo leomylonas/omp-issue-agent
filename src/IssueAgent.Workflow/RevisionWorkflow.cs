@@ -376,22 +376,17 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 "Cannot publish revision: the remote agent branch is missing.", cancellationToken,
                 WaitingReason.MissingRemoteRevisionBranch).ConfigureAwait(false);
         }
-        if (workingState.PublicationStage == ImplementationPublicationStage.BranchPublished &&
-            (workingState.ExpectedImplementationHead is not { Length: > 0 } expectedPublishedHead ||
-             !string.Equals(remoteHead, expectedPublishedHead, StringComparison.Ordinal)))
+        var remoteLease = workingState.RevisionRemoteLease ?? workingState.ExpectedImplementationHead;
+        if (remoteLease is not { Length: > 0 } ||
+            (!string.Equals(remoteHead, remoteLease, StringComparison.Ordinal) &&
+             !string.Equals(remoteHead, workingState.PendingRevisionHead, StringComparison.Ordinal)))
         {
             return await PauseForNewFeedbackAsync(
                 config, issueNumber, workingState, publicationCheckpoint, resultMarkdown,
-                "Cannot publish revision: the remote agent branch no longer matches this workflow's last published head. Local and remote histories were preserved for human review.",
+                "Cannot publish revision: the remote agent branch no longer matches this workflow's recorded lease. Local and remote histories were preserved for human review.",
                 cancellationToken, WaitingReason.RemoteHistoryRewrite).ConfigureAwait(false);
         }
-        if (!await deps.Git.IsAncestorAsync(config.Repository.Id, remoteHead, headCommit, cancellationToken).ConfigureAwait(false))
-        {
-            return await PauseForNewFeedbackAsync(
-                config, issueNumber, workingState, publicationCheckpoint, resultMarkdown,
-                "Cannot publish revision: the remote agent branch has unexpected history. Local and remote histories were preserved for human review.",
-                cancellationToken, WaitingReason.RemoteHistoryRewrite).ConfigureAwait(false);
-        }
+
 
         try
         {
@@ -423,17 +418,37 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 .CompleteOnCloseWithoutMergeAsync(config, issueNumber, workingState, lastPublishedContent, cancellationToken)
                 .ConfigureAwait(false);
         }
+        var recoveredPendingRevisionHead = workingState.PendingRevisionHead;
+        var revisionCheckpointState = workingState with
+        {
+            PendingRevisionHead = headCommit,
+            RevisionRemoteLease = remoteHead,
+            UpdatedAt = deps.Clock.UtcNow,
+        };
+        publicationCheckpoint = publicationCheckpoint with
+        {
+            State = CanonicalStateSerializer.ToDocument(
+                revisionCheckpointState,
+                workingContent.State.PullOrMergeRequest),
+        };
+        await UpsertCanonicalCommentAsync(config, issueNumber, publicationCheckpoint, cancellationToken).ConfigureAwait(false);
+        workingState = revisionCheckpointState;
+        var pushAlreadyCompleted = recoveredPendingRevisionHead is not null &&
+            string.Equals(remoteHead, headCommit, StringComparison.Ordinal);
 
-        try
+        if (!pushAlreadyCompleted)
         {
-            await deps.Git.PushAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException &&
-            GitPublicationFailureClassifier.TryClassify(exception) is { } reason)
-        {
-            return await PauseForNewFeedbackAsync(
-                config, issueNumber, workingState, publicationCheckpoint, resultMarkdown,
-                GitPublicationFailureClassifier.Explanation(reason), cancellationToken, reason).ConfigureAwait(false);
+            try
+            {
+                await deps.Git.PushAsync(config.Repository.Id, worktreePath, workingState.Branch, config.GitAuthentication, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException &&
+                GitPublicationFailureClassifier.TryClassify(exception) is { } reason)
+            {
+                return await PauseForNewFeedbackAsync(
+                    config, issueNumber, workingState, publicationCheckpoint, resultMarkdown,
+                    GitPublicationFailureClassifier.Explanation(reason), cancellationToken, reason).ConfigureAwait(false);
+            }
         }
 
         var publishedState = workingState with
@@ -443,6 +458,8 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             WaitingReason = WaitingReason.ReviewRequested,
             InterruptedPhase = null,
             ExpectedImplementationHead = headCommit,
+            PendingRevisionHead = null,
+            RevisionRemoteLease = null,
             UpdatedAt = deps.Clock.UtcNow,
             // This is the actual end of the feedback observation used for the publication gate.
             // Advancing it to a later write time could silently skip feedback that arrives while

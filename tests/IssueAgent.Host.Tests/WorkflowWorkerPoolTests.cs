@@ -77,6 +77,54 @@ public sealed class WorkflowWorkerPoolTests
     }
 
     [Fact]
+    public async Task RateLimitedCandidateRefreshesDurableClassificationBeforeRequeue()
+    {
+        using var fixture = new PoolFixture(agentConcurrency: 1);
+        var key = new WorkflowWorkKey("github", "repo", 1);
+        var resumed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var refreshes = 0;
+        var initialAttempts = 0;
+        var candidate = new WorkflowCandidate(
+            key,
+            WorkflowCandidateKind.ExistingWorkflow,
+            WorkflowWorkPriority.NewPlanning,
+            null,
+            1,
+            _ =>
+            {
+                if (Interlocked.Increment(ref initialAttempts) == 1)
+                {
+                    throw new PollingRateLimitedException(TimeSpan.FromMilliseconds(20));
+                }
+
+                throw new InvalidOperationException("The stale candidate must not resume.");
+            },
+            _ =>
+            {
+                Interlocked.Increment(ref refreshes);
+                return Task.FromResult<WorkflowCandidate?>(new WorkflowCandidate(
+                    key,
+                    WorkflowCandidateKind.ExistingWorkflow,
+                    WorkflowWorkPriority.HumanCommand,
+                    WorkflowCommand.Continue,
+                    2,
+                    _ =>
+                    {
+                        resumed.SetResult();
+                        return Task.CompletedTask;
+                    }));
+            });
+        await fixture.Pool.AdmitAsync([candidate], CancellationToken.None);
+        fixture.Start();
+
+        await resumed.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+        Assert.Equal(1, Volatile.Read(ref refreshes));
+        Assert.Equal(1, Volatile.Read(ref initialAttempts));
+        Assert.True(await fixture.Pool.WaitForDrainAsync(TimeSpan.FromSeconds(2), CancellationToken.None));
+        await fixture.StopAsync();
+    }
+
+    [Fact]
     public async Task AgentConcurrencyBoundsOnlyCandidateExecution()
     {
         using var fixture = new PoolFixture(agentConcurrency: 2);

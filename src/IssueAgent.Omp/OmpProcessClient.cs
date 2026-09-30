@@ -99,27 +99,28 @@ public sealed class OmpProcessClient(
             : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
         var runToken = runCts.Token;
 
-        if (Interlocked.CompareExchange(ref cancellationRequested, 0, 0) != 0)
-        {
-            Interlocked.Exchange(ref cancellationRequested, 0);
-            yield return new OmpErrorEvent(
-                request.SessionId,
-                DateTimeOffset.UtcNow,
-                "OMP run cancelled before prompt dispatch.",
-                true);
-            yield break;
-        }
-
         var prompt = $"Work exclusively in the repository at '{request.WorkingDirectory}'.\n\n{request.Prompt}";
         Exception? dispatchFailure = null;
+        Task<JsonObject>? promptResponse = null;
+        var cancelledBeforeDispatch = false;
+        var promptDispatched = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await dispatchGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
-            await RequireSuccessAsync(
-                await transport.SendCommandAsync(
+            if (Volatile.Read(ref cancellationRequested) != 0)
+            {
+                Interlocked.Exchange(ref cancellationRequested, 0);
+                cancelledBeforeDispatch = true;
+            }
+            else
+            {
+                promptResponse = transport.SendCommandAsync(
                     "prompt",
                     new JsonObject { ["message"] = prompt },
-                    runToken).ConfigureAwait(false)).ConfigureAwait(false);
+                    promptDispatched,
+                    runToken);
+                await promptDispatched.Task.ConfigureAwait(false);
+            }
         }
         catch (Exception exception)
         {
@@ -128,6 +129,28 @@ public sealed class OmpProcessClient(
         finally
         {
             dispatchGate.Release();
+        }
+
+        if (cancelledBeforeDispatch)
+        {
+            yield return new OmpErrorEvent(
+                request.SessionId,
+                DateTimeOffset.UtcNow,
+                "OMP run cancelled before prompt dispatch.",
+                true);
+            yield break;
+        }
+
+        if (dispatchFailure is null)
+        {
+            try
+            {
+                await RequireSuccessAsync(await promptResponse!.ConfigureAwait(false)).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                dispatchFailure = exception;
+            }
         }
 
         if (dispatchFailure is OperationCanceledException && cancellationToken.IsCancellationRequested)
@@ -218,10 +241,18 @@ public sealed class OmpProcessClient(
 
     public async ValueTask CancelAsync(string sessionId, CancellationToken cancellationToken)
     {
-        Interlocked.Exchange(ref cancellationRequested, 1);
-        // Prompt acknowledgement can legitimately remain pending while OMP is working. Abort is a
-        // separately correlated RPC command, so it must bypass the prompt-dispatch gate or an
-        // explicit cancellation would wait for the very acknowledgement it needs to interrupt.
+        await dispatchGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            Interlocked.Exchange(ref cancellationRequested, 1);
+        }
+        finally
+        {
+            dispatchGate.Release();
+        }
+
+        // Once the prompt frame is dispatched, abort must bypass dispatch serialization so it can
+        // interrupt that active prompt instead of waiting for its acknowledgement.
         await RequestAbortAsync(suppressErrors: false, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
@@ -388,7 +419,7 @@ public sealed class OmpProcessClient(
         }
 
         var message = response["error"]?.GetValue<string>() ?? "OMP command failed.";
-        throw new OmpRpcException(message);
+        throw new OmpRemoteException(message);
     }
 
     private static JsonObject RequireData(JsonObject response) =>
@@ -403,4 +434,7 @@ public sealed class OmpProcessClient(
 internal sealed record OmpModel(string Provider, string Id);
 
 
-public sealed class OmpRpcException(string message) : Exception(message);
+public class OmpRpcException(string message) : Exception(message);
+
+/// <summary>An OMP command was understood but rejected by a remote dependency such as its broker or model provider.</summary>
+public sealed class OmpRemoteException(string message) : OmpRpcException(message);

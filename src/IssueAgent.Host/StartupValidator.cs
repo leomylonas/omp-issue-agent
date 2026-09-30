@@ -82,10 +82,10 @@ public sealed partial class StartupValidator(
         Message = "OMP startup dependency validation failed; workflow execution will retry at runtime")]
     private static partial void LogOmpValidationWarning(ILogger logger, Exception exception);
 
-    private static bool IsTransientOmpStartupDependencyFailure(Exception exception) =>
+    internal static bool IsTransientOmpStartupDependencyFailure(Exception exception) =>
         exception switch
         {
-            TimeoutException or HttpRequestException or OmpRpcException => true,
+            TimeoutException or HttpRequestException or OmpRemoteException => true,
             _ when exception.InnerException is not null => IsTransientOmpStartupDependencyFailure(exception.InnerException),
             _ => false,
         };

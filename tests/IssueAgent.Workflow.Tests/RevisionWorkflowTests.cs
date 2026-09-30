@@ -51,16 +51,17 @@ public sealed class RevisionWorkflowTests : IDisposable
         Assert.Contains("resolved: true", request.Prompt, StringComparison.Ordinal);
 
         var checkpoints = provider.UpdatedComments;
-        Assert.Equal(3, checkpoints.Count);
+        Assert.Equal(4, checkpoints.Count);
         Assert.Contains("phase: revising", checkpoints[0].Body, StringComparison.Ordinal);
         Assert.Contains("state: working", checkpoints[0].Body, StringComparison.Ordinal);
         Assert.Contains("Renamed the variable.", checkpoints[1].Body, StringComparison.Ordinal);
-        Assert.Contains("Renamed the variable.", checkpoints[2].Body, StringComparison.Ordinal);
-        var checkpoint = CanonicalCommentMarkdown.Parse(checkpoints[1].Body);
+        var checkpoint = CanonicalCommentMarkdown.Parse(checkpoints[2].Body);
         Assert.Equal("revising", checkpoint.State.Phase);
         Assert.Equal("working", checkpoint.State.State);
+        Assert.Equal(git.BranchCommitToReturn, checkpoint.State.PendingRevisionHead);
+        Assert.Equal(git.BranchCommitToReturn, checkpoint.State.RevisionRemoteLease);
         Assert.Contains(provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)], l => l == "agent:phase:review");
-        var publishedCheckpoint = CanonicalCommentMarkdown.Parse(checkpoints[2].Body).State;
+        var publishedCheckpoint = CanonicalCommentMarkdown.Parse(checkpoints[3].Body).State;
         Assert.Equal(clock.UtcNow, publishedCheckpoint.ReviewFeedbackCutoff);
         Assert.All(
             ["comment:1:2024-06-01T00:00:00.0000000+00:00:757E7119D1C00D8C550AF13798B5AF8549B6674AB561F9F31599A7ECC2B6B5A2",
@@ -335,6 +336,37 @@ public sealed class RevisionWorkflowTests : IDisposable
         Assert.Empty(resumedOmp.RunRequests);
         Assert.Equal(1, git.PushCallCount);
         Assert.Contains("Conflict resolved.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunAsyncRecoversAnInterruptedRevisionPushFromThePendingHeadAndRemoteLease()
+    {
+        var state = await SeedReviewStateAsync();
+        git.PushException = new InvalidOperationException("Simulated process interruption.");
+        var firstOmp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1", clock.UtcNow,
+            """{"summary":"Revision.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+                .RunAsync(CreateConfig(), 1, state, firstOmp, CancellationToken.None));
+
+        var checkpoint = CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body);
+        var recoveredState = CanonicalStateSerializer.ToWorkflowState(checkpoint.State);
+        Assert.Equal(git.BranchCommitToReturn, recoveredState.PendingRevisionHead);
+        Assert.Equal(git.BranchCommitToReturn, recoveredState.RevisionRemoteLease);
+
+        git.PushException = null;
+        git.RemoteBranchCommitToReturn = git.BranchCommitToReturn;
+        var resumedOmp = new FakeOmpClient();
+        var outcome = await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, recoveredState, resumedOmp, CancellationToken.None, publishRetainedResult: true);
+
+        Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
+        Assert.Empty(resumedOmp.RunRequests);
+        Assert.Equal(1, git.PushCallCount);
+        Assert.Null(outcome.State.PendingRevisionHead);
+        Assert.Null(outcome.State.RevisionRemoteLease);
     }
 
     [Fact]

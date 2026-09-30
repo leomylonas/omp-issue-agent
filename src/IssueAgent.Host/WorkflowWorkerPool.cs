@@ -190,18 +190,39 @@ public sealed partial class WorkflowWorkerPool(
 
     private async Task RequeueRateLimitedCandidateAsync(WorkflowWorkKey key, TimeSpan retryAfter)
     {
+        WorkflowCandidate? candidate = null;
         try
         {
             await DelayForRequeueAsync(retryAfter, deferralCancellation.Token).ConfigureAwait(false);
-            if (accepting &&
-                deferredRateLimits.TryRemove(key, out var candidate) &&
-                admission.TryEnqueue(candidate))
+            if (!accepting || !deferredRateLimits.TryRemove(key, out candidate))
+            {
+                return;
+            }
+
+            if (candidate.RefreshAsync is not null)
+            {
+                candidate = await candidate.RefreshAsync(deferralCancellation.Token).ConfigureAwait(false);
+                if (candidate is null)
+                {
+                    return;
+                }
+            }
+
+            if (accepting && admission.TryEnqueue(candidate))
             {
                 available.Release();
             }
         }
         catch (OperationCanceledException) when (deferralCancellation.IsCancellationRequested)
         {
+        }
+        catch (PollingRateLimitedException exception) when (candidate is not null)
+        {
+            DeferRateLimitedCandidate(candidate, exception.RetryAfter);
+        }
+        catch (Exception exception)
+        {
+            LogWorkflowFailure(logger, exception, key.Provider, key.RepositoryId, key.IssueNumber);
         }
     }
 

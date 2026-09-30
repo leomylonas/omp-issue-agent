@@ -49,6 +49,50 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
         Assert.Equal(0, CountCanonicalCommentCreates(server) - firstHostCanonicalCommentCreates);
     }
 
+    [Theory]
+    [InlineData(ProviderKind.GitHub)]
+    [InlineData(ProviderKind.GitLab)]
+    public async Task MalformedProviderDiscoveryInputDoesNotDispatchOrCreateCanonicalState(ProviderKind kind)
+    {
+        using var server = WireMockServer.Start();
+        var path = kind == ProviderKind.GitHub
+            ? "/api/v3/repos/octo/widgets/issues"
+            : "/api/v4/projects/group/widgets/issues";
+        server.Given(Request.Create().WithPath(path).UsingGet())
+            .RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody("{ invalid-json"));
+
+        await using var host = CreateHost(kind, server, await CreateRemoteAsync());
+
+        await host.Scheduler.PollOnceAsync(TestContext.Current.CancellationToken);
+
+        Assert.DoesNotContain(server.LogEntries, entry => entry.RequestMessage is { } request &&
+            request.Method == "POST" &&
+            (request.Path.Contains("comments", StringComparison.OrdinalIgnoreCase) ||
+             request.Path.Contains("notes", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    [Theory]
+    [InlineData(ProviderKind.GitHub)]
+    [InlineData(ProviderKind.GitLab)]
+    public async Task ProviderDiscoveryFailureDoesNotDispatchOrCreateCanonicalState(ProviderKind kind)
+    {
+        using var server = WireMockServer.Start();
+        var path = kind == ProviderKind.GitHub
+            ? "/api/v3/repos/octo/widgets/issues"
+            : "/api/v4/projects/group/widgets/issues";
+        server.Given(Request.Create().WithPath(path).UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(503));
+
+        await using var host = CreateHost(kind, server, await CreateRemoteAsync());
+
+        await host.Scheduler.PollOnceAsync(TestContext.Current.CancellationToken);
+
+        Assert.DoesNotContain(server.LogEntries, entry => entry.RequestMessage is { } request &&
+            request.Method == "POST" &&
+            (request.Path.Contains("comments", StringComparison.OrdinalIgnoreCase) ||
+             request.Path.Contains("notes", StringComparison.OrdinalIgnoreCase)));
+    }
+
     private async Task RunPollAsync(ProviderKind kind, WireMockServer server, string remote)
     {
         await using var host = CreateHost(kind, server, remote);

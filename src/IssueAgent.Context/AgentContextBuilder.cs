@@ -126,9 +126,10 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
                         continue;
                     }
 
-                    var related = await provider.GetIssueAsync(allowedRepository, relationship.IssueNumber, cancellationToken).ConfigureAwait(false);
+                    var related = await CaptureRelatedIssueInputSnapshotAsync(
+                        allowedRepository, relationship.IssueNumber, cancellationToken).ConfigureAwait(false);
                     var path = relationshipPath.Append(relationship.Relationship).ToArray();
-                    stamps.Add($"{string.Join("->", path)}:{allowedRepository.Id}:{related.Number}:{related.Title}:{related.Description}:{related.UpdatedAt:O}:{string.Join(',', related.Labels.OrderBy(label => label, StringComparer.Ordinal))}");
+                    stamps.Add($"{string.Join("->", path)}:{related}");
                     nextFrontier.Add((allowedRepository, relationship.IssueNumber, path));
                 }
             }
@@ -137,6 +138,35 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
         }
 
         return stamps.OrderBy(stamp => stamp, StringComparer.Ordinal).ToArray();
+    }
+
+    /// <summary>Records every related-issue input that can reach OMP, not just issue metadata.
+    /// Related comments and attachment links can change without changing the issue's updated time.</summary>
+    private async Task<string> CaptureRelatedIssueInputSnapshotAsync(
+        RepositoryRef repository,
+        long issueNumber,
+        CancellationToken cancellationToken)
+    {
+        var issue = await provider.GetIssueAsync(repository, issueNumber, cancellationToken).ConfigureAwait(false);
+        var inputs = new List<string>
+        {
+            $"issue:{issue.Number}:{issue.Title}:{issue.Description}:{issue.UpdatedAt:O}:{string.Join(',', issue.Labels.OrderBy(label => label, StringComparer.Ordinal))}",
+            $"attachments:{string.Join(',', MarkdownAttachmentScanner.ScanLinks(issue.Description).Select(url => url.AbsoluteUri).OrderBy(url => url, StringComparer.Ordinal))}",
+        };
+
+        await foreach (var comment in provider.GetIssueCommentsAsync(repository, issueNumber, cancellationToken).ConfigureAwait(false))
+        {
+            if (comment.IsBot && options.IgnoreBotComments ||
+                await IsAuthoritativeCanonicalCommentAsync(comment, cancellationToken).ConfigureAwait(false))
+            {
+                continue;
+            }
+
+            inputs.Add($"comment:{comment.Id}:{comment.AuthorLogin}:{comment.CreatedAt:O}:{comment.UpdatedAt:O}:{comment.Body}");
+            inputs.Add($"attachments:{comment.Id}:{string.Join(',', MarkdownAttachmentScanner.ScanLinks(comment.Body).Select(url => url.AbsoluteUri).OrderBy(url => url, StringComparer.Ordinal))}");
+        }
+
+        return string.Join('\u001f', inputs);
     }
 
 

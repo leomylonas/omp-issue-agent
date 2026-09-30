@@ -131,9 +131,18 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
     public IAsyncEnumerable<JsonObject> Frames => frames.Reader.ReadAllAsync();
 
     /// <summary>Sends a typed OMP command and awaits its correlated response.</summary>
-    public async Task<JsonObject> SendCommandAsync(
+    public Task<JsonObject> SendCommandAsync(
         string type,
         JsonObject? fields,
+        CancellationToken cancellationToken) =>
+        SendCommandAsync(type, fields, dispatchCompletion: null, cancellationToken: cancellationToken);
+
+    /// <summary>Sends a typed OMP command and signals after its frame has been written, before its
+    /// correlated response arrives.</summary>
+    internal async Task<JsonObject> SendCommandAsync(
+        string type,
+        JsonObject? fields,
+        TaskCompletionSource? dispatchCompletion,
         CancellationToken cancellationToken)
     {
         var id = Interlocked.Increment(ref nextRequestId).ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -155,6 +164,7 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
         try
         {
             await WriteLineAsync(command, cancellationToken).ConfigureAwait(false);
+            dispatchCompletion?.TrySetResult();
             using (cancellationToken.Register(() =>
             {
                 lock (pendingRequestsLock)
@@ -167,8 +177,9 @@ public sealed class NdjsonRpcTransport : IAsyncDisposable
                 return await completion.Task.ConfigureAwait(false);
             }
         }
-        catch
+        catch (Exception exception)
         {
+            dispatchCompletion?.TrySetException(exception);
             lock (pendingRequestsLock)
             {
                 pendingRequests.Remove(id);

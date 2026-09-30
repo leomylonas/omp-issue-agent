@@ -339,6 +339,7 @@ public sealed class LibGit2SharpRepositoryManager(string reposRootPath) : IGitRe
             {
                 await GitSshTransport.UpdateSubmoduleAsync(
                     repositoryPath,
+                    submodule.Name,
                     submodule.Path,
                     GetSshTransportRemoteUrl(resolvedSubmoduleUrl, parentRemoteUrl),
                     effectiveAuthentication,
