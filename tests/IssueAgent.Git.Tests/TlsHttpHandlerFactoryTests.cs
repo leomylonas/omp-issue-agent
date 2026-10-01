@@ -23,7 +23,7 @@ public sealed class TlsHttpHandlerFactoryTests : IAsyncLifetime
     {
         try
         {
-            while (true)
+            while (!cancellationToken.IsCancellationRequested)
             {
                 using var client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
                 await using var stream = client.GetStream();
@@ -114,8 +114,15 @@ public sealed class TlsHttpHandlerFactoryTests : IAsyncLifetime
     public async ValueTask DisposeAsync()
     {
         listenerCancellation.Cancel();
-        listener.Stop();
-        await server.ConfigureAwait(false);
-        listenerCancellation.Dispose();
+        try
+        {
+            await server.ConfigureAwait(false);
+        }
+        finally
+        {
+            // ServeAsync owns every pending accept. Do not stop its listener until it has observed cancellation.
+            listener.Stop();
+            listenerCancellation.Dispose();
+        }
     }
 }
