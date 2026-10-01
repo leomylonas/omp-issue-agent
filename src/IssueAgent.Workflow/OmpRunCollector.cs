@@ -26,10 +26,25 @@ public static class OmpRunCollector
 
             if (domainEvent is OmpErrorEvent error)
             {
+                ThrowIfTransientDependencyFailure(error);
                 return new OmpRunOutcome(events, null, error);
             }
         }
 
         throw new WorkflowContractException("OMP run ended without a completed or error event.");
+    }
+
+    private static void ThrowIfTransientDependencyFailure(OmpErrorEvent error)
+    {
+        OmpRpcException? exception = error.ErrorCode switch
+        {
+            "broker_unavailable" => new OmpBrokerUnavailableException(error.Message),
+            "model_unavailable" => new OmpModelUnavailableException(error.Message),
+            _ => null,
+        };
+        if (exception is not null)
+        {
+            throw exception;
+        }
     }
 }

@@ -41,7 +41,7 @@ public sealed class TelegramNotificationSinkTests : IDisposable
         var sink = new TelegramNotificationSink(httpClient, token, "12345");
         var notification = new WorkflowNotification(WorkflowNotificationKind.PlanReady, "github/octo/widgets", 7, "workflow-1", "Plan is ready.");
 
-        await Assert.ThrowsAsync<HttpRequestException>(() => sink.SendAsync(notification, CancellationToken.None));
+        await Assert.ThrowsAsync<NotificationPostDispatchException>(() => sink.SendAsync(notification, CancellationToken.None));
     }
 
 

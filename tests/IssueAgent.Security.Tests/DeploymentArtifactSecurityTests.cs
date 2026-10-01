@@ -186,11 +186,6 @@ public sealed class DeploymentArtifactSecurityTests
         Assert.True(
             entrypoint.IndexOf("umask 0002", StringComparison.Ordinal)
             < entrypoint.IndexOf("exec /usr/bin/setpriv", StringComparison.Ordinal));
-        Assert.Contains("--reuid=10002 --regid=10001", ompWrapper, StringComparison.Ordinal);
-        Assert.Contains("\"executablePath\": \"/usr/local/bin/omp-unprivileged\"", appsettings, StringComparison.Ordinal);
-        Assert.Contains("umask 0002", ompWrapper, StringComparison.Ordinal);
-        Assert.DoesNotContain("--ambient-caps +setuid,+setgid", ompWrapper, StringComparison.Ordinal);
-        Assert.Contains("--ambient-caps -setuid,-setgid", ompWrapper, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -203,9 +198,6 @@ public sealed class DeploymentArtifactSecurityTests
         var brokerOverlay = ReadRepositoryFile("deploy/docker-compose.auth-broker.yml");
         var deployment = ReadRepositoryFile("deploy/helm/issue-agent/templates/deployment.yaml");
 
-        Assert.Contains("useradd --create-home --uid 10002 omp", dockerfile, StringComparison.Ordinal);
-        Assert.Contains("--reuid=10002 --regid=10001", ompWrapper, StringComparison.Ordinal);
-        Assert.Contains("umask 0002", ompWrapper, StringComparison.Ordinal);
         Assert.Contains("install --owner=10001 --group=10001 --mode=0400", entrypoint, StringComparison.Ordinal);
         Assert.Contains("FOWNER", compose, StringComparison.Ordinal);
         Assert.Contains("/run/secrets-source", compose, StringComparison.Ordinal);

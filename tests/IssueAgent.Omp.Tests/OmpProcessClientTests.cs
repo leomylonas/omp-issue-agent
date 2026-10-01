@@ -99,6 +99,21 @@ public sealed class OmpProcessClientTests
             () => client.CreateSessionAsync("repository-planner", CancellationToken.None).AsTask());
     }
 
+    [Theory]
+    [InlineData("broker_unavailable")]
+    [InlineData("model_unavailable")]
+    public async Task RunAsyncPreservesTypedDependencyRejectionCode(string errorCode)
+    {
+        await using var client = StartClient(promptErrorCode: errorCode);
+        var session = await client.CreateSessionAsync("repository-planner", CancellationToken.None);
+
+        var error = Assert.IsType<OmpErrorEvent>(Assert.Single(await CollectAsync(client.RunAsync(
+            new OmpRunRequest(session.SessionId, "/tmp", "plan this issue", new Dictionary<string, string>()),
+            CancellationToken.None))));
+
+        Assert.Equal(errorCode, error.ErrorCode);
+    }
+
     [Fact]
     public async Task ResumeSessionAsyncSwitchesToPersistedSession()
     {
@@ -499,6 +514,7 @@ public sealed class OmpProcessClientTests
         TimeSpan? configuredTimeout = null,
         string? hangCommands = null,
         string? newSessionErrorCode = null,
+        string? promptErrorCode = null,
         string? transientFailureCommands = null,
         string? transientFailureCode = null,
         int transientFailureCount = 0,
@@ -516,6 +532,10 @@ public sealed class OmpProcessClientTests
         if (newSessionErrorCode is not null)
         {
             environment["OMP_NEW_SESSION_ERROR_CODE"] = newSessionErrorCode;
+        }
+        if (promptErrorCode is not null)
+        {
+            environment["OMP_PROMPT_ERROR_CODE"] = promptErrorCode;
         }
         if (transientFailureCommands is not null)
         {

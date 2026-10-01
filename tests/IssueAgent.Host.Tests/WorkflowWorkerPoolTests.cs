@@ -77,6 +77,55 @@ public sealed class WorkflowWorkerPoolTests
     }
 
     [Fact]
+    public async Task RateLimitDefersQueuedWorkForTheAffectedProviderOnly()
+    {
+        using var fixture = new PoolFixture(agentConcurrency: 1);
+        var otherProviderRan = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var deferredProviderRan = new TaskCompletionSource<DateTimeOffset>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var retryRan = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var startedAt = DateTimeOffset.UtcNow;
+        var attempts = 0;
+        await fixture.Pool.AdmitAsync(
+        [
+            Candidate(1, WorkflowWorkPriority.NewPlanning, null, 1, _ =>
+            {
+                if (Interlocked.Increment(ref attempts) == 1)
+                {
+                    throw new PollingRateLimitedException(TimeSpan.FromMilliseconds(125));
+                }
+
+                retryRan.SetResult();
+                return Task.CompletedTask;
+            }),
+            Candidate(2, WorkflowWorkPriority.NewPlanning, null, 2, _ =>
+            {
+                deferredProviderRan.SetResult(DateTimeOffset.UtcNow);
+                return Task.CompletedTask;
+            }),
+            new WorkflowCandidate(
+                new WorkflowWorkKey("gitlab", "repo", 3),
+                WorkflowCandidateKind.ExistingWorkflow,
+                WorkflowWorkPriority.NewPlanning,
+                null,
+                3,
+                _ =>
+                {
+                    otherProviderRan.SetResult();
+                    return Task.CompletedTask;
+                }),
+        ], CancellationToken.None);
+        fixture.Start();
+
+        await otherProviderRan.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+        var deferredAt = await deferredProviderRan.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+        await retryRan.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+
+        Assert.True(deferredAt - startedAt >= TimeSpan.FromMilliseconds(100));
+        Assert.True(await fixture.Pool.WaitForDrainAsync(TimeSpan.FromSeconds(2), CancellationToken.None));
+        await fixture.StopAsync();
+    }
+
+    [Fact]
     public async Task TypedTransientOmpDependencyFailureDefersAndRetriesWorkflowWork()
     {
         using var fixture = new PoolFixture(
@@ -572,6 +621,7 @@ public sealed class WorkflowWorkerPoolTests
     {
         public CancellationTokenSource WorkerCancellation { get; } = new();
         private readonly IssueAgentMetrics metrics = new();
+        private readonly PollingEligibilitySchedule pollingEligibility = new();
         private Task? workers;
 
         public PoolFixture(int agentConcurrency, RetryOptions? retry = null)
@@ -584,7 +634,7 @@ public sealed class WorkflowWorkerPoolTests
                 Concurrency = new ConcurrencyOptions { Agent = agentConcurrency, Polling = 1 },
                 Retry = retry ?? new RetryOptions(),
             });
-            Pool = new WorkflowWorkerPool(options, Registry, metrics, NullLogger<WorkflowWorkerPool>.Instance);
+            Pool = new WorkflowWorkerPool(options, Registry, pollingEligibility, metrics, NullLogger<WorkflowWorkerPool>.Instance);
         }
 
         public ActiveOmpSessionRegistry Registry { get; }

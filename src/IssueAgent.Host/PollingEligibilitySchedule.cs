@@ -2,7 +2,7 @@ namespace IssueAgent.Host;
 
 /// <summary>Keeps repositories out of discovery until a provider-directed rate-limit window ends.
 /// This moves a long wait out of the bounded polling work rather than holding a polling slot.</summary>
-internal sealed class PollingEligibilitySchedule(TimeProvider? timeProvider = null)
+public sealed class PollingEligibilitySchedule(TimeProvider? timeProvider = null)
 {
     private readonly TimeProvider timeProvider = timeProvider ?? TimeProvider.System;
     private readonly Dictionary<string, DateTimeOffset> nextEligible = new(StringComparer.Ordinal);
@@ -13,6 +13,20 @@ internal sealed class PollingEligibilitySchedule(TimeProvider? timeProvider = nu
         lock (gate)
         {
             return !nextEligible.TryGetValue(repositoryKey, out var eligibleAt) || eligibleAt <= timeProvider.GetUtcNow();
+        }
+    }
+
+    public TimeSpan GetRetryAfter(string providerName)
+    {
+        lock (gate)
+        {
+            if (!nextEligible.TryGetValue(providerName, out var eligibleAt))
+            {
+                return TimeSpan.Zero;
+            }
+
+            var remaining = eligibleAt - timeProvider.GetUtcNow();
+            return remaining <= TimeSpan.Zero ? TimeSpan.Zero : remaining;
         }
     }
 

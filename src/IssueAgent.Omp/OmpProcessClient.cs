@@ -161,7 +161,12 @@ public sealed class OmpProcessClient(
 
         if (dispatchFailure is not null)
         {
-            yield return new OmpErrorEvent(request.SessionId, DateTimeOffset.UtcNow, dispatchFailure.Message, false);
+            yield return new OmpErrorEvent(
+                request.SessionId,
+                DateTimeOffset.UtcNow,
+                dispatchFailure.Message,
+                false,
+                GetErrorCode(dispatchFailure));
             yield break;
         }
 
@@ -366,7 +371,8 @@ public sealed class OmpProcessClient(
                     sessionId,
                     timestamp,
                     frame["error"]?.GetValue<string>() ?? "OMP command failed.",
-                    frame["cancelled"]?.GetValue<bool>() ?? false),
+                    frame["cancelled"]?.GetValue<bool>() ?? false,
+                    frame["errorCode"]?.GetValue<string>()),
             "message_update" => BuildMessage(sessionId, timestamp, frame),
             "tool_execution_start" => new OmpToolCallEvent(
                 sessionId,
@@ -457,6 +463,13 @@ public sealed class OmpProcessClient(
             _ => new OmpRemoteException(message),
         };
     }
+
+    private static string? GetErrorCode(Exception exception) => exception switch
+    {
+        OmpBrokerUnavailableException => "broker_unavailable",
+        OmpModelUnavailableException => "model_unavailable",
+        _ => null,
+    };
 
     private static JsonObject RequireData(JsonObject response) =>
         response["data"] as JsonObject

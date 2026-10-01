@@ -28,6 +28,17 @@ public sealed class StartupValidatorTests
     }
 
     [Fact]
+    public void MissingLocalGitTransportToolIsFatal()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            StartupValidator.ValidateRequiredTools(
+                ["git", "ssh", "ssh-keyscan"],
+                executable => !executable.Equals("ssh-keyscan", StringComparison.Ordinal)));
+
+        Assert.Contains("ssh-keyscan", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ValidateWorkspaceProbesEveryRequiredWritableDirectoryAndCleansUpProbeFiles()
     {
         var workspace = Path.Combine(Path.GetTempPath(), $"issue-agent-workspace-{Guid.NewGuid():N}");

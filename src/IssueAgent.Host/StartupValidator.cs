@@ -22,6 +22,7 @@ public sealed partial class StartupValidator(
     {
         var configuration = options.Value;
         ValidateWorkspace(configuration.Workspace.RootPath);
+        ValidateRequiredTooling(effectiveConfiguration);
         ValidateOmp(configuration.Omp.ExecutablePath);
         try
         {
@@ -84,6 +85,82 @@ public sealed partial class StartupValidator(
             _ when exception.InnerException is not null => IsTransientOmpStartupDependencyFailure(exception.InnerException),
             _ => false,
         };
+
+    /// <summary>Validates executables needed by the configured local Git transport before any
+    /// remote validation is attempted. Remote reachability is retryable; a missing image tool is not.</summary>
+    internal static void ValidateRequiredTooling(EffectiveIssueAgentConfiguration configuration) =>
+        ValidateRequiredTooling(configuration, IsExecutableAvailable);
+
+    internal static void ValidateRequiredTooling(
+        EffectiveIssueAgentConfiguration configuration,
+        Func<string, bool> isExecutableAvailable)
+    {
+        var enabledRepositories = configuration.Providers
+            .SelectMany(provider => provider.Repositories)
+            .Where(repository => repository.Enabled)
+            .ToArray();
+        if (enabledRepositories.Length == 0)
+        {
+            return;
+        }
+
+        var requiredTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "git",
+            "git-lfs",
+        };
+        foreach (var repository in enabledRepositories.Where(repository =>
+                     repository.Git.Mode == ConfiguredGitAuthenticationMode.Ssh))
+        {
+            requiredTools.Add("ssh");
+            if (repository.Git.SshHostVerificationMode == ConfiguredSshHostVerificationMode.Pinned)
+            {
+                requiredTools.Add("ssh-keyscan");
+            }
+        }
+
+        ValidateRequiredTools(requiredTools, isExecutableAvailable);
+    }
+
+    internal static void ValidateRequiredTools(
+        IEnumerable<string> requiredTools,
+        Func<string, bool> isExecutableAvailable)
+    {
+        foreach (var tool in requiredTools)
+        {
+            if (!isExecutableAvailable(tool))
+            {
+                throw new InvalidOperationException($"Required local executable '{tool}' was not found or is not executable.");
+            }
+        }
+    }
+
+    private static bool IsExecutableAvailable(string executable)
+    {
+        var path = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        var extensions = OperatingSystem.IsWindows()
+            ? (Environment.GetEnvironmentVariable("PATHEXT") ?? ".EXE;.CMD;.BAT")
+                .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            : [string.Empty];
+        foreach (var directory in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            foreach (var extension in extensions)
+            {
+                var candidate = Path.Combine(directory, string.Concat(executable, extension));
+                if (File.Exists(candidate) && HasEffectiveExecuteAccess(candidate))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
 
 
     internal static void ValidateWorkspace(string rootPath)

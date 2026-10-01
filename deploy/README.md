@@ -16,8 +16,10 @@ docker compose -f docker-compose.yml up -d --build
 ```
 
 The entrypoint copies provider and notification secret files to a root-only runtime mount before
-starting IssueAgent. OMP runs under a separate unprivileged UID, so it cannot read those files.
-Only explicitly configured OMP execution secrets are mounted where OMP can read them.
+starting IssueAgent. Each OMP workflow is assigned a stable, distinct unprivileged UID and its
+retained workflow directory is owner-only, so one workflow cannot read or alter another workflow's
+worktree or attachments. Only explicitly configured OMP execution secrets are mounted where OMP
+can read them.
 
 To enable the bundled Auth Broker, create one bearer token file and start the broker overlay. The
 token is mounted as a Compose secret and never placed in an environment file:
@@ -135,13 +137,11 @@ docker run --rm --name issue-agent \
 ```
 
 The listed capabilities are required only while the root entrypoint repairs a mounted data volume,
-copies root-owned secret sources, and switches the host and OMP to their unprivileged UIDs. The
-entrypoint then enables `no-new-privileges`; by default, IssueAgent invokes the unprivileged OMP
-wrapper, which drops the UID/GID ambient capabilities before OMP executes. Point file-backed provider
-and notification settings at `/run/issue-agent-secrets/<secret-name>`; only `/data` is persistent
-writable application storage. OMP configuration is read-only. `PI_CONFIG_FILES` is the pinned OMP
-runtime setting that points to the mounted `/etc/omp/config.yml` file; OMP sessions and native
-state remain under `/data/omp`.
+copies root-owned secret sources, assigns each OMP workflow a distinct filesystem owner, and switches
+the host and OMP to their unprivileged UIDs. The entrypoint then enables `no-new-privileges`; by default, IssueAgent invokes the unprivileged OMP wrapper, which drops its capability inheritance before OMP executes. Point file-backed provider and notification settings at
+`/run/issue-agent-secrets/<secret-name>`; only `/data` is persistent writable application storage.
+OMP configuration is read-only. `PI_CONFIG_FILES` is the pinned OMP runtime setting that points to
+the mounted `/etc/omp/config.yml` file; OMP sessions and native state remain under `/data/omp`.
 
 ### Plain Docker Auth Broker
 

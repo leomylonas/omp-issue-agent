@@ -143,7 +143,20 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
             await omp.ResumeSessionAsync(initialState.OmpSessionId, initialState.OmpSessionFile, cancellationToken).ConfigureAwait(false);
         }
 
-        await PrepareWorktreeContentAsync(config, worktreePath, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await PrepareWorktreeContentAsync(config, worktreePath, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (PlanningPreparationException exception)
+        {
+            return await FailAsync(
+                config, issueNumber, initialState, WaitingReason.ManualIntervention, exception.Message, cancellationToken)
+                .ConfigureAwait(false);
+        }
         var planningInput = await CaptureInputSnapshotAsync(config, issueNumber, mergeRequest: null, cancellationToken: cancellationToken).ConfigureAwait(false);
         var attachmentsPath = AttachmentsPath(config, initialState.WorkflowId);
         var context = await deps.ContextBuilder
@@ -266,7 +279,20 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
 
         var worktreePath = WorktreePath(config, currentState.WorkflowId);
         var attachmentsPath = AttachmentsPath(config, currentState.WorkflowId);
-        await PrepareWorktreeContentAsync(config, worktreePath, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await PrepareWorktreeContentAsync(config, worktreePath, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (PlanningPreparationException exception)
+        {
+            return await FailAsync(
+                config, issueNumber, workingState, WaitingReason.ManualIntervention, exception.Message, cancellationToken)
+                .ConfigureAwait(false);
+        }
         var currentPlan = new PlanContext(existingContent.State.PlanRevision, existingContent.PlanText, existingContent.DecisionsAndRationale);
         var planningInput = await CaptureInputSnapshotAsync(config, issueNumber, mergeRequest, cancellationToken).ConfigureAwait(false);
         var context = await deps.ContextBuilder
@@ -731,14 +757,40 @@ public sealed class PlanningWorkflow(WorkflowDependencies deps)
     private async Task PrepareWorktreeContentAsync(WorkflowRepositoryConfig config, string worktreePath, CancellationToken cancellationToken)
     {
         var submoduleAuthenticationResolver = config.SubmoduleAuthenticationResolver ?? (_ => null);
-        await deps.Git.UpdateSubmodulesAsync(config.Repository.Id, worktreePath, submoduleAuthenticationResolver, cancellationToken).ConfigureAwait(false);
-        await deps.Git.MaterializeLfsContentAsync(
-            config.Repository.Id,
-            worktreePath,
-            config.GitAuthentication,
-            submoduleAuthenticationResolver,
-            cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await deps.Git.UpdateSubmodulesAsync(
+                config.Repository.Id, worktreePath, submoduleAuthenticationResolver, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new PlanningPreparationException(
+                $"Git submodule preparation failed ({exception.GetType().Name}). See operator logs for details.", exception);
+        }
+
+        try
+        {
+            await deps.Git.MaterializeLfsContentAsync(
+                config.Repository.Id, worktreePath, config.GitAuthentication, submoduleAuthenticationResolver, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new PlanningPreparationException(
+                $"Git LFS preparation failed ({exception.GetType().Name}). See operator logs for details.", exception);
+        }
     }
+
+    private sealed class PlanningPreparationException(string message, Exception innerException)
+        : Exception(message, innerException);
 
     private static string WorktreePath(WorkflowRepositoryConfig config, WorkflowId workflowId) =>
         Path.Combine(config.WorkflowsStoragePath, workflowId.ToString(), "worktree");

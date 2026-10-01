@@ -101,6 +101,9 @@ def main():
         elif command == "get_state":
             response(request_id, command, {"sessionId": session_id, "sessionFile": session_file, "model": model})
         elif command == "prompt":
+            if prompt_error_code := os.environ.get("OMP_PROMPT_ERROR_CODE"):
+                response(request_id, command, error="run dependency unavailable", error_code=prompt_error_code)
+                continue
             if "prompt dispatch hang" in request.get("message", ""):
                 continue
             response(request_id, command, {"agentInvoked": True})

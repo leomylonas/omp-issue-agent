@@ -38,7 +38,7 @@ public sealed class SlackNotificationSinkTests : IDisposable
         var sink = new SlackNotificationSink(httpClient, new Uri(server.Url! + "/services/T000/B000/XXXX"));
         var notification = new WorkflowNotification(WorkflowNotificationKind.PlanFailed, "github/octo/widgets", 7, "workflow-1", "Planning failed.");
 
-        await Assert.ThrowsAsync<HttpRequestException>(() => sink.SendAsync(notification, CancellationToken.None));
+        await Assert.ThrowsAsync<NotificationPostDispatchException>(() => sink.SendAsync(notification, CancellationToken.None));
     }
 
     public void Dispose()

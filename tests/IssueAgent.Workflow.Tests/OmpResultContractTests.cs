@@ -1,3 +1,4 @@
+using IssueAgent.Omp;
 using IssueAgent.Domain;
 
 namespace IssueAgent.Workflow.Tests;
@@ -106,6 +107,28 @@ public sealed class OmpResultContractTests
         AssertOutputOnlyImplementationContract(ImplementationPromptBuilder.BuildImplementationPrompt(context));
         AssertOutputOnlyImplementationContract(ImplementationPromptBuilder.BuildRevisionPrompt(context, []));
         AssertOutputOnlyImplementationContract(ImplementationPromptBuilder.BuildConflictResolutionPrompt());
+    }
+
+    [Theory]
+    [InlineData("broker_unavailable", typeof(OmpBrokerUnavailableException))]
+    [InlineData("model_unavailable", typeof(OmpModelUnavailableException))]
+    public async Task CollectorRethrowsTypedTransientDependencyFailures(string errorCode, Type exceptionType)
+    {
+        var omp = new FakeOmpClient()
+            .EnqueueRun(new OmpErrorEvent(
+                "session-1",
+                DateTimeOffset.UtcNow,
+                "dependency unavailable",
+                false,
+                errorCode));
+
+        var exception = await Assert.ThrowsAnyAsync<OmpRpcException>(() =>
+            OmpRunCollector.RunToCompletionAsync(
+                omp,
+                new OmpRunRequest("session-1", "/tmp", "prompt", new Dictionary<string, string>()),
+                CancellationToken.None));
+
+        Assert.IsType(exceptionType, exception);
     }
 
     [Fact]

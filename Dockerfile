@@ -53,7 +53,6 @@ RUN apt-get update \
     && rm -f /tmp/git-lfs.tar.gz \
     && rm -rf /var/lib/apt/lists/*
 RUN useradd --create-home --uid 10001 issueagent \
-    && useradd --create-home --uid 10002 omp \
     && mkdir --parents /data/omp/agent \
     && chown --recursive issueagent:issueagent /data \
     && chmod 2770 /data /data/omp /data/omp/agent

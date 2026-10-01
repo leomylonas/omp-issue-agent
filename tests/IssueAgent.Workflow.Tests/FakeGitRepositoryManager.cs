@@ -112,10 +112,15 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
     public ValueTask<string> GetHeadCommitAsync(string repositoryId, string worktreePath, CancellationToken cancellationToken) => ValueTask.FromResult(BranchCommitToReturn);
 
     public Func<string, GitAuthentication?>? CapturedSubmoduleAuthenticationResolver { get; private set; }
+    public int UpdateSubmodulesFailuresRemaining { get; set; }
 
     public ValueTask UpdateSubmodulesAsync(string repositoryId, string worktreePath, Func<string, GitAuthentication?> authenticationResolver, CancellationToken cancellationToken)
     {
         CapturedSubmoduleAuthenticationResolver = authenticationResolver;
+        if (UpdateSubmodulesFailuresRemaining-- > 0)
+        {
+            throw new InvalidOperationException("Simulated submodule preparation failure.");
+        }
         return ValueTask.CompletedTask;
     }
 
@@ -157,9 +162,14 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
     public ValueTask RemoveLocalBranchAsync(string repositoryId, string branchName, CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
     public bool WorktreeRequiresLfs(string worktreePath) => LfsRequired;
+    public int MaterializeLfsFailuresRemaining { get; set; }
 
     public ValueTask MaterializeLfsContentAsync(string repositoryId, string worktreePath, GitAuthentication authentication, Func<string, GitAuthentication?> submoduleAuthenticationResolver, CancellationToken cancellationToken)
     {
+        if (MaterializeLfsFailuresRemaining-- > 0)
+        {
+            throw new InvalidOperationException("Simulated LFS preparation failure.");
+        }
         if (LfsRequired)
         {
             LfsMaterializedWorktrees.Add(worktreePath);

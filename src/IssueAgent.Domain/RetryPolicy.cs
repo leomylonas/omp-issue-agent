@@ -44,7 +44,10 @@ public sealed record RetryPolicy
     }
 
     /// <summary>Runs an operation until it succeeds or exhausts this policy's attempts.</summary>
-    public async Task<Exception?> ExecuteAsync(Func<CancellationToken, Task> action, CancellationToken cancellationToken)
+    public async Task<Exception?> ExecuteAsync(
+        Func<CancellationToken, Task> action,
+        CancellationToken cancellationToken,
+        Func<Exception, bool>? shouldRetry = null)
     {
         ArgumentNullException.ThrowIfNull(action);
 
@@ -63,7 +66,7 @@ public sealed record RetryPolicy
             catch (Exception exception)
             {
                 lastException = exception;
-                if (attempt < MaxAttempts)
+                if (attempt < MaxAttempts && (shouldRetry?.Invoke(exception) ?? true))
                 {
                     RetryTelemetry.RecordAttempt();
                     await Task.Delay(GetDelay(attempt), cancellationToken).ConfigureAwait(false);
@@ -71,6 +74,7 @@ public sealed record RetryPolicy
                 else
                 {
                     RetryTelemetry.RecordExhausted();
+                    return exception;
                 }
             }
         }

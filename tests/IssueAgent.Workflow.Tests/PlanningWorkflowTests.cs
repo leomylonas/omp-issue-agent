@@ -61,6 +61,39 @@ public sealed class PlanningWorkflowTests : IDisposable
         Assert.Contains("Keep public APIs source-compatible.", Assert.Single(omp.RunRequests).Prompt, StringComparison.Ordinal);
         Assert.Equal(["repository-planner"], omp.SelectedRoles);
     }
+    [Fact]
+    public async Task RunInitialPlanningAsyncPersistsFailedWaitingStateWhenSubmodulePreparationFails()
+    {
+        provider.AddIssue(Repository, 1, "Prepare repository", "Description");
+        git.UpdateSubmodulesFailuresRemaining = 1;
+
+        var outcome = await CreateWorkflow().RunInitialPlanningAsync(
+            CreateConfig(), 1, new FakeOmpClient().EnqueueSessionId("session-1"), CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Failed, outcome.Status);
+        Assert.Equal(WorkflowPhase.Failed, outcome.State.Phase);
+        Assert.Equal(WorkflowOperationalState.Waiting, outcome.State.OperationalState);
+        Assert.Equal(WaitingReason.ManualIntervention, outcome.State.WaitingReason);
+        Assert.Contains("Git submodule preparation failed (InvalidOperationException)", outcome.Message, StringComparison.Ordinal);
+        var persisted = CanonicalCommentMarkdown.Parse(provider.UpdatedComments[^1].Body);
+        Assert.Equal("failed", persisted.State.Phase);
+        Assert.Equal("waiting", persisted.State.State);
+    }
+
+    [Fact]
+    public async Task RunInitialPlanningAsyncPersistsFailedWaitingStateWhenLfsPreparationFails()
+    {
+        provider.AddIssue(Repository, 1, "Prepare repository", "Description");
+        git.MaterializeLfsFailuresRemaining = 1;
+
+        var outcome = await CreateWorkflow().RunInitialPlanningAsync(
+            CreateConfig(), 1, new FakeOmpClient().EnqueueSessionId("session-1"), CancellationToken.None);
+
+        Assert.Equal(WorkflowOutcomeStatus.Failed, outcome.Status);
+        Assert.Equal(WorkflowPhase.Failed, outcome.State.Phase);
+        Assert.Contains("Git LFS preparation failed (InvalidOperationException)", outcome.Message, StringComparison.Ordinal);
+    }
+
 
     [Fact]
     public async Task RunInitialPlanningAsyncPublishesSanitizedSuggestedSlugForLongTitle()

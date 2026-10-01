@@ -177,9 +177,10 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
         var metrics = new IssueAgentMetrics();
         var registry = new ProviderRegistry(effective, options.Retry.ToPolicy(), metrics, NullLoggerFactory.Instance);
         var sessions = new ActiveOmpSessionRegistry(NullLogger<ActiveOmpSessionRegistry>.Instance);
+        var pollingEligibility = new PollingEligibilitySchedule();
         var dispatcher = new WorkflowDispatcher(Options.Create(options), effective, registry, new LibGit2SharpRepositoryManager(Path.Combine(root, "repos")), new OmpRuntimeEnvironmentFactory(effective), new FanOutNotifier([], options.Retry.ToPolicy(), new Dictionary<WorkflowNotificationKind, IReadOnlySet<string>>(), (_, _, _) => { }), sessions, new DefaultBranchResolver(registry), metrics, NullLogger<WorkflowDispatcher>.Instance, NullLogger<ObservableOmpClient>.Instance);
-        var pool = new WorkflowWorkerPool(Options.Create(options), sessions, metrics, NullLogger<WorkflowWorkerPool>.Instance);
-        return new(new PollingScheduler(Options.Create(options), effective, registry, dispatcher, pool, metrics, NullLogger<PollingScheduler>.Instance), pool, metrics);
+        var pool = new WorkflowWorkerPool(Options.Create(options), sessions, pollingEligibility, metrics, NullLogger<WorkflowWorkerPool>.Instance);
+        return new(new PollingScheduler(Options.Create(options), effective, registry, dispatcher, pool, pollingEligibility, metrics, NullLogger<PollingScheduler>.Instance), pool, metrics);
     }
     private static ProviderFixtureState ConfigureProvider(WireMockServer server, ProviderKind kind)
     {

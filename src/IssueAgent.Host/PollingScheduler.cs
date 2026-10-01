@@ -17,12 +17,13 @@ public sealed partial class PollingScheduler(
     ProviderRegistry providers,
     WorkflowDispatcher dispatcher,
     WorkflowWorkerPool workerPool,
+    PollingEligibilitySchedule pollingEligibility,
     IssueAgentMetrics metrics,
     ILogger<PollingScheduler> logger)
 {
     private long discoverySequence;
     private long lastWorkspaceBytesMeasurementTicks;
-    private readonly PollingEligibilitySchedule pollingEligibility = new();
+    private readonly PollingEligibilitySchedule pollingEligibility = pollingEligibility;
     private static readonly TimeSpan WorkspaceBytesSampleInterval = TimeSpan.FromMinutes(5);
 
     public int QueuedCount => workerPool.QueuedCount;

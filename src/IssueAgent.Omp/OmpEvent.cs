@@ -20,5 +20,11 @@ public sealed record OmpToolResultEvent(string SessionId, DateTimeOffset Timesta
 /// structured result (plan, implementation summary, etc.); callers deserialize it per role.</summary>
 public sealed record OmpCompletedEvent(string SessionId, DateTimeOffset Timestamp, string ResultJson) : OmpEvent(SessionId, Timestamp);
 
-/// <summary>The run failed or was cancelled before completion.</summary>
-public sealed record OmpErrorEvent(string SessionId, DateTimeOffset Timestamp, string Message, bool WasCancelled) : OmpEvent(SessionId, Timestamp);
+/// <summary>The run failed or was cancelled before completion. <see cref="ErrorCode"/> preserves
+/// OMP's machine-readable dependency classification for workflow retry handling.</summary>
+public sealed record OmpErrorEvent(
+    string SessionId,
+    DateTimeOffset Timestamp,
+    string Message,
+    bool WasCancelled,
+    string? ErrorCode = null) : OmpEvent(SessionId, Timestamp);

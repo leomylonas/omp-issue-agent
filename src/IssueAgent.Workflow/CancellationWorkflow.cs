@@ -115,12 +115,28 @@ public sealed class CancellationWorkflow(WorkflowDependencies deps)
 
     /// <summary>Retries the idempotent terminal label transition during later reconciliation when
     /// a prior terminal cleanup reached durable state but was interrupted before labels converged.</summary>
-    public Task ReconcileTerminalLabelsAsync(
+    public async Task ReconcileTerminalLabelsAsync(
         WorkflowRepositoryConfig config,
         long issueNumber,
         WorkflowState state,
-        CancellationToken cancellationToken) =>
-        TransitionTerminalLabelsAsync(config, issueNumber, state.Phase, [], cancellationToken);
+        long? mergeRequestNumber,
+        CancellationToken cancellationToken)
+    {
+        await TransitionTerminalLabelsAsync(config, issueNumber, state.Phase, [], cancellationToken).ConfigureAwait(false);
+        if (mergeRequestNumber is null)
+        {
+            return;
+        }
+
+        var mergeRequest = new ProviderWorkItemReference(
+            config.Repository, ProviderWorkItemKind.MergeRequest, mergeRequestNumber.Value);
+        var labels = await deps.Provider.GetLabelsAsync(mergeRequest, cancellationToken).ConfigureAwait(false);
+        if (labels.Contains(WorkflowCommandLabels.Cancel))
+        {
+            await deps.Provider.RemoveLabelAsync(mergeRequest, WorkflowCommandLabels.Cancel, cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
 
     private async Task TransitionTerminalLabelsAsync(
         WorkflowRepositoryConfig config,

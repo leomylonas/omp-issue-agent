@@ -13,6 +13,7 @@ namespace IssueAgent.Host;
 public sealed partial class WorkflowWorkerPool(
     IOptions<IssueAgentOptions> options,
     ActiveOmpSessionRegistry activeOmpSessions,
+    PollingEligibilitySchedule pollingEligibility,
     IssueAgentMetrics metrics,
     ILogger<WorkflowWorkerPool> logger) : IDisposable
 {
@@ -143,8 +144,14 @@ public sealed partial class WorkflowWorkerPool(
             var deferredForTransientOmpFailure = false;
             try
             {
+                if (!pollingEligibility.IsEligible(candidate!.Key.Provider))
+                {
+                    DeferRateLimitedCandidate(candidate, pollingEligibility.GetRetryAfter(candidate.Key.Provider));
+                    continue;
+                }
+
                 using var rateLimitScheduling = PollingRateLimitScheduling.Enter();
-                await candidate!.ExecuteAsync(attemptCancellation.Token).ConfigureAwait(false);
+                await candidate.ExecuteAsync(attemptCancellation.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -157,7 +164,8 @@ public sealed partial class WorkflowWorkerPool(
             }
             catch (PollingRateLimitedException exception)
             {
-                DeferRateLimitedCandidate(candidate!, exception.RetryAfter);
+                pollingEligibility.Defer(candidate!.Key.Provider, exception.RetryAfter);
+                DeferRateLimitedCandidate(candidate, exception.RetryAfter);
             }
             catch (Exception exception) when (IsTransientOmpDependencyFailure(exception))
             {

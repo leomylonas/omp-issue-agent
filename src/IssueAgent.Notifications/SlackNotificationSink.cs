@@ -14,10 +14,21 @@ public sealed partial class SlackNotificationSink(HttpClient httpClient, Uri web
         ArgumentNullException.ThrowIfNull(notification);
 
         var payload = new SlackIncomingWebhookRequest(FormatMessage(notification));
-        using var response = await httpClient
-            .PostAsJsonAsync(webhookUrl, payload, SlackJsonContext.Default.SlackIncomingWebhookRequest, cancellationToken)
-            .ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+        try
+        {
+            using var response = await httpClient
+                .PostAsJsonAsync(webhookUrl, payload, SlackJsonContext.Default.SlackIncomingWebhookRequest, cancellationToken)
+                .ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new NotificationPostDispatchException("Slack notification POST may have been delivered.", exception);
+        }
     }
 
     private static string FormatMessage(WorkflowNotification notification) =>

@@ -20,10 +20,10 @@ if [ "$(id -u)" -eq 0 ]; then
     fi
 fi
 
-# The host retains provider credentials while OMP uses a different UID. Both processes
-# share a group and umask so OMP can edit worktrees without exposing owner-only secrets.
-# Host and OMP share a group so worktree updates remain writable across the UID boundary.
+# The host retains provider credentials. Each OMP process derives a distinct workflow UID in its
+# wrapper; retain only the capabilities needed to assign that principal and its filesystem owner.
 umask 0002
 
 exec /usr/bin/setpriv --reuid=10001 --regid=10001 --clear-groups \
-    --inh-caps +setuid,+setgid --ambient-caps +setuid,+setgid --no-new-privs -- "$@"
+    --inh-caps +chown,+fowner,+setuid,+setgid \
+    --ambient-caps +chown,+fowner,+setuid,+setgid --no-new-privs -- "$@"

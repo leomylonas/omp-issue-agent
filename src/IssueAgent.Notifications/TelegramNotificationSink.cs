@@ -15,10 +15,21 @@ public sealed partial class TelegramNotificationSink(HttpClient httpClient, stri
         ArgumentNullException.ThrowIfNull(notification);
 
         var payload = new TelegramSendMessageRequest(chatId, FormatMessage(notification));
-        using var response = await httpClient
-            .PostAsJsonAsync($"/bot{botToken}/sendMessage", payload, TelegramJsonContext.Default.TelegramSendMessageRequest, cancellationToken)
-            .ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+        try
+        {
+            using var response = await httpClient
+                .PostAsJsonAsync($"/bot{botToken}/sendMessage", payload, TelegramJsonContext.Default.TelegramSendMessageRequest, cancellationToken)
+                .ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new NotificationPostDispatchException("Telegram notification POST may have been delivered.", exception);
+        }
     }
 
     private static string FormatMessage(WorkflowNotification notification) =>

@@ -67,7 +67,7 @@ public sealed class FanOutNotifierTests
     }
 
     [Fact]
-    public async Task NotifyAsyncRetriesTransientFailuresBeforeSucceeding()
+    public async Task NotifyAsyncRetriesFailuresKnownBeforeDispatch()
     {
         var flakySink = new RecordingSink("flaky") { FailuresBeforeSuccess = 2 };
         var notifier = new FanOutNotifier([flakySink], NoDelayRetryPolicy());
@@ -76,6 +76,33 @@ public sealed class FanOutNotifierTests
 
         Assert.Equal(3, flakySink.Attempts);
         Assert.Single(flakySink.Received);
+    }
+
+    [Fact]
+    public async Task NotifyAsyncDoesNotReplayAmbiguousPostWithoutIdempotency()
+    {
+        var sink = new RecordingSink("webhook") { FailsAfterDispatch = true };
+        string? reportedSinkName = null;
+        var notifier = new FanOutNotifier(
+            [sink],
+            NoDelayRetryPolicy() with { MaxAttempts = 3 },
+            onSinkFailure: (name, _, _) => reportedSinkName = name);
+
+        await notifier.NotifyAsync(Notification, CancellationToken.None);
+
+        Assert.Equal(1, sink.Attempts);
+        Assert.Equal("webhook", reportedSinkName);
+    }
+
+    [Fact]
+    public async Task NotifyAsyncRetriesAmbiguousPostWhenSinkSupportsIdempotency()
+    {
+        var sink = new RecordingSink("idempotent") { FailsAfterDispatch = true, SupportsIdempotencyOnPost = true };
+        var notifier = new FanOutNotifier([sink], NoDelayRetryPolicy() with { MaxAttempts = 2 });
+
+        await notifier.NotifyAsync(Notification, CancellationToken.None);
+
+        Assert.Equal(2, sink.Attempts);
     }
 
     private static RetryPolicy NoDelayRetryPolicy() => RetryPolicy.Default with { InitialDelay = TimeSpan.Zero, MaxJitter = TimeSpan.Zero };
@@ -90,13 +117,24 @@ public sealed class FanOutNotifierTests
 
         public bool AlwaysThrow { get; init; }
 
+        public bool FailsAfterDispatch { get; init; }
+
         public int FailuresBeforeSuccess { get; init; }
+
+        public bool SupportsIdempotencyOnPost { get; init; }
+
+        public bool SupportsIdempotency => SupportsIdempotencyOnPost;
 
         public List<WorkflowNotification> Received { get; } = [];
 
         public Task SendAsync(WorkflowNotification notification, CancellationToken cancellationToken)
         {
             attempts++;
+            if (FailsAfterDispatch)
+            {
+                throw new NotificationPostDispatchException("Simulated ambiguous notification POST.", new HttpRequestException());
+            }
+
             if (AlwaysThrow || attempts <= FailuresBeforeSuccess)
             {
                 throw new InvalidOperationException("Simulated sink failure.");

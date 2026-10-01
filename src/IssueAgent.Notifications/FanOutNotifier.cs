@@ -11,8 +11,15 @@ public interface INotificationSink
 {
     string Name { get; }
 
+    /// <summary>Whether the destination accepts an idempotency key for notification sends.</summary>
+    bool SupportsIdempotency => false;
+
     Task SendAsync(WorkflowNotification notification, CancellationToken cancellationToken);
 }
+
+/// <summary>Indicates that a notification POST may have reached its destination, so replaying it
+/// could produce a duplicate.</summary>
+public sealed class NotificationPostDispatchException(string message, Exception innerException) : HttpRequestException(message, innerException);
 
 public delegate void NotificationSinkFailureHandler(string sinkName, WorkflowNotification notification, Exception exception);
 
@@ -50,7 +57,10 @@ public sealed class FanOutNotifier(
     private async Task SendToSinkAsync(INotificationSink sink, WorkflowNotification notification, CancellationToken cancellationToken)
     {
         var failure = await retryPolicy
-            .ExecuteAsync(ct => sink.SendAsync(notification, ct), cancellationToken)
+            .ExecuteAsync(
+                ct => sink.SendAsync(notification, ct),
+                cancellationToken,
+                exception => sink.SupportsIdempotency || exception is not NotificationPostDispatchException)
             .ConfigureAwait(false);
 
         if (failure is not null)

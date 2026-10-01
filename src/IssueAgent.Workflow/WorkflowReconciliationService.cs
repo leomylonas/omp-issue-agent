@@ -133,7 +133,8 @@ public sealed class WorkflowReconciliationService(WorkflowDependencies dependenc
         if (state.Phase is WorkflowPhase.Done or WorkflowPhase.Cancelled)
         {
             var cancellation = new CancellationWorkflow(dependencies);
-            await cancellation.ReconcileTerminalLabelsAsync(config, issueNumber, state, cancellationToken).ConfigureAwait(false);
+            await cancellation.ReconcileTerminalLabelsAsync(
+                config, issueNumber, state, mergeRequest?.Number, cancellationToken).ConfigureAwait(false);
             await cancellation.CleanupLocalStateAsync(config, state, cancellationToken).ConfigureAwait(false);
             return new WorkflowReconciliationResult(ReconciliationDisposition.Completed, state, content, canonicalComment, "Terminal workflow local state and labels are clean.");
         }

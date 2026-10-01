@@ -29,6 +29,40 @@ public sealed class WorkflowReconciliationServiceTests : IDisposable
         Assert.Empty(provider.UpdatedComments);
         Assert.Empty(notifier.Notifications);
     }
+    [Fact]
+    public async Task TerminalReconciliationConsumesRetainedMergeRequestCancellationCommandAfterRestart()
+    {
+        var (activeState, canonical) = SeedWorkflow(
+            WorkflowPhase.Implementing, WorkflowOperationalState.Working, waitingReason: null);
+        var terminalState = activeState with
+        {
+            Phase = WorkflowPhase.Cancelled,
+            OperationalState = WorkflowOperationalState.Waiting,
+            WaitingReason = WaitingReason.ManualIntervention,
+        };
+        canonical = canonical with
+        {
+            Body = CanonicalCommentMarkdown.Render(CanonicalCommentMarkdown.Parse(canonical.Body) with
+            {
+                State = CanonicalStateSerializer.ToDocument(terminalState, $"{Repository.Id}#7"),
+            }),
+        };
+        provider.IssueComments[(Repository.Id, 1)][0] = canonical;
+        provider.MergeRequests[7] = new ProviderMergeRequest(
+            Repository, 7, terminalState.Branch, terminalState.TargetBranch, "Fix",
+            $"<!-- issue-agent:workflow:{terminalState.WorkflowId} -->",
+            IsDraft: true, IsMerged: false, IsClosed: false,
+            new AttachmentSource("merge-request-description", "7"));
+        provider.Labels[(Repository.Id, ProviderWorkItemKind.MergeRequest, 7)] = [WorkflowCommandLabels.Cancel];
+
+        var result = await CreateService().ReconcileAsync(CreateConfig(), 1, canonical, CancellationToken.None);
+
+        Assert.Equal(ReconciliationDisposition.Completed, result.Disposition);
+        Assert.DoesNotContain(
+            WorkflowCommandLabels.Cancel,
+            provider.Labels[(Repository.Id, ProviderWorkItemKind.MergeRequest, 7)]);
+    }
+
 
     [Fact]
     public async Task ReconciliationEscalatesWhenStoredRequestWasRetargeted()
