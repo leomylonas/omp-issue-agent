@@ -257,21 +257,25 @@ public sealed class StartupValidatorTests
     }
 
     [Fact]
-    public void OmpProtocolAndSessionIncompatibilitiesAreFatalAtStartup()
+    public void OmpProtocolSessionAndGenericCommandRejectionsAreFatalAtStartup()
     {
         Assert.False(StartupValidator.IsTransientOmpStartupDependencyFailure(
             new OmpRpcException("OMP resumed a different durable session.")));
         Assert.False(StartupValidator.IsTransientOmpStartupDependencyFailure(
             new InvalidOperationException("OMP ready frame must declare a supported protocol.", new OmpRpcException("protocol mismatch"))));
+        Assert.False(StartupValidator.IsTransientOmpStartupDependencyFailure(
+            new OmpRemoteException("unknown command new_session")));
+        Assert.False(StartupValidator.IsTransientOmpStartupDependencyFailure(
+            new TimeoutException("OMP command timed out.")));
     }
 
     [Fact]
-    public void OmpBrokerOrModelRejectionsRemainNonfatalAtStartup()
+    public void OmpTypedBrokerOrModelDependencyFailuresRemainNonfatalAtStartup()
     {
         Assert.True(StartupValidator.IsTransientOmpStartupDependencyFailure(
-            new OmpRemoteException("broker temporarily unavailable")));
+            new OmpBrokerUnavailableException("broker temporarily unavailable")));
         Assert.True(StartupValidator.IsTransientOmpStartupDependencyFailure(
-            new InvalidOperationException("probe failed", new OmpRemoteException("model unavailable"))));
+            new InvalidOperationException("probe failed", new OmpModelUnavailableException("model unavailable"))));
     }
 
     [Fact]

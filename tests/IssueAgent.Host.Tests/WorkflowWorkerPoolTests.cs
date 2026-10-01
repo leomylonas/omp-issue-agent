@@ -125,6 +125,66 @@ public sealed class WorkflowWorkerPoolTests
     }
 
     [Fact]
+    public async Task RateLimitedRefreshReservesWorkflowKeyAgainstConcurrentPolling()
+    {
+        using var fixture = new PoolFixture(agentConcurrency: 1);
+        var key = new WorkflowWorkKey("github", "repo", 1);
+        var refreshStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRefresh = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resumed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = 0;
+        var duplicateExecutions = 0;
+        var candidate = new WorkflowCandidate(
+            key,
+            WorkflowCandidateKind.ExistingWorkflow,
+            WorkflowWorkPriority.NewPlanning,
+            null,
+            1,
+            _ =>
+            {
+                if (Interlocked.Increment(ref attempts) == 1)
+                {
+                    throw new PollingRateLimitedException(TimeSpan.FromMilliseconds(20));
+                }
+
+                throw new InvalidOperationException("The stale candidate must not resume.");
+            },
+            async _ =>
+            {
+                refreshStarted.SetResult();
+                await releaseRefresh.Task;
+                return new WorkflowCandidate(
+                    key,
+                    WorkflowCandidateKind.ExistingWorkflow,
+                    WorkflowWorkPriority.Reconciliation,
+                    null,
+                    2,
+                    _ =>
+                    {
+                        resumed.SetResult();
+                        return Task.CompletedTask;
+                    });
+            });
+        await fixture.Pool.AdmitAsync([candidate], CancellationToken.None);
+        fixture.Start();
+
+        await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+        await fixture.Pool.AdmitAsync(
+            [Candidate(1, WorkflowWorkPriority.NewPlanning, null, 3, _ =>
+            {
+                Interlocked.Increment(ref duplicateExecutions);
+                return Task.CompletedTask;
+            })],
+            CancellationToken.None);
+        releaseRefresh.SetResult();
+
+        await resumed.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+        Assert.True(await fixture.Pool.WaitForDrainAsync(TimeSpan.FromSeconds(2), CancellationToken.None));
+        Assert.Equal(0, Volatile.Read(ref duplicateExecutions));
+        await fixture.StopAsync();
+    }
+
+    [Fact]
     public async Task AgentConcurrencyBoundsOnlyCandidateExecution()
     {
         using var fixture = new PoolFixture(agentConcurrency: 2);

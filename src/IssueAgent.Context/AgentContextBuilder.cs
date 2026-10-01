@@ -150,8 +150,9 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
         var issue = await provider.GetIssueAsync(repository, issueNumber, cancellationToken).ConfigureAwait(false);
         var inputs = new List<string>
         {
+            $"repository:{repository.Id}",
             $"issue:{issue.Number}:{issue.Title}:{issue.Description}:{issue.UpdatedAt:O}:{string.Join(',', issue.Labels.OrderBy(label => label, StringComparer.Ordinal))}",
-            $"attachments:{string.Join(',', MarkdownAttachmentScanner.ScanLinks(issue.Description).Select(url => url.AbsoluteUri).OrderBy(url => url, StringComparer.Ordinal))}",
+            $"attachments:{string.Join(',', ResolveAttachmentUrls(issue.Description))}",
         };
 
         await foreach (var comment in provider.GetIssueCommentsAsync(repository, issueNumber, cancellationToken).ConfigureAwait(false))
@@ -163,11 +164,18 @@ public sealed class AgentContextBuilder(IGitProvider provider, AttachmentPipelin
             }
 
             inputs.Add($"comment:{comment.Id}:{comment.AuthorLogin}:{comment.CreatedAt:O}:{comment.UpdatedAt:O}:{comment.Body}");
-            inputs.Add($"attachments:{comment.Id}:{string.Join(',', MarkdownAttachmentScanner.ScanLinks(comment.Body).Select(url => url.AbsoluteUri).OrderBy(url => url, StringComparer.Ordinal))}");
+            inputs.Add($"attachments:{comment.Id}:{string.Join(',', ResolveAttachmentUrls(comment.Body))}");
         }
 
         return string.Join('\u001f', inputs);
     }
+
+    private IEnumerable<string> ResolveAttachmentUrls(string body) =>
+        MarkdownAttachmentScanner.ScanLinks(body)
+            .Select(provider.ResolveAttachmentUrl)
+            .Where(url => url is not null)
+            .Select(url => url!.OriginalString)
+            .OrderBy(url => url, StringComparer.Ordinal);
 
 
     private async Task<IReadOnlyList<RelatedIssueContext>> TraverseRelatedIssuesAsync(

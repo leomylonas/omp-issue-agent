@@ -11,7 +11,7 @@ def send(obj):
     sys.stdout.flush()
 
 
-def response(request_id, command, data=None, error=None):
+def response(request_id, command, data=None, error=None, error_code=None):
     payload = {"id": request_id, "type": "response", "command": command}
     if error is None:
         payload["success"] = True
@@ -19,6 +19,8 @@ def response(request_id, command, data=None, error=None):
             payload["data"] = data
     else:
         payload.update({"success": False, "error": error})
+        if error_code is not None:
+            payload["errorCode"] = error_code
     send(payload)
 
 def emit_standard_error():
@@ -71,6 +73,9 @@ def main():
             emit_standard_error()
             if os.environ.get("OMP_EXIT_AFTER_STDERR") == "1":
                 return
+            if error_code := os.environ.get("OMP_NEW_SESSION_ERROR_CODE"):
+                response(request_id, command, error="startup dependency unavailable", error_code=error_code)
+                continue
             response(request_id, command, {"cancelled": False})
         elif command == "set_model":
             model = {"provider": request.get("provider"), "id": request.get("modelId")}

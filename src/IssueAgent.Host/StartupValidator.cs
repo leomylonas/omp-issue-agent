@@ -85,7 +85,7 @@ public sealed partial class StartupValidator(
     internal static bool IsTransientOmpStartupDependencyFailure(Exception exception) =>
         exception switch
         {
-            TimeoutException or HttpRequestException or OmpRemoteException => true,
+            OmpBrokerUnavailableException or OmpModelUnavailableException => true,
             _ when exception.InnerException is not null => IsTransientOmpStartupDependencyFailure(exception.InnerException),
             _ => false,
         };

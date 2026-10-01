@@ -39,7 +39,12 @@ public sealed partial class WorkflowWorkerPool(
             .OrderBy(candidate => candidate.Priority)
             .ThenBy(candidate => candidate.DiscoverySequence))
         {
-            if (!accepting) break;
+            if (!accepting) continue;
+            if (deferredRateLimits.ContainsKey(candidate.Key))
+            {
+                if (candidate.Command != WorkflowCommand.Cancel) continue;
+                deferredRateLimits.TryRemove(candidate.Key, out _);
+            }
             if (!admission.TryEnqueue(candidate))
             {
                 if (candidate.Command == WorkflowCommand.Cancel)
@@ -194,22 +199,35 @@ public sealed partial class WorkflowWorkerPool(
         try
         {
             await DelayForRequeueAsync(retryAfter, deferralCancellation.Token).ConfigureAwait(false);
-            if (!accepting || !deferredRateLimits.TryRemove(key, out candidate))
+            if (!accepting || !deferredRateLimits.TryGetValue(key, out var reservation))
             {
                 return;
             }
 
+            candidate = reservation;
             if (candidate.RefreshAsync is not null)
             {
                 candidate = await candidate.RefreshAsync(deferralCancellation.Token).ConfigureAwait(false);
                 if (candidate is null)
                 {
+                    if (deferredRateLimits.TryGetValue(key, out var current) &&
+                        ReferenceEquals(current, reservation))
+                    {
+                        deferredRateLimits.TryRemove(key, out _);
+                    }
                     return;
                 }
             }
 
-            if (accepting && admission.TryEnqueue(candidate))
+            // Keep the deferred reservation until the refreshed candidate is admitted. This closes
+            // the gap where normal polling could otherwise enqueue the same workflow while durable
+            // classification is being reconciled. A cancellation can revoke it while refresh runs.
+            if (accepting &&
+                deferredRateLimits.TryGetValue(key, out var currentReservation) &&
+                ReferenceEquals(currentReservation, reservation) &&
+                admission.TryEnqueue(candidate))
             {
+                deferredRateLimits.TryRemove(key, out _);
                 available.Release();
             }
         }

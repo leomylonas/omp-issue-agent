@@ -379,6 +379,8 @@ public sealed class RevisionWorkflowTests : IDisposable
             Phase = WorkflowPhase.Revising,
             OperationalState = WorkflowOperationalState.Waiting,
             WaitingReason = WaitingReason.RemoteHistoryRewrite,
+            PendingRevisionHead = "1111111111111111111111111111111111111111",
+            RevisionRemoteLease = "2222222222222222222222222222222222222222",
         };
         var recoveredContent = CanonicalCommentMarkdown.Parse(canonical.Body) with
         {
@@ -395,15 +397,56 @@ public sealed class RevisionWorkflowTests : IDisposable
             "session-1",
             clock.UtcNow,
             """{"summary":"Fresh revision from accepted remote head.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
-
+        var updateCount = provider.UpdatedComments.Count;
         var outcome = await new RevisionWorkflow(new WorkflowDependencies(
             provider, git, CreateContextBuilder(), notifier, clock)).RunAsync(
             CreateConfig(), 1, recoveredState, omp, CancellationToken.None);
 
         Assert.Equal(WorkflowPhase.Review, outcome.State.Phase);
         Assert.Single(omp.RunRequests);
+        var freshRevisionCheckpoint = CanonicalCommentMarkdown.Parse(provider.UpdatedComments[updateCount].Body).State;
+        Assert.Null(freshRevisionCheckpoint.PendingRevisionHead);
+        Assert.Null(freshRevisionCheckpoint.RevisionRemoteLease);
         Assert.Contains("Fresh revision from accepted remote head.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
         Assert.DoesNotContain("Stale retained revision.", provider.UpdatedComments[^1].Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunAsyncFreshRevisionRecoveryClearsStaleRevisionPublicationCheckpoint()
+    {
+        var reviewState = await SeedReviewStateAsync();
+        var canonical = Assert.Single(provider.IssueComments[(Repository.Id, 1)]);
+        var recoveredState = reviewState with
+        {
+            Phase = WorkflowPhase.Revising,
+            OperationalState = WorkflowOperationalState.Waiting,
+            WaitingReason = WaitingReason.NewFeedbackDuringRevision,
+            PendingRevisionHead = "1111111111111111111111111111111111111111",
+            RevisionRemoteLease = "2222222222222222222222222222222222222222",
+        };
+        var recoveredContent = CanonicalCommentMarkdown.Parse(canonical.Body) with
+        {
+            State = CanonicalStateSerializer.ToDocument(recoveredState, "github/octo/widgets#1"),
+        };
+        await provider.UpdateIssueCommentAsync(
+            Repository,
+            1,
+            canonical.Id,
+            CanonicalCommentMarkdown.Render(recoveredContent),
+            CancellationToken.None);
+        var updateCount = provider.UpdatedComments.Count;
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"summary":"Fresh recovery.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, recoveredState, omp, CancellationToken.None);
+
+        var freshRevisionCheckpoint = CanonicalCommentMarkdown.Parse(provider.UpdatedComments[updateCount].Body).State;
+        Assert.Null(freshRevisionCheckpoint.PendingRevisionHead);
+        Assert.Null(freshRevisionCheckpoint.RevisionRemoteLease);
+        Assert.Single(omp.RunRequests);
     }
 
     [Fact]

@@ -23,6 +23,8 @@ public sealed class FakeGitProvider : IGitProvider
 
     public HashSet<string> TrustedHosts { get; } = [];
 
+    public Func<Uri, Uri?>? AttachmentUrlResolver { get; init; }
+
     public string Name => "fake";
 
     public void AddIssue(RepositoryRef repository, long number, string title, string description, IReadOnlySet<string>? labels = null, IReadOnlySet<string>? assignees = null) =>
@@ -136,6 +138,10 @@ public sealed class FakeGitProvider : IGitProvider
             }
         }
     }
+
+    public Uri? ResolveAttachmentUrl(Uri url) =>
+        AttachmentUrlResolver?.Invoke(url) ??
+        (url.IsAbsoluteUri && url.Scheme is "http" or "https" ? url : null);
 
     public bool IsTrustedAttachmentHost(Uri url) => TrustedHosts.Contains(url.Host);
 

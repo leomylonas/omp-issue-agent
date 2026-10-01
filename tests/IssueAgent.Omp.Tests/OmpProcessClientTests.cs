@@ -27,6 +27,28 @@ public sealed class OmpProcessClientTests
         Assert.Equal("repository-planner", session.Role);
     }
 
+    [Theory]
+    [InlineData("broker_unavailable", typeof(OmpBrokerUnavailableException))]
+    [InlineData("model_unavailable", typeof(OmpModelUnavailableException))]
+    public async Task CreateSessionAsyncClassifiesTypedDependencyRejections(string errorCode, Type exceptionType)
+    {
+        await using var client = StartClient(newSessionErrorCode: errorCode);
+
+        var exception = await Assert.ThrowsAnyAsync<OmpRpcException>(
+            () => client.CreateSessionAsync("repository-planner", CancellationToken.None).AsTask());
+
+        Assert.IsType(exceptionType, exception);
+    }
+
+    [Fact]
+    public async Task CreateSessionAsyncTreatsAnUnidentifiedRejectionAsGenericRemoteFailure()
+    {
+        await using var client = StartClient(newSessionErrorCode: "invalid_command");
+
+        await Assert.ThrowsAsync<OmpRemoteException>(
+            () => client.CreateSessionAsync("repository-planner", CancellationToken.None).AsTask());
+    }
+
     [Fact]
     public async Task ResumeSessionAsyncSwitchesToPersistedSession()
     {
@@ -350,7 +372,8 @@ public sealed class OmpProcessClientTests
     private static OmpProcessClient StartClient(
         TimeSpan? abortGracePeriod = null,
         TimeSpan? configuredTimeout = null,
-        string? hangCommands = null)
+        string? hangCommands = null,
+        string? newSessionErrorCode = null)
     {
         var environment = new Dictionary<string, string>
         {
@@ -359,6 +382,10 @@ public sealed class OmpProcessClientTests
         if (hangCommands is not null)
         {
             environment["OMP_HANG_COMMANDS"] = hangCommands;
+        }
+        if (newSessionErrorCode is not null)
+        {
+            environment["OMP_NEW_SESSION_ERROR_CODE"] = newSessionErrorCode;
         }
 
         var transport = NdjsonRpcTransport.Start(

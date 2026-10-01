@@ -419,7 +419,12 @@ public sealed class OmpProcessClient(
         }
 
         var message = response["error"]?.GetValue<string>() ?? "OMP command failed.";
-        throw new OmpRemoteException(message);
+        throw response["errorCode"]?.GetValue<string>() switch
+        {
+            "broker_unavailable" => new OmpBrokerUnavailableException(message),
+            "model_unavailable" => new OmpModelUnavailableException(message),
+            _ => new OmpRemoteException(message),
+        };
     }
 
     private static JsonObject RequireData(JsonObject response) =>
@@ -436,5 +441,11 @@ internal sealed record OmpModel(string Provider, string Id);
 
 public class OmpRpcException(string message) : Exception(message);
 
-/// <summary>An OMP command was understood but rejected by a remote dependency such as its broker or model provider.</summary>
+/// <summary>An OMP command was rejected. This is fatal unless a typed dependency code identifies it as retryable.</summary>
 public sealed class OmpRemoteException(string message) : OmpRpcException(message);
+
+/// <summary>The configured OMP authentication broker was temporarily unavailable.</summary>
+public sealed class OmpBrokerUnavailableException(string message) : OmpRpcException(message);
+
+/// <summary>The configured model dependency was temporarily unavailable.</summary>
+public sealed class OmpModelUnavailableException(string message) : OmpRpcException(message);

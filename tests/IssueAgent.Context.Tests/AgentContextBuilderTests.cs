@@ -181,6 +181,55 @@ public sealed class AgentContextBuilderTests
     }
 
     [Fact]
+    public async Task CaptureRelatedIssueSnapshotAsyncResolvesRelativeAttachmentsAndIncludesConfiguredRepositoryIdentity()
+    {
+        var configuredRepository = new RepositoryRef("configured/widgets", "octo", "widgets");
+        var provider = new FakeGitProvider
+        {
+            AttachmentUrlResolver = url => url.IsAbsoluteUri
+                ? url
+                : new Uri(new Uri("https://git.example/"), url.OriginalString.TrimStart('/')),
+        };
+        provider.AddIssue(configuredRepository, 1, "Primary", "primary");
+        provider.AddIssue(configuredRepository, 2, "Related", "[upload](/uploads/requirements.pdf)");
+        provider.AddRelationship(configuredRepository, 1, "related", new RepositoryRef("42", "octo", "widgets"), 2);
+        var options = new AgentContextBuilderOptions { AllowedRepositories = [configuredRepository] };
+        var builder = new AgentContextBuilder(provider, new AttachmentPipeline(provider, options.AttachmentLimits), options);
+
+        var snapshot = await builder.CaptureRelatedIssueSnapshotAsync(configuredRepository, 1, CancellationToken.None);
+
+        var related = Assert.Single(snapshot);
+        Assert.Contains("repository:configured/widgets", related, StringComparison.Ordinal);
+        Assert.Contains("https://git.example/uploads/requirements.pdf", related, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CaptureRelatedIssueSnapshotAsyncUsesTheSameAllowListAndDepthBoundaryAsRelatedContext()
+    {
+        var secondHop = new RepositoryRef("configured/second-hop", "octo", "second-hop");
+        var provider = new FakeGitProvider();
+        provider.AddIssue(Repository, 1, "Primary", "primary");
+        provider.AddIssue(Repository, 2, "One hop", "one");
+        provider.AddIssue(secondHop, 3, "Two hops", "two");
+        provider.AddRelationship(Repository, 1, "related", Repository, 2);
+        provider.AddRelationship(Repository, 2, "related", secondHop, 3);
+        provider.AddRelationship(secondHop, 3, "related", UnconfiguredRepository, 4);
+        var options = new AgentContextBuilderOptions
+        {
+            RelatedIssueTraversalDepth = 2,
+            AllowedRepositories = [Repository, secondHop],
+        };
+        var builder = new AgentContextBuilder(provider, new AttachmentPipeline(provider, options.AttachmentLimits), options);
+
+        var snapshot = await builder.CaptureRelatedIssueSnapshotAsync(Repository, 1, CancellationToken.None);
+
+        Assert.Equal(2, snapshot.Count);
+        Assert.Contains(snapshot, stamp => stamp.Contains("repository:github/octo/widgets", StringComparison.Ordinal));
+        Assert.Contains(snapshot, stamp => stamp.Contains("repository:configured/second-hop", StringComparison.Ordinal));
+        Assert.DoesNotContain(snapshot, stamp => stamp.Contains(UnconfiguredRepository.Id, StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task BuildAsyncStopsAtZeroTraversalDepth()
     {
         var provider = new FakeGitProvider();

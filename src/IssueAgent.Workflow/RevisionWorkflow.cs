@@ -23,12 +23,20 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(omp);
 
+        var acceptsRewrittenRemoteHistory = currentState.WaitingReason == WaitingReason.RemoteHistoryRewrite;
+        var startsFreshRevisionRecovery = !publishRetainedResult;
         var workingState = currentState with
         {
             Phase = WorkflowPhase.Revising,
             OperationalState = WorkflowOperationalState.Working,
             WaitingReason = null,
             InterruptedPhase = null,
+            PendingRevisionHead = acceptsRewrittenRemoteHistory || startsFreshRevisionRecovery
+                ? null
+                : currentState.PendingRevisionHead,
+            RevisionRemoteLease = acceptsRewrittenRemoteHistory || startsFreshRevisionRecovery
+                ? null
+                : currentState.RevisionRemoteLease,
             UpdatedAt = deps.Clock.UtcNow,
         };
 
@@ -49,7 +57,9 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 "Cannot revise: the review-feedback checkpoint is missing, so IssueAgent cannot determine which feedback this revision must address.",
                 cancellationToken).ConfigureAwait(false);
         }
-        var retainedResult = publishRetainedResult && currentState.Phase == WorkflowPhase.Revising
+        var retainedResult = publishRetainedResult &&
+            currentState.Phase == WorkflowPhase.Revising &&
+            !acceptsRewrittenRemoteHistory
             ? existingContent.ImplementationResult
             : null;
         var workingContent = existingContent with
