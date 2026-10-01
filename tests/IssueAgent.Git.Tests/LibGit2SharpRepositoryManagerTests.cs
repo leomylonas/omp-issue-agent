@@ -7,7 +7,6 @@ namespace IssueAgent.Git.Tests;
 public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
 {
     private readonly string reposRoot = TempGitFixtures.CreateTempDirectory();
-    private static readonly object PathLock = new();
 
     private readonly List<string> cleanupPaths = [];
     private readonly LibGit2SharpRepositoryManager manager;
@@ -1176,7 +1175,8 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
 
     private static void WithFakeCommand(string command, string script, Action action)
     {
-        lock (PathLock)
+        TempGitFixtures.ProcessEnvironmentLock.Wait();
+        try
         {
             var commandDirectory = TempGitFixtures.CreateTempDirectory();
             var commandPath = Path.Combine(commandDirectory, command);
@@ -1197,6 +1197,10 @@ public sealed class LibGit2SharpRepositoryManagerTests : IDisposable
                 Environment.SetEnvironmentVariable("PATH", originalPath);
                 Directory.Delete(commandDirectory, recursive: true);
             }
+        }
+        finally
+        {
+            TempGitFixtures.ProcessEnvironmentLock.Release();
         }
     }
     private string Track(string path)

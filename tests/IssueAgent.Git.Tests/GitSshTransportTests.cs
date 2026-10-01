@@ -9,7 +9,6 @@ namespace IssueAgent.Git.Tests;
 /// verification (specification §§11 and 36).</summary>
 public sealed class GitSshTransportTests : IDisposable
 {
-    private static readonly SemaphoreSlim PathLock = new(1, 1);
     private readonly List<string> cleanupPaths = [];
 
     [Fact]
@@ -214,7 +213,7 @@ public sealed class GitSshTransportTests : IDisposable
 
         await WithFakeCommandAsync(
             "ssh",
-            $"#!/bin/sh\ntouch \"{startedPath}\"\n(sleep 1; touch \"{descendantPath}\") &\nwait\n",
+            $"#!/bin/sh\n(sleep 1; touch \"{descendantPath}\") &\ntouch \"{startedPath}\"\nwait\n",
             async () =>
             {
                 using var cancellation = new CancellationTokenSource();
@@ -285,7 +284,7 @@ public sealed class GitSshTransportTests : IDisposable
 
     private static void WithFakeCommand(string command, string script, Action action)
     {
-        PathLock.Wait();
+        TempGitFixtures.ProcessEnvironmentLock.Wait();
         try
         {
             var commandDirectory = TempGitFixtures.CreateTempDirectory();
@@ -307,13 +306,13 @@ public sealed class GitSshTransportTests : IDisposable
         }
         finally
         {
-            PathLock.Release();
+            TempGitFixtures.ProcessEnvironmentLock.Release();
         }
     }
 
     private static async Task WithFakeCommandAsync(string command, string script, Func<Task> action)
     {
-        await PathLock.WaitAsync();
+        await TempGitFixtures.ProcessEnvironmentLock.WaitAsync();
         try
         {
             var commandDirectory = TempGitFixtures.CreateTempDirectory();
@@ -335,7 +334,7 @@ public sealed class GitSshTransportTests : IDisposable
         }
         finally
         {
-            PathLock.Release();
+            TempGitFixtures.ProcessEnvironmentLock.Release();
         }
     }
 

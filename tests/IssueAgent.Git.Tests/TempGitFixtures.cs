@@ -6,6 +6,8 @@ namespace IssueAgent.Git.Tests;
 /// integration tests. Never touches any shared or real repository.</summary>
 internal static class TempGitFixtures
 {
+    public static readonly SemaphoreSlim ProcessEnvironmentLock = new(1, 1);
+
     public static string CreateTempDirectory()
     {
         var path = Path.Combine(Path.GetTempPath(), "issueagent-git-tests", Guid.NewGuid().ToString("N"));
