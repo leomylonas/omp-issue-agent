@@ -49,6 +49,54 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
         Assert.Equal(0, CountCanonicalCommentCreates(server) - firstHostCanonicalCommentCreates);
     }
 
+    [Theory]
+    [InlineData(ProviderKind.GitHub)]
+    [InlineData(ProviderKind.GitLab)]
+    public async Task AssignedIssueCompletesPlanReplanImplementReviseAndMergeThroughProductionProviders(ProviderKind kind)
+    {
+        using var server = WireMockServer.Start();
+        var remote = await CreateRemoteAsync();
+        var fixture = ConfigureProvider(server, kind);
+
+        await RunPollAsync(kind, server, remote);
+        Assert.Equal(WorkflowPhase.Planned, fixture.Phase);
+        Assert.Equal(1, fixture.PlanRevision);
+        Assert.Contains(WorkflowLabels.PlannedPhase, fixture.IssueLabelSnapshot);
+        Assert.Contains(WorkflowLabels.WaitingState, fixture.IssueLabelSnapshot);
+
+        fixture.AddIssueLabel(WorkflowCommandLabels.Replan);
+        await RunPollAsync(kind, server, remote);
+        Assert.Equal(WorkflowPhase.Planned, fixture.Phase);
+        Assert.Equal(2, fixture.PlanRevision);
+        Assert.DoesNotContain(WorkflowCommandLabels.Replan, fixture.IssueLabelSnapshot);
+
+        fixture.AddIssueLabel(WorkflowCommandLabels.Implement);
+        await RunPollAsync(kind, server, remote);
+        Assert.True(fixture.HasPersistedMergeRequest);
+        Assert.Equal(1, fixture.MergeRequestCreateCount);
+        Assert.Equal(WorkflowPhase.Review, fixture.Phase);
+        Assert.Contains(WorkflowLabels.ReviewPhase, fixture.IssueLabelSnapshot);
+        Assert.Contains(WorkflowLabels.WaitingState, fixture.IssueLabelSnapshot);
+        Assert.DoesNotContain(WorkflowCommandLabels.Implement, fixture.IssueLabelSnapshot);
+
+        fixture.AddMergeRequestLabel(WorkflowCommandLabels.Revise);
+        await RunPollAsync(kind, server, remote);
+        Assert.Equal(WorkflowPhase.Review, fixture.Phase);
+        Assert.DoesNotContain(WorkflowCommandLabels.Revise, fixture.MergeRequestLabelSnapshot);
+
+        fixture.MarkMergeRequestMerged();
+        await RunPollAsync(kind, server, remote);
+        Assert.Equal(WorkflowPhase.Done, fixture.Phase);
+        Assert.Contains(WorkflowLabels.DonePhase, fixture.IssueLabelSnapshot);
+        Assert.DoesNotContain(WorkflowLabels.WaitingState, fixture.IssueLabelSnapshot);
+
+        var canonicalCommentCreates = CountCanonicalCommentCreates(server);
+        var mergeRequestCreates = fixture.MergeRequestCreateCount;
+        await RunPollAsync(kind, server, remote);
+        Assert.Equal(canonicalCommentCreates, CountCanonicalCommentCreates(server));
+        Assert.Equal(mergeRequestCreates, fixture.MergeRequestCreateCount);
+    }
+
 
     [Theory]
     [InlineData(ProviderKind.GitHub)]
@@ -99,8 +147,11 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
         await using var host = CreateHost(kind, server, remote);
         using var workerCancellation = new CancellationTokenSource();
         var workers = host.Scheduler.RunWorkersAsync(workerCancellation.Token);
-        await host.Scheduler.PollOnceAsync(TestContext.Current.CancellationToken);
-        Assert.True(await host.Scheduler.WaitForDrainAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        for (var poll = 0; poll < 2; poll++)
+        {
+            await host.Scheduler.PollOnceAsync(TestContext.Current.CancellationToken);
+            Assert.True(await host.Scheduler.WaitForDrainAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        }
         workerCancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => workers);
     }
@@ -142,7 +193,7 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
             server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/labels").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBodyAsJson(_ => fixture.IssueLabels()));
             server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/labels").UsingPut()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBodyAsJson(request => fixture.SetIssueLabels(request.Body!)));
             server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/labels").UsingPost()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBodyAsJson(request => fixture.AddIssueLabels(request.Body!)));
-            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/labels/*").UsingDelete()).RespondWith(Response.Create().WithStatusCode(204));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/labels/*").UsingDelete()).RespondWith(Response.Create().WithStatusCode(204).WithBodyAsJson(request => fixture.RemoveIssueLabel(request.Path!)));
             server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/labels/*").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody("""{"name":"managed"}"""));
             server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/labels").UsingPost()).RespondWith(Response.Create().WithStatusCode(201).WithHeader("Content-Type", "application/json").WithBody("""{"name":"managed"}"""));
             server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/comments/10").UsingPatch()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBodyAsJson(request => fixture.PersistComment(request.Body!)));
@@ -152,10 +203,11 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
             server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls/1/comments").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody("[]"));
             server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/timeline").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody("[]"));
             server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls/1/reviews").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody("[]"));
+            server.Given(Request.Create().WithPath("/api/graphql").UsingPost()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody("""{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}"""));
             server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1").UsingPatch()).RespondWith(Response.Create().WithBody("{}"));
             server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls/1/labels").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBodyAsJson(_ => fixture.MergeRequestLabels()));
             server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls/1/labels").UsingPost()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody("[]"));
-            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls/1/labels/*").UsingDelete()).RespondWith(Response.Create().WithStatusCode(204));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls/1/labels/*").UsingDelete()).RespondWith(Response.Create().WithStatusCode(204).WithBodyAsJson(request => fixture.RemoveMergeRequestLabel(request.Path!)));
         }
         else
         {
@@ -168,6 +220,7 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
             server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/merge_requests").UsingGet()).RespondWith(Response.Create().WithBodyAsJson(_ => fixture.MergeRequestCollection()));
             server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/merge_requests").UsingPost()).RespondWith(Response.Create().WithStatusCode(201).WithBodyAsJson(request => fixture.CreateMergeRequest(request.Body!)));
             server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/merge_requests/1").UsingGet()).RespondWith(Response.Create().WithBodyAsJson(_ => fixture.MergeRequest()));
+            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/merge_requests/1").UsingPut()).RespondWith(Response.Create().WithBodyAsJson(request => fixture.UpdateGitLabMergeRequest(request.Body!)));
             server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/merge_requests/1/notes").UsingGet()).RespondWith(Response.Create().WithBody("[]"));
             server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/merge_requests/1/discussions").UsingGet()).RespondWith(Response.Create().WithBody("[]"));
             server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/issues/1/links").UsingGet()).RespondWith(Response.Create().WithBody("[]"));
@@ -208,6 +261,7 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
         private readonly HashSet<string> mergeRequestLabels = [];
         private string? commentBody;
         private string? sourceBranch;
+        private string? mergeRequestBody;
         private int persistedCommentReadCount;
         private int mergeRequestCreateCount;
         private bool mergeRequestMerged;
@@ -220,25 +274,39 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
         public string SourceBranch { get { lock (gate) return sourceBranch ?? throw new InvalidOperationException("Merge request has not been created."); } }
         public int PlanRevision { get { lock (gate) return ParseState().PlanRevision; } }
         public WorkflowPhase Phase { get { lock (gate) return ParseState().Phase; } }
+        public IReadOnlySet<string> IssueLabelSnapshot { get { lock (gate) return issueLabels.ToHashSet(StringComparer.Ordinal); } }
+        public IReadOnlySet<string> MergeRequestLabelSnapshot { get { lock (gate) return (kind == ProviderKind.GitHub ? issueLabels : mergeRequestLabels).ToHashSet(StringComparer.Ordinal); } }
 
         public void AddIssueLabel(string label) { lock (gate) issueLabels.Add(label); }
-        public void RemoveIssueLabel(string label) { lock (gate) issueLabels.Remove(label); }
-        public void AddMergeRequestLabel(string label) { lock (gate) mergeRequestLabels.Add(label); }
-        public void RemoveMergeRequestLabel(string label) { lock (gate) mergeRequestLabels.Remove(label); }
+        public void AddMergeRequestLabel(string label) { lock (gate) (kind == ProviderKind.GitHub ? issueLabels : mergeRequestLabels).Add(label); }
         public void MarkMergeRequestMerged() { lock (gate) mergeRequestMerged = true; }
-        public object Issue() => kind == ProviderKind.GitHub
-            ? new { number = 1, title = "Guard titles", body = "Empty titles fail.", created_at = "2024-06-01T00:00:00Z", updated_at = "2024-06-01T00:00:00Z", state = "open", assignees = new[] { new { login = "issue-agent" } }, labels = Array.Empty<ProviderLabel>() }
-            : new { iid = 1, title = "Guard titles", description = "Empty titles fail.", created_at = "2024-06-01T00:00:00Z", updated_at = "2024-06-01T00:00:00Z", state = "opened", assignees = new[] { new { username = "issue-agent" } }, labels = Array.Empty<ProviderLabel>() };
-        public ProviderLabel[] IssueLabels()
+        public object Issue()
         {
             lock (gate)
             {
-                var labels = issueLabels.Select(label => new ProviderLabel(label)).ToArray();
-                issueLabels.RemoveWhere(label => label.StartsWith("agent:cmd:", StringComparison.Ordinal));
-                return labels;
+                return kind == ProviderKind.GitHub
+                    ? new { number = 1, title = "Guard titles", body = "Empty titles fail.", created_at = "2024-06-01T00:00:00Z", updated_at = DateTimeOffset.UtcNow.ToString("O"), state = "open", assignees = new[] { new { login = "issue-agent" } }, labels = issueLabels.Select(label => new ProviderLabel(label)).ToArray() }
+                    : new { iid = 1, title = "Guard titles", description = "Empty titles fail.", created_at = "2024-06-01T00:00:00Z", updated_at = DateTimeOffset.UtcNow.ToString("O"), state = "opened", assignees = new[] { new { username = "issue-agent" } }, labels = issueLabels.ToArray() };
             }
         }
-        public ProviderLabel[] MergeRequestLabels() { lock (gate) return mergeRequestLabels.Select(label => new ProviderLabel(label)).ToArray(); }
+        public ProviderLabel[] IssueLabels() { lock (gate) return issueLabels.Select(label => new ProviderLabel(label)).ToArray(); }
+        public ProviderLabel[] MergeRequestLabels() { lock (gate) return (kind == ProviderKind.GitHub ? issueLabels : mergeRequestLabels).Select(label => new ProviderLabel(label)).ToArray(); }
+        public ProviderLabel[] RemoveIssueLabel(string path)
+        {
+            lock (gate)
+            {
+                issueLabels.Remove(LabelFromPath(path));
+                return IssueLabels();
+            }
+        }
+        public ProviderLabel[] RemoveMergeRequestLabel(string path)
+        {
+            lock (gate)
+            {
+                (kind == ProviderKind.GitHub ? issueLabels : mergeRequestLabels).Remove(LabelFromPath(path));
+                return MergeRequestLabels();
+            }
+        }
         public ProviderLabel[] SetIssueLabels(string requestBody)
         {
             lock (gate)
@@ -255,10 +323,7 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
             {
                 issueLabels.RemoveWhere(label => label.StartsWith("agent:phase:", StringComparison.Ordinal) ||
                     label.StartsWith("agent:state:", StringComparison.Ordinal));
-                foreach (var label in document.RootElement.GetProperty("labels").EnumerateArray())
-                {
-                    issueLabels.Add(label.GetString()!);
-                }
+                foreach (var label in document.RootElement.GetProperty("labels").EnumerateArray()) issueLabels.Add(label.GetString()!);
                 return IssueLabels();
             }
         }
@@ -267,13 +332,17 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
             using var document = JsonDocument.Parse(requestBody);
             lock (gate)
             {
-                issueLabels.RemoveWhere(label => label.StartsWith("agent:phase:", StringComparison.Ordinal) ||
-                    label.StartsWith("agent:state:", StringComparison.Ordinal));
-                if (document.RootElement.TryGetProperty("add_labels", out var labels) && labels.GetString() is { } value)
-                {
-                    foreach (var label in value.Split(',', StringSplitOptions.RemoveEmptyEntries)) issueLabels.Add(label);
-                }
+                UpdateGitLabLabels(document.RootElement, issueLabels, removeManagedLabels: true);
                 return Issue();
+            }
+        }
+        public object UpdateGitLabMergeRequest(string requestBody)
+        {
+            using var document = JsonDocument.Parse(requestBody);
+            lock (gate)
+            {
+                UpdateGitLabLabels(document.RootElement, mergeRequestLabels, removeManagedLabels: false);
+                return MergeRequest();
             }
         }
         public object CommentCollection()
@@ -306,6 +375,7 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
             lock (gate)
             {
                 sourceBranch = document.RootElement.GetProperty(kind == ProviderKind.GitHub ? "head" : "source_branch").GetString();
+                mergeRequestBody = document.RootElement.GetProperty(kind == ProviderKind.GitHub ? "body" : "description").GetString();
                 mergeRequestCreateCount++;
                 return MergeRequest();
             }
@@ -316,10 +386,29 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
             {
                 var branch = sourceBranch ?? "agent/1-guard-titles";
                 return kind == ProviderKind.GitHub
-                    ? new { number = 1, head = new { @ref = branch }, @base = new { @ref = "main" }, title = "Guard titles", body = "Implementation", draft = true, merged = mergeRequestMerged, state = mergeRequestMerged ? "closed" : "open", html_url = "https://example.test/pull/1" }
-                    : new { iid = 1, source_branch = branch, target_branch = "main", title = "Draft: Guard titles", description = "Implementation", draft = true, state = mergeRequestMerged ? "merged" : "opened", labels = mergeRequestLabels.ToArray(), source_project_id = 1L, web_url = "https://example.test/merge_requests/1" };
+                    ? new { number = 1, head = new { @ref = branch }, @base = new { @ref = "main" }, title = "Guard titles", body = mergeRequestBody ?? "Implementation", draft = true, merged = mergeRequestMerged, merged_at = mergeRequestMerged ? "2024-06-02T00:00:00Z" : null, state = mergeRequestMerged ? "closed" : "open", html_url = "https://example.test/pull/1" }
+                    : new { iid = 1, source_branch = branch, target_branch = "main", title = "Draft: Guard titles", description = mergeRequestBody ?? "Implementation", draft = true, state = mergeRequestMerged ? "merged" : "opened", labels = mergeRequestLabels.ToArray(), source_project_id = 1L, web_url = "https://example.test/merge_requests/1" };
             }
         }
+        private static string LabelFromPath(string path) => Uri.UnescapeDataString(path[(path.LastIndexOf('/') + 1)..]);
+
+        private static void UpdateGitLabLabels(JsonElement request, HashSet<string> labels, bool removeManagedLabels)
+        {
+            if (request.TryGetProperty("add_labels", out var added) && added.GetString() is { } addedValue)
+            {
+                if (removeManagedLabels)
+                {
+                    labels.RemoveWhere(label => label.StartsWith("agent:phase:", StringComparison.Ordinal) ||
+                        label.StartsWith("agent:state:", StringComparison.Ordinal));
+                }
+                foreach (var label in addedValue.Split(',', StringSplitOptions.RemoveEmptyEntries)) labels.Add(label);
+            }
+            if (request.TryGetProperty("remove_labels", out var removed) && removed.GetString() is { } removedValue)
+            {
+                foreach (var label in removedValue.Split(',', StringSplitOptions.RemoveEmptyEntries)) labels.Remove(label);
+            }
+        }
+
         private WorkflowState ParseState() => commentBody is null
             ? throw new InvalidOperationException("Canonical comment has not been persisted.")
             : CanonicalStateSerializer.ToWorkflowState(CanonicalCommentMarkdown.Parse(commentBody).State);
@@ -330,9 +419,10 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
         Directory.CreateDirectory(root);
         var executable = Path.Combine(root, "deterministic-omp.py");
         File.WriteAllText(executable, """
-            #!/usr/bin/env python3
+            #!/usr/bin/python3
             import json
             import os
+            import subprocess
             import sys
 
             session_dir = sys.argv[sys.argv.index("--session-dir") + 1]
@@ -362,11 +452,13 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
                 elif command == "prompt":
                     response(request, {"agentInvoked": True})
                     prompt = request.get("message", "").lower()
-                    if "implementation" in prompt or "revision" in prompt:
+                    if "the plan below has been approved" in prompt or "the human has reviewed" in prompt:
                         with open("Lifecycle.txt", "a") as lifecycle:
                             lifecycle.write("validated\\n")
+                        subprocess.run(["/usr/bin/git", "add", "Lifecycle.txt"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.run(["/usr/bin/git", "-c", "user.name=IssueAgent", "-c", "user.email=issue-agent@example.com", "commit", "-m", "validate titles"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         result = "{\"summary\":\"Validated titles.\",\"keyChanges\":[\"Added lifecycle validation\"],\"decisions\":[\"Keep validation deterministic.\"],\"checksRun\":[\"deterministic smoke\"],\"knownFailures\":[],\"deviations\":[],\"risks\":[]}"
-                    elif "replan" in prompt:
+                    elif "requested changes to the existing plan" in prompt:
                         result = "{\"planText\":\"Validate empty and whitespace-only titles.\",\"decisions\":[\"Normalize before validation.\"]}"
                     else:
                         result = "{\"planText\":\"Validate titles at the boundary.\",\"decisions\":[\"Keep validation deterministic.\"]}"
