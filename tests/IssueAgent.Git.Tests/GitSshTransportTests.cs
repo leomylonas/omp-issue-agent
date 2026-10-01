@@ -213,7 +213,7 @@ public sealed class GitSshTransportTests : IDisposable
 
         await WithFakeCommandAsync(
             "ssh",
-            $"#!/bin/sh\n(sleep 1; touch \"{descendantPath}\") &\ntouch \"{startedPath}\"\nwait\n",
+            $"#!/bin/sh\n(sleep 5; touch \"{descendantPath}\") &\ntouch \"{startedPath}\"\nwait\n",
             async () =>
             {
                 using var cancellation = new CancellationTokenSource();
