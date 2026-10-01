@@ -3,6 +3,7 @@ using IssueAgent.Configuration;
 using IssueAgent.Domain;
 using IssueAgent.Providers;
 using IssueAgent.Observability;
+using IssueAgent.Omp;
 using Microsoft.Extensions.Options;
 
 namespace IssueAgent.Host;
@@ -18,6 +19,7 @@ public sealed partial class WorkflowWorkerPool(
     private readonly FairWorkAdmission admission = new();
     private readonly ConcurrentDictionary<WorkflowWorkKey, WorkflowCandidate> deferredCancellations = new();
     private readonly ConcurrentDictionary<WorkflowWorkKey, WorkflowCandidate> deferredRateLimits = new();
+    private readonly ConcurrentDictionary<WorkflowWorkKey, int> transientOmpFailureAttempts = new();
     private readonly ConcurrentDictionary<WorkflowWorkKey, CancellationTokenSource> activeAttemptCancellations = new();
     private readonly CancellationTokenSource deferralCancellation = new();
     private readonly SemaphoreSlim available = new(0);
@@ -44,6 +46,7 @@ public sealed partial class WorkflowWorkerPool(
             {
                 if (candidate.Command != WorkflowCommand.Cancel) continue;
                 deferredRateLimits.TryRemove(candidate.Key, out _);
+                transientOmpFailureAttempts.TryRemove(candidate.Key, out _);
             }
             if (!admission.TryEnqueue(candidate))
             {
@@ -101,6 +104,7 @@ public sealed partial class WorkflowWorkerPool(
         var deferred = deferredCancellations.Count + deferredRateLimits.Count;
         deferredCancellations.Clear();
         deferredRateLimits.Clear();
+        transientOmpFailureAttempts.Clear();
         return admission.DiscardQueued() + deferred;
     }
 
@@ -136,6 +140,7 @@ public sealed partial class WorkflowWorkerPool(
             }
             metrics.ActiveOperations.Add(1);
             using var activeOperation = metrics.BeginActiveOperation();
+            var deferredForTransientOmpFailure = false;
             try
             {
                 using var rateLimitScheduling = PollingRateLimitScheduling.Enter();
@@ -154,12 +159,24 @@ public sealed partial class WorkflowWorkerPool(
             {
                 DeferRateLimitedCandidate(candidate!, exception.RetryAfter);
             }
+            catch (Exception exception) when (IsTransientOmpDependencyFailure(exception))
+            {
+                deferredForTransientOmpFailure = DeferTransientOmpCandidate(candidate!);
+                if (!deferredForTransientOmpFailure)
+                {
+                    LogWorkflowFailure(logger, exception, candidate!.Key.Provider, candidate.Key.RepositoryId, candidate.Key.IssueNumber);
+                }
+            }
             catch (Exception exception)
             {
                 LogWorkflowFailure(logger, exception, candidate!.Key.Provider, candidate.Key.RepositoryId, candidate.Key.IssueNumber);
             }
             finally
             {
+                if (!deferredForTransientOmpFailure)
+                {
+                    transientOmpFailureAttempts.TryRemove(candidate!.Key, out _);
+                }
                 activeAttemptCancellations.TryRemove(candidate!.Key, out _);
                 metrics.ActiveOperations.Add(-1);
                 admission.Complete(candidate!.Key);
@@ -193,6 +210,26 @@ public sealed partial class WorkflowWorkerPool(
         _ = RequeueRateLimitedCandidateAsync(candidate.Key, retryAfter);
     }
 
+    private bool DeferTransientOmpCandidate(WorkflowCandidate candidate)
+    {
+        var attempt = transientOmpFailureAttempts.AddOrUpdate(candidate.Key, 1, static (_, current) => current + 1);
+        if (attempt >= options.Value.Retry.MaxAttempts)
+        {
+            return false;
+        }
+
+        DeferRateLimitedCandidate(candidate, options.Value.Retry.ToPolicy().GetDelay(attempt));
+        return true;
+    }
+
+    private static bool IsTransientOmpDependencyFailure(Exception exception) =>
+        exception switch
+        {
+            OmpBrokerUnavailableException or OmpModelUnavailableException => true,
+            _ when exception.InnerException is not null => IsTransientOmpDependencyFailure(exception.InnerException),
+            _ => false,
+        };
+
     private async Task RequeueRateLimitedCandidateAsync(WorkflowWorkKey key, TimeSpan retryAfter)
     {
         WorkflowCandidate? candidate = null;
@@ -222,13 +259,30 @@ public sealed partial class WorkflowWorkerPool(
             // Keep the deferred reservation until the refreshed candidate is admitted. This closes
             // the gap where normal polling could otherwise enqueue the same workflow while durable
             // classification is being reconciled. A cancellation can revoke it while refresh runs.
-            if (accepting &&
-                deferredRateLimits.TryGetValue(key, out var currentReservation) &&
-                ReferenceEquals(currentReservation, reservation) &&
-                admission.TryEnqueue(candidate))
+            if (!accepting ||
+                !deferredRateLimits.TryGetValue(key, out var currentReservation) ||
+                !ReferenceEquals(currentReservation, reservation))
+            {
+                return;
+            }
+
+            if (admission.TryEnqueue(candidate))
             {
                 deferredRateLimits.TryRemove(key, out _);
                 available.Release();
+                return;
+            }
+
+            // The failed attempt may still be completing while its deferral task wakes. Preserve
+            // the reservation and retry after it releases the admission key rather than allowing
+            // a concurrent poll to replace the durable classification.
+            if (admission.IsAdmitted(key))
+            {
+                _ = RequeueRateLimitedCandidateAsync(key, TimeSpan.Zero);
+            }
+            else
+            {
+                deferredRateLimits.TryRemove(key, out _);
             }
         }
         catch (OperationCanceledException) when (deferralCancellation.IsCancellationRequested)
@@ -236,10 +290,21 @@ public sealed partial class WorkflowWorkerPool(
         }
         catch (PollingRateLimitedException exception) when (candidate is not null)
         {
-            DeferRateLimitedCandidate(candidate, exception.RetryAfter);
+            if (accepting &&
+                deferredRateLimits.TryGetValue(key, out var reservation) &&
+                ReferenceEquals(reservation, candidate))
+            {
+                _ = RequeueRateLimitedCandidateAsync(key, exception.RetryAfter);
+            }
         }
         catch (Exception exception)
         {
+            if (candidate is not null &&
+                deferredRateLimits.TryGetValue(key, out var reservation) &&
+                ReferenceEquals(reservation, candidate))
+            {
+                deferredRateLimits.TryRemove(key, out _);
+            }
             LogWorkflowFailure(logger, exception, key.Provider, key.RepositoryId, key.IssueNumber);
         }
     }

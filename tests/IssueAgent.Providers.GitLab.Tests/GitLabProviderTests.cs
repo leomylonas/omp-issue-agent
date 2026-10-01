@@ -372,6 +372,7 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     [Fact]
     public async Task FindMergeRequestAsyncReturnsNullWhenNoneExists()
     {
+        StubProject("123", 123);
         fixture.Server
             .Given(Request.Create().WithPath("/api/v4/projects/123/merge_requests").UsingGet())
             .RespondWith(JsonResponse("[]"));
@@ -384,6 +385,7 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     [Fact]
     public async Task FindMergeRequestAsyncMapsProviderWebUrl()
     {
+        StubProject("123", 123);
         fixture.Server
             .Given(Request.Create().WithPath("/api/v4/projects/123/merge_requests").UsingGet())
             .RespondWith(JsonResponse("""
@@ -398,6 +400,7 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     [Fact]
     public async Task FindMergeRequestAsyncExcludesMatchingBranchFromAFork()
     {
+        StubProject("123", 123);
         fixture.Server
             .Given(Request.Create().WithPath("/api/v4/projects/123/merge_requests").UsingGet())
             .RespondWith(JsonResponse("""
@@ -410,6 +413,26 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
         var result = await fixture.Provider.FindMergeRequestAsync(Repository, "agent/issue-7", "main", CancellationToken.None);
 
         Assert.Equal(9, result!.Number);
+    }
+
+    [Fact]
+    public async Task FindMergeRequestAsyncResolvesTheNativeProjectIdFromOwnerAndName()
+    {
+        var repository = new RepositoryRef("local-workspace-key", "group/subgroup", "widgets");
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/group/subgroup/widgets").UsingGet())
+            .RespondWith(JsonResponse("""{"id":987}"""));
+        fixture.Server
+            .Given(Request.Create().WithPath("/api/v4/projects/group/subgroup/widgets/merge_requests").UsingGet())
+            .RespondWith(JsonResponse("""
+                [{"iid":9,"source_branch":"agent/issue-7","target_branch":"main","title":"Configured project","description":"","draft":false,"state":"opened","labels":[],"source_project_id":987}]
+                """));
+
+        var result = await fixture.Provider.FindMergeRequestAsync(repository, "agent/issue-7", "main", CancellationToken.None);
+
+        Assert.Equal(9, result!.Number);
+        Assert.DoesNotContain(fixture.Server.LogEntries, entry =>
+            entry.RequestMessage!.Path.Contains("local-workspace-key", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -584,6 +607,7 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
     [Fact]
     public async Task DurableWorkflowCheckpointResumesAfterProviderRestartWithoutCreatingDuplicateResources()
     {
+        StubProject("123", 123);
         const string canonicalBody = "<!-- issue-agent:state -->";
         fixture.Server
             .Given(Request.Create().WithPath("/api/v4/projects/123/issues/7/notes").UsingPost())
@@ -767,6 +791,11 @@ public sealed class GitLabProviderTests : IClassFixture<GitLabProviderFixture>
         Assert.Equal(1, authenticated.RequestCount);
         Assert.Equal(1, anonymous.RequestCount);
     }
+
+    private void StubProject(string projectAddress, long projectId) =>
+        fixture.Server
+            .Given(Request.Create().WithPath($"/api/v4/projects/{projectAddress}").UsingGet())
+            .RespondWith(JsonResponse($$"""{"id":{{projectId}}}"""));
 
     private static WireMock.ResponseBuilders.IResponseBuilder JsonResponse(string body) =>
         Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/json").WithBody(body);

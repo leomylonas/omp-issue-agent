@@ -61,11 +61,6 @@ public sealed partial class StartupValidator(
                         .ConfigureAwait(false);
                     _ = await git.ResolveBranchCommitAsync(repositoryOptions.Id, targetBranch, cancellationToken).ConfigureAwait(false);
                 }
-                catch (Exception exception) when (!cancellationToken.IsCancellationRequested &&
-                    IsPermanentRepositoryConfigurationOrCacheFailure(exception))
-                {
-                    throw;
-                }
                 catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
                 {
                     LogRepositoryValidationWarning(logger, provider.Name, repositoryOptions.Id, exception.GetType().Name);
@@ -90,10 +85,6 @@ public sealed partial class StartupValidator(
             _ => false,
         };
 
-    private static bool IsPermanentRepositoryConfigurationOrCacheFailure(Exception exception) =>
-        exception is ArgumentException or GitReferenceNotFoundException or GitHooksPresentException ||
-        exception is InvalidOperationException invalidOperation &&
-        invalidOperation.Message.StartsWith("Cached bare repository ", StringComparison.Ordinal);
 
     internal static void ValidateWorkspace(string rootPath)
     {

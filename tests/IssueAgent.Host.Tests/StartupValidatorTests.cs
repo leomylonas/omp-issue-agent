@@ -332,14 +332,14 @@ public sealed class StartupValidatorTests
 
     [System.Runtime.Versioning.SupportedOSPlatform("linux")]
     [Fact]
-    public async Task ValidateAsyncFailsForConfiguredTargetBranchMissingFromRepositoryCache()
+    public async Task ValidateAsyncTreatsAMissingRepositoryBranchAsAnIsolatedRepositoryFailure()
     {
         var workspace = Path.Combine(Path.GetTempPath(), $"issue-agent-startup-{Guid.NewGuid():N}");
         try
         {
             var validator = CreateValidator(workspace, new GitReferenceNotFoundException("main was not found"));
 
-            await Assert.ThrowsAsync<GitReferenceNotFoundException>(() => validator.ValidateAsync(CancellationToken.None));
+            await validator.ValidateAsync(CancellationToken.None);
         }
         finally
         {

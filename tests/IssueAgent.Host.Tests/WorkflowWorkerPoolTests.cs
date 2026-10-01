@@ -77,6 +77,67 @@ public sealed class WorkflowWorkerPoolTests
     }
 
     [Fact]
+    public async Task TypedTransientOmpDependencyFailureDefersAndRetriesWorkflowWork()
+    {
+        using var fixture = new PoolFixture(
+            agentConcurrency: 1,
+            retry: new RetryOptions
+            {
+                MaxAttempts = 2,
+                InitialDelay = TimeSpan.Zero,
+                MaxJitter = TimeSpan.Zero,
+            });
+        var retried = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = 0;
+        await fixture.Pool.AdmitAsync(
+        [
+            Candidate(1, WorkflowWorkPriority.NewPlanning, null, 1, _ =>
+            {
+                if (Interlocked.Increment(ref attempts) == 1)
+                {
+                    throw new OmpBrokerUnavailableException("broker temporarily unavailable");
+                }
+
+                retried.SetResult();
+                return Task.CompletedTask;
+            }),
+        ], CancellationToken.None);
+        fixture.Start();
+
+        await retried.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+        Assert.Equal(2, Volatile.Read(ref attempts));
+        Assert.True(await fixture.Pool.WaitForDrainAsync(TimeSpan.FromSeconds(2), CancellationToken.None));
+        await fixture.StopAsync();
+    }
+
+    [Fact]
+    public async Task PermanentOmpProtocolFailureIsNotDeferred()
+    {
+        using var fixture = new PoolFixture(
+            agentConcurrency: 1,
+            retry: new RetryOptions
+            {
+                MaxAttempts = 2,
+                InitialDelay = TimeSpan.Zero,
+                MaxJitter = TimeSpan.Zero,
+            });
+        var attempts = 0;
+        await fixture.Pool.AdmitAsync(
+        [
+            Candidate(1, WorkflowWorkPriority.NewPlanning, null, 1, _ =>
+            {
+                Interlocked.Increment(ref attempts);
+                throw new OmpRemoteException("invalid command");
+            }),
+        ], CancellationToken.None);
+        fixture.Start();
+
+        Assert.True(await fixture.Pool.WaitForDrainAsync(TimeSpan.FromSeconds(2), CancellationToken.None));
+        Assert.Equal(1, Volatile.Read(ref attempts));
+        await fixture.StopAsync();
+    }
+
+    [Fact]
     public async Task RateLimitedCandidateRefreshesDurableClassificationBeforeRequeue()
     {
         using var fixture = new PoolFixture(agentConcurrency: 1);
@@ -120,6 +181,51 @@ public sealed class WorkflowWorkerPoolTests
         await resumed.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
         Assert.Equal(1, Volatile.Read(ref refreshes));
         Assert.Equal(1, Volatile.Read(ref initialAttempts));
+        Assert.True(await fixture.Pool.WaitForDrainAsync(TimeSpan.FromSeconds(2), CancellationToken.None));
+        await fixture.StopAsync();
+    }
+
+    [Fact]
+    public async Task FailedRateLimitRefreshReleasesReservationForLaterPolling()
+    {
+        using var fixture = new PoolFixture(agentConcurrency: 1);
+        var key = new WorkflowWorkKey("github", "repo", 1);
+        var refreshFailed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var laterPollRan = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = 0;
+        var candidate = new WorkflowCandidate(
+            key,
+            WorkflowCandidateKind.ExistingWorkflow,
+            WorkflowWorkPriority.NewPlanning,
+            null,
+            1,
+            _ =>
+            {
+                if (Interlocked.Increment(ref attempts) == 1)
+                {
+                    throw new PollingRateLimitedException(TimeSpan.FromMilliseconds(20));
+                }
+
+                throw new InvalidOperationException("The stale candidate must not resume.");
+            },
+            _ =>
+            {
+                refreshFailed.SetResult();
+                throw new InvalidOperationException("provider refresh failed");
+            });
+        await fixture.Pool.AdmitAsync([candidate], CancellationToken.None);
+        fixture.Start();
+
+        await refreshFailed.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+        await fixture.Pool.AdmitAsync(
+            [Candidate(1, WorkflowWorkPriority.NewPlanning, null, 2, _ =>
+            {
+                laterPollRan.SetResult();
+                return Task.CompletedTask;
+            })],
+            CancellationToken.None);
+
+        await laterPollRan.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
         Assert.True(await fixture.Pool.WaitForDrainAsync(TimeSpan.FromSeconds(2), CancellationToken.None));
         await fixture.StopAsync();
     }
@@ -468,7 +574,7 @@ public sealed class WorkflowWorkerPoolTests
         private readonly IssueAgentMetrics metrics = new();
         private Task? workers;
 
-        public PoolFixture(int agentConcurrency)
+        public PoolFixture(int agentConcurrency, RetryOptions? retry = null)
         {
             Registry = new ActiveOmpSessionRegistry(NullLogger<ActiveOmpSessionRegistry>.Instance);
             var options = Options.Create(new IssueAgentOptions
@@ -476,6 +582,7 @@ public sealed class WorkflowWorkerPoolTests
                 Workspace = new WorkspaceOptions { RootPath = Path.GetTempPath() },
                 Omp = new OmpOptions { ExecutablePath = "omp" },
                 Concurrency = new ConcurrencyOptions { Agent = agentConcurrency, Polling = 1 },
+                Retry = retry ?? new RetryOptions(),
             });
             Pool = new WorkflowWorkerPool(options, Registry, metrics, NullLogger<WorkflowWorkerPool>.Instance);
         }

@@ -123,18 +123,10 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 config, issueNumber, workingState, existingContent, "Cannot revise: no merge request was found for this workflow's branch.", cancellationToken).ConfigureAwait(false);
         }
 
-        if (mergeRequest.IsMerged)
+        if (await CompleteIfTerminalAsync(
+                config, issueNumber, currentState, existingContent, mergeRequest, cancellationToken).ConfigureAwait(false) is { } terminalOutcome)
         {
-            return await new CancellationWorkflow(deps)
-                .CompleteOnMergeAsync(config, issueNumber, currentState, existingContent, cancellationToken)
-                .ConfigureAwait(false);
-        }
-
-        if (mergeRequest.IsClosed)
-        {
-            return await new CancellationWorkflow(deps)
-                .CompleteOnCloseWithoutMergeAsync(config, issueNumber, currentState, existingContent, cancellationToken)
-                .ConfigureAwait(false);
+            return terminalOutcome;
         }
 
         await ConsumeMergeRequestCommandAsync(
@@ -234,6 +226,12 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             workingState.TargetBranch,
             cancellationToken).ConfigureAwait(false)
             ?? throw new WorkflowContractException("Cannot publish revision: no merge request was found for this workflow's branch.");
+
+        if (await CompleteIfTerminalAsync(
+                config, issueNumber, workingState, lastPublishedContent, mergeRequest, cancellationToken).ConfigureAwait(false) is { } terminalOutcome)
+        {
+            return terminalOutcome;
+        }
 
         // The durable checkpoint must bind the result to the final post-merge head. Recording it
         // earlier could authorize recovery of a different revision after target integration.
@@ -415,18 +413,10 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
                 config, issueNumber, workingState, publicationCheckpoint, resultMarkdown,
                 exception.Message, cancellationToken, WaitingReason.ManualIntervention).ConfigureAwait(false);
         }
-        if (mergeRequest.IsMerged)
+        if (await CompleteIfTerminalAsync(
+                config, issueNumber, workingState, lastPublishedContent, mergeRequest, cancellationToken).ConfigureAwait(false) is { } terminalBeforePush)
         {
-            return await new CancellationWorkflow(deps)
-                .CompleteOnMergeAsync(config, issueNumber, workingState, lastPublishedContent, cancellationToken)
-                .ConfigureAwait(false);
-        }
-
-        if (mergeRequest.IsClosed)
-        {
-            return await new CancellationWorkflow(deps)
-                .CompleteOnCloseWithoutMergeAsync(config, issueNumber, workingState, lastPublishedContent, cancellationToken)
-                .ConfigureAwait(false);
+            return terminalBeforePush;
         }
         var recoveredPendingRevisionHead = workingState.PendingRevisionHead;
         var revisionCheckpointState = workingState with
@@ -644,12 +634,35 @@ public sealed class RevisionWorkflow(WorkflowDependencies deps)
             mergeRequest.Title,
             mergeRequest.Description,
             mergeRequest.IsDraft,
+            mergeRequest.IsMerged,
+            mergeRequest.IsClosed,
             mergeRequest.DescriptionSource.Surface,
             mergeRequest.DescriptionSource.SourceId,
             mergeRequest.DescriptionSource.ThreadId);
         return $"merge-request:{mergeRequest.Number}:metadata:{Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(metadata)))}";
     }
 
+    private async Task<WorkflowOutcome?> CompleteIfTerminalAsync(
+        WorkflowRepositoryConfig config,
+        long issueNumber,
+        WorkflowState state,
+        CanonicalCommentContent content,
+        ProviderMergeRequest mergeRequest,
+        CancellationToken cancellationToken)
+    {
+        if (mergeRequest.IsMerged)
+        {
+            return await new CancellationWorkflow(deps)
+                .CompleteOnMergeAsync(config, issueNumber, state, content, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        return mergeRequest.IsClosed
+            ? await new CancellationWorkflow(deps)
+                .CompleteOnCloseWithoutMergeAsync(config, issueNumber, state, content, cancellationToken)
+                .ConfigureAwait(false)
+            : null;
+    }
     private static bool IsHumanFeedback(
         WorkflowRepositoryConfig config,
         ProviderComment comment,

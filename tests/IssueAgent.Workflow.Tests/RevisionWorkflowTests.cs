@@ -909,6 +909,32 @@ public sealed class RevisionWorkflowTests : IDisposable
         Assert.Equal(0, git.PushCallCount);
     }
 
+    [Theory]
+    [InlineData(true, true, WorkflowPhase.Done)]
+    [InlineData(false, true, WorkflowPhase.Cancelled)]
+    public async Task RunAsyncCompletesWithoutPublicationWhenRequestTerminatesDuringRevision(
+        bool isMerged,
+        bool isClosed,
+        WorkflowPhase expectedPhase)
+    {
+        var state = await SeedReviewStateAsync();
+        provider.OnReviewThreadsEnumeration = () => provider.MergeRequests[1] =
+            provider.MergeRequests[1] with { IsMerged = isMerged, IsClosed = isClosed };
+        var omp = new FakeOmpClient().EnqueueRun(new OmpCompletedEvent(
+            "session-1",
+            clock.UtcNow,
+            """{"summary":"Revision.","keyChanges":[],"decisions":[],"checksRun":[],"knownFailures":[],"deviations":[],"risks":[]}"""));
+
+        var outcome = await new RevisionWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock))
+            .RunAsync(CreateConfig(), 1, state, omp, CancellationToken.None);
+
+        Assert.Equal(expectedPhase, outcome.State.Phase);
+        Assert.Single(omp.RunRequests);
+        Assert.Equal(0, git.MergeAttempts);
+        Assert.Empty(git.PublishedSubmoduleBaseCommits);
+        Assert.Equal(0, git.PushCallCount);
+    }
+
 
 
     private async Task<WorkflowState> SeedReviewStateAsync()

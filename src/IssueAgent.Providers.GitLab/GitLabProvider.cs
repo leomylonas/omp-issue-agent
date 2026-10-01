@@ -443,11 +443,6 @@ public sealed partial class GitLabProvider(
 
     private async ValueTask<long> GetProjectIdAsync(RepositoryRef repository, CancellationToken cancellationToken)
     {
-        if (long.TryParse(repository.Id, CultureInfo.InvariantCulture, out var configuredProjectId))
-        {
-            return configuredProjectId;
-        }
-
         var projectAddress = ProjectAddress(repository);
         if (projectIds.TryGetValue(projectAddress, out var projectId))
         {

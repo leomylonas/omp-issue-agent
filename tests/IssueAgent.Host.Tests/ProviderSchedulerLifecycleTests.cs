@@ -49,6 +49,7 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
         Assert.Equal(0, CountCanonicalCommentCreates(server) - firstHostCanonicalCommentCreates);
     }
 
+
     [Theory]
     [InlineData(ProviderKind.GitHub)]
     [InlineData(ProviderKind.GitLab)]
@@ -134,24 +135,45 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
         var fixture = new ProviderFixtureState(kind);
         if (kind == ProviderKind.GitHub)
         {
-            const string issue = """{"number":1,"title":"Guard titles","body":"Empty titles fail.","created_at":"2024-06-01T00:00:00Z","updated_at":"2024-06-01T00:00:00Z","state":"open","assignees":[{"login":"issue-agent"}],"labels":[]}""";
-            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody($"[{issue}]"));
-            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody(issue));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBodyAsJson(_ => new[] { fixture.Issue() }));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBodyAsJson(_ => fixture.Issue()));
             server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/comments").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBodyAsJson(_ => fixture.CommentCollection()));
             server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/comments").UsingPost()).RespondWith(Response.Create().WithStatusCode(201).WithHeader("Content-Type", "application/json").WithBodyAsJson(request => fixture.PersistComment(request.Body!)));
-            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/labels").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody("[]"));
-            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/labels").UsingPut()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody("[]"));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/labels").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBodyAsJson(_ => fixture.IssueLabels()));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/labels").UsingPut()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBodyAsJson(request => fixture.SetIssueLabels(request.Body!)));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/labels").UsingPost()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBodyAsJson(request => fixture.AddIssueLabels(request.Body!)));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/labels/*").UsingDelete()).RespondWith(Response.Create().WithStatusCode(204));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/labels/*").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody("""{"name":"managed"}"""));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/labels").UsingPost()).RespondWith(Response.Create().WithStatusCode(201).WithHeader("Content-Type", "application/json").WithBody("""{"name":"managed"}"""));
             server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/comments/10").UsingPatch()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBodyAsJson(request => fixture.PersistComment(request.Body!)));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBodyAsJson(_ => fixture.MergeRequestCollection()));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls").UsingPost()).RespondWith(Response.Create().WithStatusCode(201).WithHeader("Content-Type", "application/json").WithBodyAsJson(request => fixture.CreateMergeRequest(request.Body!)));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls/1").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBodyAsJson(_ => fixture.MergeRequest()));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls/1/comments").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody("[]"));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1/timeline").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody("[]"));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls/1/reviews").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody("[]"));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/issues/1").UsingPatch()).RespondWith(Response.Create().WithBody("{}"));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls/1/labels").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBodyAsJson(_ => fixture.MergeRequestLabels()));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls/1/labels").UsingPost()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody("[]"));
+            server.Given(Request.Create().WithPath("/api/v3/repos/octo/widgets/pulls/1/labels/*").UsingDelete()).RespondWith(Response.Create().WithStatusCode(204));
         }
         else
         {
-            const string issue = """{"iid":1,"title":"Guard titles","description":"Empty titles fail.","created_at":"2024-06-01T00:00:00Z","updated_at":"2024-06-01T00:00:00Z","state":"opened","assignees":[{"username":"issue-agent"}],"labels":[]}""";
-            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/issues").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody($"[{issue}]"));
-            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/issues/1").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody(issue));
+            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/issues").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBodyAsJson(_ => new[] { fixture.Issue() }));
+            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/issues/1").UsingGet()).RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBodyAsJson(_ => fixture.Issue()));
             server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/issues/1/notes").UsingGet()).RespondWith(Response.Create().WithBodyAsJson(_ => fixture.CommentCollection()));
             server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/issues/1/notes").UsingPost()).RespondWith(Response.Create().WithStatusCode(201).WithBodyAsJson(request => fixture.PersistComment(request.Body!)));
-            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/issues/1").UsingPut()).RespondWith(Response.Create().WithBody("{}"));
+            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/issues/1").UsingPut()).RespondWith(Response.Create().WithBodyAsJson(request => fixture.UpdateGitLabIssue(request.Body!)));
             server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/issues/1/notes/10").UsingPut()).RespondWith(Response.Create().WithBodyAsJson(request => fixture.PersistComment(request.Body!)));
+            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/merge_requests").UsingGet()).RespondWith(Response.Create().WithBodyAsJson(_ => fixture.MergeRequestCollection()));
+            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/merge_requests").UsingPost()).RespondWith(Response.Create().WithStatusCode(201).WithBodyAsJson(request => fixture.CreateMergeRequest(request.Body!)));
+            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/merge_requests/1").UsingGet()).RespondWith(Response.Create().WithBodyAsJson(_ => fixture.MergeRequest()));
+            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/merge_requests/1/notes").UsingGet()).RespondWith(Response.Create().WithBody("[]"));
+            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/merge_requests/1/discussions").UsingGet()).RespondWith(Response.Create().WithBody("[]"));
+            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/issues/1/links").UsingGet()).RespondWith(Response.Create().WithBody("[]"));
+            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets").UsingGet()).RespondWith(Response.Create().WithBody("""{"id":1,"default_branch":"main"}"""));
+            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/labels").UsingGet()).RespondWith(Response.Create().WithBody("[]"));
+            server.Given(Request.Create().WithPath("/api/v4/projects/group/widgets/labels").UsingPost()).RespondWith(Response.Create().WithStatusCode(201).WithBody("""{"name":"managed"}"""));
         }
 
         return fixture;
@@ -177,14 +199,83 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
             CanonicalCommentMarkdown.IsCanonicalComment(markdown);
     }
 
+    private sealed record ProviderLabel(string name);
+
     private sealed class ProviderFixtureState(ProviderKind kind)
     {
         private readonly object gate = new();
+        private readonly HashSet<string> issueLabels = [];
+        private readonly HashSet<string> mergeRequestLabels = [];
         private string? commentBody;
+        private string? sourceBranch;
         private int persistedCommentReadCount;
+        private int mergeRequestCreateCount;
+        private bool mergeRequestMerged;
 
         public bool HasPersistedComment { get { lock (gate) return commentBody is not null; } }
+        public bool HasPersistedMergeRequest { get { lock (gate) return sourceBranch is not null; } }
         public int PersistedCommentReadCount { get { lock (gate) return persistedCommentReadCount; } }
+        public int MergeRequestCreateCount { get { lock (gate) return mergeRequestCreateCount; } }
+        public string CanonicalBody { get { lock (gate) return commentBody ?? string.Empty; } }
+        public string SourceBranch { get { lock (gate) return sourceBranch ?? throw new InvalidOperationException("Merge request has not been created."); } }
+        public int PlanRevision { get { lock (gate) return ParseState().PlanRevision; } }
+        public WorkflowPhase Phase { get { lock (gate) return ParseState().Phase; } }
+
+        public void AddIssueLabel(string label) { lock (gate) issueLabels.Add(label); }
+        public void RemoveIssueLabel(string label) { lock (gate) issueLabels.Remove(label); }
+        public void AddMergeRequestLabel(string label) { lock (gate) mergeRequestLabels.Add(label); }
+        public void RemoveMergeRequestLabel(string label) { lock (gate) mergeRequestLabels.Remove(label); }
+        public void MarkMergeRequestMerged() { lock (gate) mergeRequestMerged = true; }
+        public object Issue() => kind == ProviderKind.GitHub
+            ? new { number = 1, title = "Guard titles", body = "Empty titles fail.", created_at = "2024-06-01T00:00:00Z", updated_at = "2024-06-01T00:00:00Z", state = "open", assignees = new[] { new { login = "issue-agent" } }, labels = Array.Empty<ProviderLabel>() }
+            : new { iid = 1, title = "Guard titles", description = "Empty titles fail.", created_at = "2024-06-01T00:00:00Z", updated_at = "2024-06-01T00:00:00Z", state = "opened", assignees = new[] { new { username = "issue-agent" } }, labels = Array.Empty<ProviderLabel>() };
+        public ProviderLabel[] IssueLabels()
+        {
+            lock (gate)
+            {
+                var labels = issueLabels.Select(label => new ProviderLabel(label)).ToArray();
+                issueLabels.RemoveWhere(label => label.StartsWith("agent:cmd:", StringComparison.Ordinal));
+                return labels;
+            }
+        }
+        public ProviderLabel[] MergeRequestLabels() { lock (gate) return mergeRequestLabels.Select(label => new ProviderLabel(label)).ToArray(); }
+        public ProviderLabel[] SetIssueLabels(string requestBody)
+        {
+            lock (gate)
+            {
+                issueLabels.Clear();
+                foreach (var label in JsonSerializer.Deserialize<string[]>(requestBody) ?? []) issueLabels.Add(label);
+                return IssueLabels();
+            }
+        }
+        public ProviderLabel[] AddIssueLabels(string requestBody)
+        {
+            using var document = JsonDocument.Parse(requestBody);
+            lock (gate)
+            {
+                issueLabels.RemoveWhere(label => label.StartsWith("agent:phase:", StringComparison.Ordinal) ||
+                    label.StartsWith("agent:state:", StringComparison.Ordinal));
+                foreach (var label in document.RootElement.GetProperty("labels").EnumerateArray())
+                {
+                    issueLabels.Add(label.GetString()!);
+                }
+                return IssueLabels();
+            }
+        }
+        public object UpdateGitLabIssue(string requestBody)
+        {
+            using var document = JsonDocument.Parse(requestBody);
+            lock (gate)
+            {
+                issueLabels.RemoveWhere(label => label.StartsWith("agent:phase:", StringComparison.Ordinal) ||
+                    label.StartsWith("agent:state:", StringComparison.Ordinal));
+                if (document.RootElement.TryGetProperty("add_labels", out var labels) && labels.GetString() is { } value)
+                {
+                    foreach (var label in value.Split(',', StringSplitOptions.RemoveEmptyEntries)) issueLabels.Add(label);
+                }
+                return Issue();
+            }
+        }
         public object CommentCollection()
         {
             lock (gate)
@@ -208,6 +299,30 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
                     : new { id = 10, body = commentBody, created_at = "2024-06-01T00:00:00Z", updated_at = "2024-06-01T00:00:00Z", author = new { username = "issue-agent", bot = true } };
             }
         }
+        public object[] MergeRequestCollection() { lock (gate) return sourceBranch is null ? [] : [MergeRequest()]; }
+        public object CreateMergeRequest(string requestBody)
+        {
+            using var document = JsonDocument.Parse(requestBody);
+            lock (gate)
+            {
+                sourceBranch = document.RootElement.GetProperty(kind == ProviderKind.GitHub ? "head" : "source_branch").GetString();
+                mergeRequestCreateCount++;
+                return MergeRequest();
+            }
+        }
+        public object MergeRequest()
+        {
+            lock (gate)
+            {
+                var branch = sourceBranch ?? "agent/1-guard-titles";
+                return kind == ProviderKind.GitHub
+                    ? new { number = 1, head = new { @ref = branch }, @base = new { @ref = "main" }, title = "Guard titles", body = "Implementation", draft = true, merged = mergeRequestMerged, state = mergeRequestMerged ? "closed" : "open", html_url = "https://example.test/pull/1" }
+                    : new { iid = 1, source_branch = branch, target_branch = "main", title = "Draft: Guard titles", description = "Implementation", draft = true, state = mergeRequestMerged ? "merged" : "opened", labels = mergeRequestLabels.ToArray(), source_project_id = 1L, web_url = "https://example.test/merge_requests/1" };
+            }
+        }
+        private WorkflowState ParseState() => commentBody is null
+            ? throw new InvalidOperationException("Canonical comment has not been persisted.")
+            : CanonicalStateSerializer.ToWorkflowState(CanonicalCommentMarkdown.Parse(commentBody).State);
     }
 
     private string CreatePlanningOmpExecutable()
@@ -246,7 +361,16 @@ public sealed class ProviderSchedulerLifecycleTests : IDisposable
                     response(request, {"provider": request["provider"], "id": request["modelId"]})
                 elif command == "prompt":
                     response(request, {"agentInvoked": True})
-                    send({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "{\"planText\":\"Validate titles at the boundary.\",\"decisions\":[\"Keep validation deterministic.\"]}"}})
+                    prompt = request.get("message", "").lower()
+                    if "implementation" in prompt or "revision" in prompt:
+                        with open("Lifecycle.txt", "a") as lifecycle:
+                            lifecycle.write("validated\\n")
+                        result = "{\"summary\":\"Validated titles.\",\"keyChanges\":[\"Added lifecycle validation\"],\"decisions\":[\"Keep validation deterministic.\"],\"checksRun\":[\"deterministic smoke\"],\"knownFailures\":[],\"deviations\":[],\"risks\":[]}"
+                    elif "replan" in prompt:
+                        result = "{\"planText\":\"Validate empty and whitespace-only titles.\",\"decisions\":[\"Normalize before validation.\"]}"
+                    else:
+                        result = "{\"planText\":\"Validate titles at the boundary.\",\"decisions\":[\"Keep validation deterministic.\"]}"
+                    send({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": result}})
                     send({"type": "agent_end", "messages": [], "isTerminal": True})
                 elif command == "abort":
                     response(request, {"cancelled": True})

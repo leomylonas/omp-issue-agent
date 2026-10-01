@@ -1,4 +1,6 @@
 
+using IssueAgent.Domain;
+
 namespace IssueAgent.Omp.Tests;
 
 public sealed class OmpProcessClientTests
@@ -38,6 +40,54 @@ public sealed class OmpProcessClientTests
             () => client.CreateSessionAsync("repository-planner", CancellationToken.None).AsTask());
 
         Assert.IsType(exceptionType, exception);
+    }
+
+    [Theory]
+    [InlineData("broker_unavailable")]
+    [InlineData("model_unavailable")]
+    public async Task CreateSessionAsyncRetriesTypedTransientDependencyRejections(string errorCode)
+    {
+        await using var client = StartClient(
+            transientFailureCommands: "new_session",
+            transientFailureCode: errorCode,
+            transientFailureCount: 1,
+            retryPolicy: new RetryPolicy
+            {
+                MaxAttempts = 2,
+                InitialDelay = TimeSpan.Zero,
+                MaxJitter = TimeSpan.Zero,
+            });
+
+        var session = await client.CreateSessionAsync("repository-planner", CancellationToken.None);
+
+        Assert.Equal("fake-session-1", session.SessionId);
+    }
+
+    [Fact]
+    public async Task CreateSessionAsyncDoesNotRetryPermanentProtocolRejection()
+    {
+        var commandLog = Path.Combine(Path.GetTempPath(), $"issue-agent-omp-commands-{Guid.NewGuid():N}.log");
+        try
+        {
+            await using var client = StartClient(
+                newSessionErrorCode: "invalid_command",
+                commandLog: commandLog,
+                retryPolicy: new RetryPolicy
+                {
+                    MaxAttempts = 2,
+                    InitialDelay = TimeSpan.Zero,
+                    MaxJitter = TimeSpan.Zero,
+                });
+
+            await Assert.ThrowsAsync<OmpRemoteException>(
+                () => client.CreateSessionAsync("repository-planner", CancellationToken.None).AsTask());
+
+            Assert.Single(await File.ReadAllLinesAsync(commandLog, TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            File.Delete(commandLog);
+        }
     }
 
     [Fact]
@@ -84,6 +134,34 @@ public sealed class OmpProcessClientTests
             () => client.ResumeSessionAsync("existing-session", "/untrusted/session.jsonl", CancellationToken.None).AsTask());
 
         Assert.Contains("outside the configured session directory", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("broker_unavailable")]
+    [InlineData("model_unavailable")]
+    public async Task FactoryRetriesTypedTransientModelSelectionRejections(string errorCode)
+    {
+        var environment = new Dictionary<string, string>
+        {
+            ["PATH"] = Environment.GetEnvironmentVariable("PATH") ?? string.Empty,
+            ["OMP_TRANSIENT_FAILURE_COMMANDS"] = "set_model",
+            ["OMP_TRANSIENT_FAILURE_CODE"] = errorCode,
+            ["OMP_TRANSIENT_FAILURE_COUNT"] = "1",
+        };
+        await using var client = OmpProcessClientFactory.Start(
+            "python3",
+            [ScriptPath, "--mode", "rpc", "--session-dir", Path.GetTempPath()],
+            AppContext.BaseDirectory,
+            environment,
+            retryPolicy: new RetryPolicy
+            {
+                MaxAttempts = 2,
+                InitialDelay = TimeSpan.Zero,
+                MaxJitter = TimeSpan.Zero,
+            });
+        await client.CreateSessionAsync("plan", CancellationToken.None);
+
+        await client.SelectRoleAsync("task", CancellationToken.None);
     }
 
     [Fact]
@@ -187,6 +265,53 @@ public sealed class OmpProcessClientTests
         var error = Assert.IsType<OmpErrorEvent>(Assert.Single(events));
         Assert.False(error.WasCancelled);
         Assert.Contains("timed out", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task RunAsyncTimeoutWhileAwaitingPromptAcknowledgementRequestsAbort()
+    {
+        var commandLog = Path.Combine(Path.GetTempPath(), $"issue-agent-omp-commands-{Guid.NewGuid():N}.log");
+        try
+        {
+            await using var client = StartClient(commandLog: commandLog);
+            var session = await client.CreateSessionAsync("anthropic/claude-sonnet-5", CancellationToken.None);
+
+            var events = await CollectAsync(client.RunAsync(
+                new OmpRunRequest(
+                    session.SessionId,
+                    "/tmp",
+                    "prompt dispatch hang",
+                    new Dictionary<string, string>(),
+                    TimeSpan.FromMilliseconds(50)),
+                CancellationToken.None));
+
+            var error = Assert.IsType<OmpErrorEvent>(Assert.Single(events));
+            Assert.Contains("timed out", error.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(
+                await File.ReadAllLinesAsync(commandLog, TestContext.Current.CancellationToken),
+                command => command.StartsWith("abort ", StringComparison.Ordinal));
+        }
+        finally
+        {
+            File.Delete(commandLog);
+        }
+    }
+
+    [Fact]
+    public async Task RunAsyncPropagatesCallerCancellationWhileWaitingForFrames()
+    {
+        await using var client = StartClient();
+        var session = await client.CreateSessionAsync("anthropic/claude-sonnet-5", CancellationToken.None);
+        using var cancellation = new CancellationTokenSource();
+        var run = CollectAsync(client.RunAsync(
+            new OmpRunRequest(session.SessionId, "/tmp", "hang", new Dictionary<string, string>()),
+            cancellation.Token));
+
+        await Task.Delay(20, TestContext.Current.CancellationToken);
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => run.WaitAsync(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -373,7 +498,12 @@ public sealed class OmpProcessClientTests
         TimeSpan? abortGracePeriod = null,
         TimeSpan? configuredTimeout = null,
         string? hangCommands = null,
-        string? newSessionErrorCode = null)
+        string? newSessionErrorCode = null,
+        string? transientFailureCommands = null,
+        string? transientFailureCode = null,
+        int transientFailureCount = 0,
+        RetryPolicy? retryPolicy = null,
+        string? commandLog = null)
     {
         var environment = new Dictionary<string, string>
         {
@@ -387,6 +517,16 @@ public sealed class OmpProcessClientTests
         {
             environment["OMP_NEW_SESSION_ERROR_CODE"] = newSessionErrorCode;
         }
+        if (transientFailureCommands is not null)
+        {
+            environment["OMP_TRANSIENT_FAILURE_COMMANDS"] = transientFailureCommands;
+            environment["OMP_TRANSIENT_FAILURE_CODE"] = transientFailureCode ?? "broker_unavailable";
+            environment["OMP_TRANSIENT_FAILURE_COUNT"] = transientFailureCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        if (commandLog is not null)
+        {
+            environment["OMP_COMMAND_LOG"] = commandLog;
+        }
 
         var transport = NdjsonRpcTransport.Start(
             "python3",
@@ -398,7 +538,8 @@ public sealed class OmpProcessClientTests
             TimeSpan.FromSeconds(5),
             Path.GetTempPath(),
             abortGracePeriod,
-            configuredTimeout: configuredTimeout);
+            retryPolicy,
+            configuredTimeout);
     }
 
     private static async Task<List<OmpEvent>> CollectAsync(IAsyncEnumerable<OmpEvent> source)

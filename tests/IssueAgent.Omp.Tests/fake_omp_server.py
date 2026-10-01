@@ -56,6 +56,7 @@ def main():
     session_id = "fake-session-1"
     session_file = "/tmp/fake-session-1.jsonl"
     hang_abort = False
+    transient_failures = int(os.environ.get("OMP_TRANSIENT_FAILURE_COUNT", "0"))
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -67,6 +68,14 @@ def main():
             with open(command_log, "a", encoding="utf-8") as log:
                 log.write(command + " " + json.dumps(request) + "\n")
         if command in os.environ.get("OMP_HANG_COMMANDS", "").split(","):
+            continue
+        if command in os.environ.get("OMP_TRANSIENT_FAILURE_COMMANDS", "").split(",") and transient_failures > 0:
+            transient_failures -= 1
+            response(
+                request_id,
+                command,
+                error="temporary dependency unavailable",
+                error_code=os.environ.get("OMP_TRANSIENT_FAILURE_CODE", "broker_unavailable"))
             continue
 
         if command == "new_session":

@@ -24,12 +24,7 @@ public sealed class OmpProcessClient(
     public async ValueTask<OmpSession> CreateSessionAsync(string role, CancellationToken cancellationToken)
     {
         using var deadline = CreateDeadline(cancellationToken);
-        await RequireSuccessAsync(
-            await transport.SendCommandAsync(
-                "new_session",
-                null,
-                deadline.Token).ConfigureAwait(false))
-            .ConfigureAwait(false);
+        await SendTransientCommandAsync("new_session", null, deadline.Token).ConfigureAwait(false);
         var state = RequireData(await GetStateAsync(deadline.Token).ConfigureAwait(false));
         var sessionId = RequireString(state, "sessionId");
         return new OmpSession(sessionId, role, RequireSessionFile(ExtractSessionFile(state, sessionId)));
@@ -43,11 +38,10 @@ public sealed class OmpProcessClient(
     {
         using var deadline = CreateDeadline(cancellationToken);
         var persistedSessionFile = RequireSessionFile(sessionFile);
-        var response = await transport.SendCommandAsync(
+        await SendTransientCommandAsync(
             "switch_session",
             new JsonObject { ["sessionPath"] = persistedSessionFile },
             deadline.Token).ConfigureAwait(false);
-        await RequireSuccessAsync(response).ConfigureAwait(false);
         var state = RequireData(await GetStateAsync(deadline.Token).ConfigureAwait(false));
         var activeSessionId = RequireString(state, "sessionId");
         if (!string.Equals(activeSessionId, sessionId, StringComparison.Ordinal))
@@ -75,16 +69,14 @@ public sealed class OmpProcessClient(
     internal async ValueTask SelectModelAsync(OmpModel model, CancellationToken cancellationToken)
     {
         using var deadline = CreateDeadline(cancellationToken);
-        await RequireSuccessAsync(
-            await transport.SendCommandAsync(
-                "set_model",
-                new JsonObject
-                {
-                    ["provider"] = model.Provider,
-                    ["modelId"] = model.Id,
-                },
-                deadline.Token).ConfigureAwait(false))
-            .ConfigureAwait(false);
+        await SendTransientCommandAsync(
+            "set_model",
+            new JsonObject
+            {
+                ["provider"] = model.Provider,
+                ["modelId"] = model.Id,
+            },
+            deadline.Token).ConfigureAwait(false);
     }
 
     public async IAsyncEnumerable<OmpEvent> RunAsync(
@@ -158,6 +150,15 @@ public sealed class OmpProcessClient(
             throw dispatchFailure;
         }
 
+        if (timeoutCts?.IsCancellationRequested == true && !cancellationToken.IsCancellationRequested)
+        {
+            Interlocked.Exchange(ref cancellationRequested, 1);
+            await RequestAbortAsync(suppressErrors: true, cancellationToken: CancellationToken.None).ConfigureAwait(false);
+            Interlocked.Exchange(ref cancellationRequested, 0);
+            yield return new OmpErrorEvent(request.SessionId, DateTimeOffset.UtcNow, "OMP run timed out.", false);
+            yield break;
+        }
+
         if (dispatchFailure is not null)
         {
             yield return new OmpErrorEvent(request.SessionId, DateTimeOffset.UtcNow, dispatchFailure.Message, false);
@@ -189,7 +190,12 @@ public sealed class OmpProcessClient(
 
             if (frameReadFailure is not null)
             {
-                if (timeoutCts?.IsCancellationRequested == true && !cancellationToken.IsCancellationRequested)
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    throw frameReadFailure;
+                }
+
+                if (timeoutCts?.IsCancellationRequested == true)
                 {
                     Interlocked.Exchange(ref cancellationRequested, 1);
                     await RequestAbortAsync(suppressErrors: true, cancellationToken: CancellationToken.None).ConfigureAwait(false);
@@ -285,10 +291,35 @@ public sealed class OmpProcessClient(
         dispatchGate.Dispose();
     }
 
-    private Task<JsonObject> GetStateAsync(CancellationToken cancellationToken) =>
-        retryPolicy.ExecuteAsync(
-            token => transport.SendCommandAsync("get_state", null, token),
-            cancellationToken);
+    private async Task<JsonObject> GetStateAsync(CancellationToken cancellationToken) =>
+        await SendTransientCommandAsync("get_state", null, cancellationToken).ConfigureAwait(false);
+
+    private async Task<JsonObject> SendTransientCommandAsync(
+        string command,
+        JsonObject? fields,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                var response = await transport.SendCommandAsync(command, fields, cancellationToken).ConfigureAwait(false);
+                await RequireSuccessAsync(response).ConfigureAwait(false);
+                return response;
+            }
+            catch (Exception exception) when (exception is OmpBrokerUnavailableException or OmpModelUnavailableException)
+            {
+                if (attempt >= retryPolicy.MaxAttempts)
+                {
+                    RetryTelemetry.RecordExhausted();
+                    throw;
+                }
+
+                RetryTelemetry.RecordAttempt();
+                await Task.Delay(retryPolicy.GetDelay(attempt), cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
 
     private CancellationTokenSource CreateDeadline(
         CancellationToken cancellationToken,

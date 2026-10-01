@@ -426,12 +426,12 @@ public sealed class ProviderRetryPolicyTests
     }
 
     [Fact]
-    public async Task SendAndMaterializeAsyncDefersAnExhaustedSuccessfulQuotaBeforeMaterialization()
+    public async Task SendAndMaterializeAsyncDoesNotDeferAnExhaustedSuccessfulQuota()
     {
         using var scope = PollingRateLimitScheduling.Enter();
         var materializations = 0;
 
-        var exception = await Assert.ThrowsAsync<PollingRateLimitedException>(() => ProviderRetryPolicy.SendAndMaterializeAsync(
+        var result = await ProviderRetryPolicy.SendAndMaterializeAsync(
             _ =>
             {
                 var response = new HttpResponseMessage(System.Net.HttpStatusCode.OK);
@@ -442,13 +442,13 @@ public sealed class ProviderRetryPolicyTests
             (_, _) =>
             {
                 materializations++;
-                return Task.FromResult("must not materialize");
+                return Task.FromResult("materialized");
             },
             CancellationToken.None,
-            retryPolicy: new RetryPolicy { MaxAttempts = 1 }));
+            retryPolicy: new RetryPolicy { MaxAttempts = 1 });
 
-        Assert.True(exception.RetryAfter > TimeSpan.Zero);
-        Assert.Equal(0, materializations);
+        Assert.Equal("materialized", result);
+        Assert.Equal(1, materializations);
     }
 
 }
