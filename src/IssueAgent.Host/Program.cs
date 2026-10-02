@@ -104,6 +104,7 @@ builder.Services.AddSingleton<PollingEligibilitySchedule>();
 builder.Services.AddSingleton<PollingScheduler>();
 builder.Services.AddSingleton<ActiveOmpSessionRegistry>();
 builder.Services.AddSingleton<WorkflowWorkerPool>();
+builder.Services.AddSingleton<WorkflowShutdownCoordinator>();
 builder.Services.AddSingleton<OmpRuntimeEnvironmentFactory>();
 builder.Services.AddSingleton<WorkflowDispatcher>();
 builder.Services.AddSingleton<IssueAgentMetrics>();

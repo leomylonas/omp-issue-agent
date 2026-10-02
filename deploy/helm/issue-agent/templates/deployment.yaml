@@ -155,7 +155,7 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
-              add: [CHOWN, FOWNER, SETGID, SETPCAP, SETUID]
+              add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETPCAP, SETUID]
           volumeMounts:
             - name: workspace
               mountPath: /data

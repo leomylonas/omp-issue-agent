@@ -1,3 +1,4 @@
+using System.Net;
 using IssueAgent.Workflow;
 using IssueAgent.Domain;
 
@@ -20,6 +21,14 @@ public interface INotificationSink
 /// <summary>Indicates that a notification POST may have reached its destination, so replaying it
 /// could produce a duplicate.</summary>
 public sealed class NotificationPostDispatchException(string message, Exception innerException) : HttpRequestException(message, innerException);
+
+/// <summary>Indicates that the destination explicitly rejected a notification POST without delivering it.</summary>
+public sealed class NotificationDeliveryRejectedException(HttpStatusCode statusCode, Exception innerException)
+    : HttpRequestException($"Notification POST was rejected with HTTP {(int)statusCode} ({statusCode}).", innerException, statusCode)
+{
+    /// <summary>Whether the explicit rejection is transient and may be retried safely.</summary>
+    public bool IsRetryable => StatusCode is HttpStatusCode.TooManyRequests or >= HttpStatusCode.InternalServerError;
+}
 
 public delegate void NotificationSinkFailureHandler(string sinkName, WorkflowNotification notification, Exception exception);
 
@@ -60,7 +69,9 @@ public sealed class FanOutNotifier(
             .ExecuteAsync(
                 ct => sink.SendAsync(notification, ct),
                 cancellationToken,
-                exception => sink.SupportsIdempotency || exception is not NotificationPostDispatchException)
+                exception => sink.SupportsIdempotency ||
+                    exception is not NotificationPostDispatchException &&
+                    (exception is not NotificationDeliveryRejectedException rejection || rejection.IsRetryable))
             .ConfigureAwait(false);
 
         if (failure is not null)

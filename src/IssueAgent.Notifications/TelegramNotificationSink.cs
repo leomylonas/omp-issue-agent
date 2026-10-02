@@ -20,7 +20,16 @@ public sealed partial class TelegramNotificationSink(HttpClient httpClient, stri
             using var response = await httpClient
                 .PostAsJsonAsync($"/bot{botToken}/sendMessage", payload, TelegramJsonContext.Default.TelegramSendMessageRequest, cancellationToken)
                 .ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new NotificationDeliveryRejectedException(
+                    response.StatusCode,
+                    new HttpRequestException("Telegram rejected the notification POST.", null, response.StatusCode));
+            }
+        }
+        catch (NotificationDeliveryRejectedException)
+        {
+            throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

@@ -268,9 +268,12 @@ public sealed partial class StartupValidator(
 
         var probeDirectory = Path.Combine(
             options.Workspace.RootPath,
-            "omp",
-            $"startup-probe-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(probeDirectory);
+            "workflows",
+            Guid.NewGuid().ToString());
+        var worktreeDirectory = Path.Combine(probeDirectory, "worktree");
+        var sessionDirectory = Path.Combine(probeDirectory, "omp");
+        Directory.CreateDirectory(worktreeDirectory);
+        Directory.CreateDirectory(sessionDirectory);
         try
         {
             var environment = OmpEnvironment.Build(
@@ -285,8 +288,8 @@ public sealed partial class StartupValidator(
                 OmpRuntimeEnvironmentFactory.GetNonOmpSecretSourceNames(options));
             await using var client = OmpProcessClientFactory.Start(
                 omp.ExecutablePath,
-                ["--mode", "rpc", "--session-dir", probeDirectory],
-                options.Workspace.RootPath,
+                ["--mode", "rpc", "--session-dir", sessionDirectory],
+                worktreeDirectory,
                 environment,
                 timeout: omp.Timeout ?? TimeSpan.FromSeconds(10));
             _ = await client.CreateSessionAsync(

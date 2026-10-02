@@ -164,7 +164,8 @@ public sealed class StartupValidatorTests
 
             await StartupValidator.ProbeOmpAsync(options, omp, CancellationToken.None);
 
-            Assert.Empty(Directory.EnumerateDirectories(Path.Combine(workspace, "omp"), "startup-probe-*"));
+            Assert.True(Directory.Exists(Path.Combine(workspace, "workflows")));
+            Assert.Empty(Directory.EnumerateDirectories(Path.Combine(workspace, "workflows")));
         }
         finally
         {
@@ -479,6 +480,8 @@ public sealed class StartupValidatorTests
               previous="$argument"
             done
             [ "$PROBE_CONFIGURATION" = "configured" ] || exit 2
+            [ "$(basename "$PWD")" = "worktree" ] || exit 4
+            [ "$(basename "$(dirname "$(dirname "$PWD")")")" = "workflows" ] || exit 4
             __EXCLUDED_ENVIRONMENT_CHECK__
             printf '%s\n' '__READY_FRAME__'
             while IFS= read -r request; do

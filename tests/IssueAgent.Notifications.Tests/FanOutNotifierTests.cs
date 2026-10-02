@@ -79,6 +79,18 @@ public sealed class FanOutNotifierTests
     }
 
     [Fact]
+    public async Task NotifyAsyncRetriesExplicitRetryableRejections()
+    {
+        var sink = new RecordingSink("webhook") { RetryableRejectionsBeforeSuccess = 2 };
+        var notifier = new FanOutNotifier([sink], NoDelayRetryPolicy());
+
+        await notifier.NotifyAsync(Notification, CancellationToken.None);
+
+        Assert.Equal(3, sink.Attempts);
+        Assert.Single(sink.Received);
+    }
+
+    [Fact]
     public async Task NotifyAsyncDoesNotReplayAmbiguousPostWithoutIdempotency()
     {
         var sink = new RecordingSink("webhook") { FailsAfterDispatch = true };
@@ -121,6 +133,8 @@ public sealed class FanOutNotifierTests
 
         public int FailuresBeforeSuccess { get; init; }
 
+        public int RetryableRejectionsBeforeSuccess { get; init; }
+
         public bool SupportsIdempotencyOnPost { get; init; }
 
         public bool SupportsIdempotency => SupportsIdempotencyOnPost;
@@ -135,6 +149,12 @@ public sealed class FanOutNotifierTests
                 throw new NotificationPostDispatchException("Simulated ambiguous notification POST.", new HttpRequestException());
             }
 
+            if (attempts <= RetryableRejectionsBeforeSuccess)
+            {
+                throw new NotificationDeliveryRejectedException(
+                    System.Net.HttpStatusCode.InternalServerError,
+                    new HttpRequestException("Simulated webhook rejection.", null, System.Net.HttpStatusCode.InternalServerError));
+            }
             if (AlwaysThrow || attempts <= FailuresBeforeSuccess)
             {
                 throw new InvalidOperationException("Simulated sink failure.");

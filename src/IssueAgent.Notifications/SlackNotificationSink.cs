@@ -19,7 +19,16 @@ public sealed partial class SlackNotificationSink(HttpClient httpClient, Uri web
             using var response = await httpClient
                 .PostAsJsonAsync(webhookUrl, payload, SlackJsonContext.Default.SlackIncomingWebhookRequest, cancellationToken)
                 .ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new NotificationDeliveryRejectedException(
+                    response.StatusCode,
+                    new HttpRequestException("Slack rejected the notification POST.", null, response.StatusCode));
+            }
+        }
+        catch (NotificationDeliveryRejectedException)
+        {
+            throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

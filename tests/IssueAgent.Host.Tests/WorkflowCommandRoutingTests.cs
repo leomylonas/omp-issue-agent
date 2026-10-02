@@ -5,6 +5,7 @@ using IssueAgent.Domain;
 using IssueAgent.Git;
 using IssueAgent.Providers;
 using IssueAgent.Workflow;
+using IssueAgent.Omp;
 using Xunit;
 
 namespace IssueAgent.Host.Tests;
@@ -23,6 +24,25 @@ public sealed class WorkflowCommandRoutingTests
 
         Assert.True(result.IsAmbiguous);
         Assert.Null(result.Command);
+    }
+
+    [Fact]
+    public void ProviderOnlyCancellationRejectsMergeRequestWithoutWorkflowMarker()
+    {
+        var state = CreateState(WorkflowPhase.Implementing, WorkflowOperationalState.Waiting);
+        var mergeRequest = new ProviderMergeRequest(
+            new RepositoryRef("repo", "owner", "repository"),
+            7,
+            state.Branch,
+            state.TargetBranch,
+            "Unrelated request",
+            "No IssueAgent marker.",
+            IsDraft: true,
+            IsMerged: false,
+            IsClosed: false,
+            new AttachmentSource("merge-request-description", "7"));
+
+        Assert.False(WorkflowDispatcher.IsWorkflowMergeRequest(state, mergeRequest));
     }
 
     [Fact]
@@ -66,6 +86,20 @@ public sealed class WorkflowCommandRoutingTests
             WorkflowCommand.Replan,
             WorkflowMode.PlanOnly));
     }
+    [Theory]
+    [InlineData("broker")]
+    [InlineData("model")]
+    public void PersistedSessionDependencyFailuresRemainRetryable(string dependency)
+    {
+        Exception typed = dependency == "broker"
+            ? new OmpBrokerUnavailableException("broker temporarily unavailable")
+            : new OmpModelUnavailableException("model temporarily unavailable");
+
+        Assert.True(WorkflowDispatcher.IsTransientOmpDependencyFailure(typed));
+        Assert.True(WorkflowDispatcher.IsTransientOmpDependencyFailure(
+            new InvalidOperationException("OMP resume failed", typed)));
+    }
+
 
     [Fact]
     public void CanonicalCommentIdentityOverrideIsIgnoredWhenProviderCredentialsExist()

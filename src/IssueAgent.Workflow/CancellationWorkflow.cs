@@ -108,8 +108,12 @@ public sealed class CancellationWorkflow(WorkflowDependencies deps)
             throw new InvalidOperationException($"Workflow path '{workflowPath}' escapes configured storage.");
         }
         var worktreePath = Path.Combine(workflowPath, "worktree");
-        await deps.Git.RemoveWorktreeAsync(config.Repository.Id, state.WorkflowId.ToString(), worktreePath, cancellationToken).ConfigureAwait(false);
-        await deps.Git.RemoveLocalBranchAsync(config.Repository.Id, state.Branch, cancellationToken).ConfigureAwait(false);
+        var bareRepositoryPath = Path.Combine(config.RepositoryStoragePath, config.Repository.Id);
+        if (Directory.Exists(bareRepositoryPath))
+        {
+            await deps.Git.RemoveWorktreeAsync(config.Repository.Id, state.WorkflowId.ToString(), worktreePath, cancellationToken).ConfigureAwait(false);
+            await deps.Git.RemoveLocalBranchAsync(config.Repository.Id, state.Branch, cancellationToken).ConfigureAwait(false);
+        }
         if (Directory.Exists(workflowPath)) Directory.Delete(workflowPath, recursive: true);
     }
 

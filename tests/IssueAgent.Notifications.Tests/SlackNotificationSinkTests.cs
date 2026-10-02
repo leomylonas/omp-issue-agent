@@ -28,7 +28,7 @@ public sealed class SlackNotificationSinkTests : IDisposable
     }
 
     [Fact]
-    public async Task SendAsyncThrowsOnNonSuccessStatus()
+    public async Task SendAsyncClassifiesServerRejectionAsRetryable()
     {
         server
             .Given(Request.Create().WithPath("/services/T000/B000/XXXX").UsingPost())
@@ -38,7 +38,26 @@ public sealed class SlackNotificationSinkTests : IDisposable
         var sink = new SlackNotificationSink(httpClient, new Uri(server.Url! + "/services/T000/B000/XXXX"));
         var notification = new WorkflowNotification(WorkflowNotificationKind.PlanFailed, "github/octo/widgets", 7, "workflow-1", "Planning failed.");
 
+        var exception = await Assert.ThrowsAsync<NotificationDeliveryRejectedException>(() => sink.SendAsync(notification, CancellationToken.None));
+
+        Assert.Equal(System.Net.HttpStatusCode.InternalServerError, exception.StatusCode);
+        Assert.True(exception.IsRetryable);
+    }
+
+    [Fact]
+    public async Task SendAsyncClassifiesTransportFailureAsAmbiguousPost()
+    {
+        using var httpClient = new HttpClient(new FailingPostHandler());
+        var sink = new SlackNotificationSink(httpClient, new Uri("https://hooks.slack.com/services/T000/B000/XXXX"));
+        var notification = new WorkflowNotification(WorkflowNotificationKind.PlanFailed, "github/octo/widgets", 7, "workflow-1", "Planning failed.");
+
         await Assert.ThrowsAsync<NotificationPostDispatchException>(() => sink.SendAsync(notification, CancellationToken.None));
+    }
+
+    private sealed class FailingPostHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromException<HttpResponseMessage>(new HttpRequestException("Simulated connection reset."));
     }
 
     public void Dispose()

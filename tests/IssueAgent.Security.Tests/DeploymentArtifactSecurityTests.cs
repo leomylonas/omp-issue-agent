@@ -180,12 +180,28 @@ public sealed class DeploymentArtifactSecurityTests
         Assert.Contains("install -o 10001 -g 10001 -d -m 2770 /data /data/omp /data/omp/agent", helmDeployment, StringComparison.Ordinal);
         Assert.DoesNotContain("chown -R 10001:10001 /data", helmDeployment, StringComparison.Ordinal);
         Assert.Contains("--reuid=10001 --regid=10001", entrypoint, StringComparison.Ordinal);
+        Assert.Contains("+dac_override", entrypoint, StringComparison.Ordinal);
+        Assert.Contains("-dac_override", ompWrapper, StringComparison.Ordinal);
+        Assert.Contains("add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETPCAP, SETUID]", helmDeployment, StringComparison.Ordinal);
         Assert.True(
             entrypoint.IndexOf("umask 0002", StringComparison.Ordinal)
             > entrypoint.IndexOf("install --owner=10001 --group=10001 --mode=0400", StringComparison.Ordinal));
         Assert.True(
             entrypoint.IndexOf("umask 0002", StringComparison.Ordinal)
             < entrypoint.IndexOf("exec /usr/bin/setpriv", StringComparison.Ordinal));
+    }
+
+
+    [Fact]
+    public void UnprivilegedOmpRejectsRetainedWorkflowUidCollisions()
+    {
+        var ompWrapper = ReadRepositoryFile("docker/omp-unprivileged.sh");
+        var readme = ReadRepositoryFile("deploy/README.md");
+
+        Assert.Contains("for retained_workflow in", ompWrapper, StringComparison.Ordinal);
+        Assert.Contains("stat -c '%u' \"$retained_workflow\"", ompWrapper, StringComparison.Ordinal);
+        Assert.Contains("Workflow principal collision", ompWrapper, StringComparison.Ordinal);
+        Assert.Contains("A retained UID collision fails", readme, StringComparison.Ordinal);
     }
 
     [Fact]

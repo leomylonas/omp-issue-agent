@@ -23,6 +23,9 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
     public int MergeAttempts { get; private set; }
 
     public List<string> LfsMaterializedWorktrees { get; } = [];
+    public int RemoveWorktreeCallCount { get; private set; }
+    public int RemoveLocalBranchCallCount { get; private set; }
+
 
     public ValueTask EnsureBareRepositoryAsync(string repositoryId, string cloneUrl, GitAuthentication authentication, CancellationToken cancellationToken) =>
         ValueTask.CompletedTask;
@@ -151,6 +154,7 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
 
     public ValueTask RemoveWorktreeAsync(string repositoryId, string worktreeId, string worktreePath, CancellationToken cancellationToken)
     {
+        RemoveWorktreeCallCount++;
         if (Directory.Exists(worktreePath))
         {
             Directory.Delete(worktreePath, recursive: true);
@@ -159,7 +163,11 @@ public sealed class FakeGitRepositoryManager : IGitRepositoryManager
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask RemoveLocalBranchAsync(string repositoryId, string branchName, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    public ValueTask RemoveLocalBranchAsync(string repositoryId, string branchName, CancellationToken cancellationToken)
+    {
+        RemoveLocalBranchCallCount++;
+        return ValueTask.CompletedTask;
+    }
 
     public bool WorktreeRequiresLfs(string worktreePath) => LfsRequired;
     public int MaterializeLfsFailuresRemaining { get; set; }

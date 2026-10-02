@@ -1,3 +1,4 @@
+
 using IssueAgent.Configuration;
 using IssueAgent.Domain;
 using IssueAgent.Providers;
@@ -125,8 +126,10 @@ public sealed class WorkflowWorkerPoolTests
         await fixture.StopAsync();
     }
 
-    [Fact]
-    public async Task TypedTransientOmpDependencyFailureDefersAndRetriesWorkflowWork()
+    [Theory]
+    [InlineData("broker")]
+    [InlineData("model")]
+    public async Task TypedTransientOmpDependencyFailureDefersAndRetriesWorkflowWork(string dependency)
     {
         using var fixture = new PoolFixture(
             agentConcurrency: 1,
@@ -144,7 +147,9 @@ public sealed class WorkflowWorkerPoolTests
             {
                 if (Interlocked.Increment(ref attempts) == 1)
                 {
-                    throw new OmpBrokerUnavailableException("broker temporarily unavailable");
+                    throw dependency == "broker"
+                        ? new OmpBrokerUnavailableException("broker temporarily unavailable")
+                        : new OmpModelUnavailableException("model temporarily unavailable");
                 }
 
                 retried.SetResult();

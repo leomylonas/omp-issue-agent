@@ -578,6 +578,12 @@ public sealed partial class WorkflowDispatcher(
         {
             throw;
         }
+        catch (Exception exception) when (IsTransientOmpDependencyFailure(exception))
+        {
+            // The worker pool owns bounded retry of broker/model outages. Do not turn a typed
+            // runtime dependency failure into an interrupted-work reconciliation blocker.
+            throw;
+        }
         catch (Exception exception)
         {
             await reconciliation.PauseForHumanAsync(
@@ -798,6 +804,14 @@ public sealed partial class WorkflowDispatcher(
 
     internal static bool ShouldRejectPlanOnlyImplementation(WorkflowCommand command, WorkflowMode mode) =>
         command == WorkflowCommand.Implement && mode == WorkflowMode.PlanOnly;
+    internal static bool IsTransientOmpDependencyFailure(Exception exception) =>
+        exception switch
+        {
+            OmpBrokerUnavailableException or OmpModelUnavailableException => true,
+            _ when exception.InnerException is not null => IsTransientOmpDependencyFailure(exception.InnerException),
+            _ => false,
+        };
+
 
 
     private static bool HasRetainedRevisionCheckpoint(WorkflowState state, CanonicalCommentContent content) =>
@@ -932,9 +946,32 @@ public sealed partial class WorkflowDispatcher(
             return false;
         }
 
-        var mergeRequest = await runtime.Provider
-            .FindMergeRequestAsync(runtime.Repository, state.Branch, state.TargetBranch, cancellationToken)
-            .ConfigureAwait(false);
+        ProviderMergeRequest? mergeRequest;
+        try
+        {
+            state.EnsureValid();
+            mergeRequest = await StoredMergeRequestIdentity
+                .FindAsync(
+                    runtime.Provider,
+                    runtime.Repository,
+                    content.State.PullOrMergeRequest,
+                    state.Branch,
+                    state.TargetBranch,
+                    cancellationToken)
+                .ConfigureAwait(false)
+                ?? await runtime.Provider
+                    .FindMergeRequestAsync(runtime.Repository, state.Branch, state.TargetBranch, cancellationToken)
+                    .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            exception is CanonicalStateException or StoredMergeRequestIdentity.StoredMergeRequestUnavailableException)
+        {
+            return false;
+        }
+        if (mergeRequest is not null && !IsWorkflowMergeRequest(state, mergeRequest))
+        {
+            return false;
+        }
         LabelSnapshot? mergeRequestCommandSnapshot = null;
         if (mergeRequest is not null)
         {
@@ -972,6 +1009,9 @@ public sealed partial class WorkflowDispatcher(
 
         return false;
     }
+
+    internal static bool IsWorkflowMergeRequest(WorkflowState state, ProviderMergeRequest mergeRequest) =>
+        mergeRequest.Description.Contains($"<!-- issue-agent:workflow:{state.WorkflowId} -->", StringComparison.Ordinal);
 
     private async Task PrepareGitAsync(Runtime runtime, CancellationToken cancellationToken)
     {

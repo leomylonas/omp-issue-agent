@@ -54,6 +54,21 @@ public sealed class CancellationWorkflowTests : IDisposable
     }
 
     [Fact]
+    public async Task CleanupLocalStateAsyncRemovesProviderOnlyWorkflowWithoutAccessingMissingLocalGitState()
+    {
+        var (state, _) = await SeedActiveStateAsync();
+        var workflowPath = Path.Combine(workspaceRoot, state.WorkflowId.ToString());
+        Directory.CreateDirectory(Path.Combine(workflowPath, "worktree"));
+
+        var workflow = new CancellationWorkflow(new WorkflowDependencies(provider, git, CreateContextBuilder(), notifier, clock));
+        await workflow.CleanupLocalStateAsync(CreateConfig(), state, CancellationToken.None);
+
+        Assert.False(Directory.Exists(workflowPath));
+        Assert.Equal(0, git.RemoveWorktreeCallCount);
+        Assert.Equal(0, git.RemoveLocalBranchCallCount);
+    }
+
+    [Fact]
     public async Task CompleteOnMergeAsyncPersistsDoneStateBeforeCleaningUpLocalState()
     {
         var (state, content) = await SeedActiveStateAsync();

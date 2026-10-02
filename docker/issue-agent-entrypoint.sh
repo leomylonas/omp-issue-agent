@@ -25,5 +25,5 @@ fi
 umask 0002
 
 exec /usr/bin/setpriv --reuid=10001 --regid=10001 --clear-groups \
-    --inh-caps +chown,+fowner,+setuid,+setgid \
-    --ambient-caps +chown,+fowner,+setuid,+setgid --no-new-privs -- "$@"
+    --inh-caps +chown,+dac_override,+fowner,+setuid,+setgid \
+    --ambient-caps +chown,+dac_override,+fowner,+setuid,+setgid --no-new-privs -- "$@"

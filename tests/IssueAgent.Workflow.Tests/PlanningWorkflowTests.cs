@@ -477,6 +477,34 @@ public sealed class PlanningWorkflowTests : IDisposable
         Assert.Contains(Path.Combine(workspaceRoot, initialState.WorkflowId.ToString(), "worktree"), git.LfsMaterializedWorktrees);
     }
     [Fact]
+    public async Task RunReplanAsyncRethrowsTypedBrokerFailureAfterPersistingWorkingCheckpoint()
+    {
+        provider.AddIssue(Repository, 1, "Bug", "Description");
+        var initialState = new WorkflowState(
+            WorkflowId.New(), WorkflowPhase.Planned, WorkflowOperationalState.Waiting, WaitingReason.PlanApproval,
+            1, null, "session-1", "agent/issue-1-bug", "main", "abc123", clock.UtcNow.AddHours(-1));
+        var initialContent = new CanonicalCommentContent(
+            "Original plan text.", ["Original decision."], null, CanonicalStateSerializer.ToDocument(initialState, null));
+        await provider.CreateIssueCommentAsync(Repository, 1, CanonicalCommentMarkdown.Render(initialContent), CancellationToken.None);
+        provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)] =
+            [WorkflowLabels.PlannedPhase, WorkflowLabels.WaitingState, WorkflowCommandLabels.Replan];
+        Directory.CreateDirectory(Path.Combine(workspaceRoot, initialState.WorkflowId.ToString(), "worktree"));
+        var omp = new FakeOmpClient().EnqueueRun(new OmpErrorEvent(
+            "session-1", clock.UtcNow, "broker temporarily unavailable", WasCancelled: false, ErrorCode: "broker_unavailable"));
+
+        await Assert.ThrowsAsync<OmpBrokerUnavailableException>(() =>
+            CreateWorkflow().RunReplanAsync(CreateConfig(), 1, initialState, omp, CancellationToken.None));
+
+        var checkpoint = CanonicalCommentMarkdown.Parse(Assert.Single(provider.UpdatedComments).Body).State;
+        Assert.Equal("planning", checkpoint.Phase);
+        Assert.Equal("working", checkpoint.State);
+        Assert.Null(checkpoint.WaitingReason);
+        Assert.Contains(WorkflowLabels.PlanningPhase, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
+        Assert.Contains(WorkflowLabels.WorkingState, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
+        Assert.DoesNotContain(WorkflowCommandLabels.Replan, provider.Labels[(Repository.Id, ProviderWorkItemKind.Issue, 1)]);
+    }
+
+    [Fact]
     public async Task RunReplanAsyncFromReviewConsumesReplanCommand()
     {
         provider.AddIssue(Repository, 1, "Bug", "Description");
